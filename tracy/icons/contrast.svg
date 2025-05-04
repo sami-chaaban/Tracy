@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Bold" xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 512 512">
+  <defs>
+    <style>
+      .cls-1 {
+        stroke-width: 40px;
+      }
+
+      .cls-1, .cls-2 {
+        fill: none;
+        stroke: #000;
+        stroke-miterlimit: 10;
+      }
+
+      .cls-2 {
+        stroke-linecap: round;
+        stroke-width: 50px;
+      }
+    </style>
+  </defs>
+  <rect class="cls-1" x="1241.4" y="61.8" width="391" height="391" rx="63.6" ry="63.6"/>
+  <line class="cls-2" x1="441.9" y1="146.7" x2="442.1" y2="52.7"/>
+  <line class="cls-2" x1="67.3" y1="147.9" x2="67.5" y2="53.9"/>
+  <line class="cls-2" x1="410.8" y1="101.3" x2="98.6" y2="101.3"/>
+  <path class="cls-2" d="M27.7,462.1c53.6,0,97.3,4.5,111.4-47.4,18.6-68.4,10-38.8,38.1-123.9,13.8-36.7,43.2-71.3,77.5-71.3"/>
+  <path class="cls-2" d="M257.8,219.5c34.3,0,63.7,34.6,77.5,71.3,28.1,85.2,19.5,55.5,38.1,123.9,14.1,51.9,57.8,47.4,111.4,47.4"/>
+</svg>

@@ -1,0 +1,200 @@
+/* Base style for all widgets */
+QWidget {
+    background-color: #F5F7FF;
+    font-family: Helvetica, Arial, sans-serif;
+    font-size: 14pt;
+}
+
+/* Common button reset */
+QPushButton,
+QPushButton#Passive {
+    background-color: transparent;
+    border: 2px solid transparent;
+    border-radius: 5px;
+    padding: 8px 16px;
+}
+
+/* Button states */
+QPushButton:hover {
+    background-color: #DCE6FF;
+}
+QPushButton:pressed,
+QPushButton:checked {
+    background-color: #497ce2;
+}
+QPushButton#Passive {
+    color: white;
+}
+QPushButton#Passive:hover {
+    background-color: rgba(204, 204, 204, 0.4);
+}
+
+/* List widget */
+QListWidget {
+    background-color: #ffffff;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    padding: 4px;
+}
+QListWidget::item {
+    padding: 4px;
+}
+QListWidget::item:selected {
+    background-color: #7da1ff;
+    color: #ffffff;
+}
+
+/* Frames (e.g., canvases) */
+QFrame {
+    border: none;
+}
+
+/* Combo box base + arrow */
+QComboBox {
+    background-color: #ffffff;
+    color: #000000;
+    border: 1px solid #dddddd;
+    border-radius: 5px;
+    padding: 2px 5px;
+    min-width: 80px;
+}
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 25px;
+    border-left: 1px solid #dddddd;
+}
+QComboBox::down-arrow {
+    image: url(file:///Users/chaaban/Downloads/down.png);
+    width: 5px;
+    height: 5px;
+}
+QComboBox::drop-down:hover {
+    background-color: #F1F5FF;
+    /* color inheritance from base */
+}
+
+/* Combo list popup */
+QComboBox QAbstractItemView {
+    background-color: #ffffff;
+    border: 1px solid #dddddd;
+    padding: 5px;
+    selection-background-color: #7da1ff;
+    selection-color: #000000;
+}
+QComboBox QAbstractItemView::item:hover {
+    background-color: #e8f0ff;
+}
+
+/* Table widget + headers */
+QTableWidget {
+    background-color: #e8f0ff;
+    border: 1px solid #dddddd;
+    border-radius: 5px;
+    gridline-color: #dddddd;
+}
+
+QTableWidget::item:selected {
+    background-color: #497ce2;
+    color: #ffffff;
+}
+
+QHeaderView::section {
+    background-color: #d6e4ff;
+    color: #333333;
+    padding: 4px;
+    border: 1px solid #dddddd;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 14pt;
+}
+
+/* Scrollbars */
+QScrollBar:horizontal, QScrollBar:vertical {
+    border: none;
+    background: #e0e0e0;
+    border-radius: 6px;
+}
+
+QScrollBar:horizontal {
+    height: 12px;
+    margin: 0 20px;
+}
+
+QScrollBar:vertical {
+    width: 12px;
+    margin: 20px 0;
+}
+
+QScrollBar::handle:horizontal {
+    background: #DCE6FF;
+    min-width: 30px;
+    border-radius: 6px;
+}
+
+QScrollBar::handle:vertical {
+    background: #DCE6FF;
+    min-height: 30px;
+    border-radius: 6px;
+}
+
+QScrollBar::sub-line:horizontal,
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-line:vertical,
+QScrollBar::sub-page:horizontal,
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:vertical,
+QScrollBar::add-page:vertical {
+    border: none;
+    background: none;
+}
+
+/* Spin boxes */
+QAbstractSpinBox,
+QSpinBox {
+    background-color: white;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    padding: 3px 2px 3px 3px;
+    font-size: 14px;
+}
+QSpinBox::up-button,
+QSpinBox::down-button {
+    subcontrol-origin: border;
+    width: 16px;
+    height: 16px;
+    background: transparent;
+    subcontrol-position: top right; /* down-button auto-flips to bottom */
+}
+
+/* Sliders */
+QSlider::groove:horizontal {
+    border: none;
+    height: 8px;
+    margin: 0 14px;
+    border-radius: 2px;
+    background: transparent;
+}
+QSlider::sub-page:horizontal {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #9EB9FF, stop:1 #C8D2EB);
+    border-radius: 4px;
+    margin: 0 8px;
+}
+QSlider::add-page:horizontal {
+    background: rgba(200, 210, 235, 0.2);
+    border-radius: 4px;
+    margin: 0 8px;
+}
+QSlider::handle:horizontal {
+    background: white;
+    border: 1.2px solid #d0d0d0;
+    width: 10px;
+    height: 20px;
+    margin: -6px -5px;
+    border-radius: 6px;
+}
+QLabel, QListWidget, QTableWidget, QSpinBox, QComboBox {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
