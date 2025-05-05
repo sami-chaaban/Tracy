@@ -1,5 +1,4 @@
 """
-All custom matplotlib-based Canvas classes:
     - ImageCanvas
     - MovieCanvas
     - KymoCanvas
@@ -23,9 +22,10 @@ from matplotlib.lines import Line2D
 from matplotlib.text import Text
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
+from matplotlib.gridspec import GridSpec
+from matplotlib.transforms import Bbox
 import scipy
 from scipy.ndimage import map_coordinates
-from matplotlib.gridspec import GridSpec
 import time
 import copy
 import math
@@ -115,11 +115,10 @@ class KymoCanvas(ImageCanvas):
         self.zoom_center = None  # in data coordinates
         self.manual_zoom = False
         self._update_pending = False
-        self.x_marker = []
         self.manual_zoom = False
         self.color_by_column = None
 
-        self._kymo_label_bboxes: Dict[Text, Bbox] = {}
+        self._kymo_label_bboxes: dict[Text, Bbox] = {}
 
         self.fig.patch.set_alpha(0)
         self.ax.patch.set_alpha(0)
@@ -494,7 +493,7 @@ class KymoCanvas(ImageCanvas):
             main_color = "magenta"
             if self.color_by_column is not None:
                 val = traj["custom_fields"].get(self.color_by_column, "")
-                main_color = "yellow" if val else "magenta"
+                main_color = "orange" if val else "magenta"
 
             # build display points
             frames = traj["frames"]
@@ -607,19 +606,6 @@ class KymoCanvas(ImageCanvas):
                     pass
             self.kymo_trajectory_markers = []
 
-        if hasattr(self, 'x_marker') and self.x_marker is not None:
-            markers = self.x_marker
-            # Normalize to a list
-            if not isinstance(markers, (list, tuple)):
-                markers = [markers]
-            for marker in markers:
-                try:
-                    marker.remove()
-                except Exception:
-                    pass
-            # Reset the attribute
-            self.x_marker = None
-
 # -----------------------------
 # MovieCanvas
 # -----------------------------
@@ -658,9 +644,9 @@ class MovieCanvas(ImageCanvas):
         self.mpl_connect("motion_notify_event", self.on_mouse_move)
         self.mpl_connect("button_release_event", self.on_mouse_release)
 
-        self._manual_x_marker_active = False  # flag for key-controlled marker
-        self._manual_x_marker_pos = None      # will hold [x, y]
-        self._manual_x_marker_artist = None   # store the drawn marker
+        self._manual_marker_active = False  # flag for key-controlled marker
+        self._manual_marker_pos = None      # will hold [x, y]
+        self._manual_marker_artist = None   # store the drawn marker
 
         self.sum_mode = False
         self.sum_frame_cache = None
@@ -672,7 +658,6 @@ class MovieCanvas(ImageCanvas):
         self._roi_bg = None
         self.roiAddMode = False
         self.roiPoints = [] 
-        # self.x_markers = []
 
         self.navigator = navigator
 
@@ -1329,7 +1314,7 @@ class MovieCanvas(ImageCanvas):
             self._roi_bbox = self.ax.bbox
             self._roi_bg   = canvas.copy_from_bbox(self._roi_bbox)
             # 3) create the line artist (but don’t redraw full figure)
-            self.tempRoiLine, = self.ax.plot(xs, ys, '--', linewidth=1.5, color='#4CAF50')
+            self.tempRoiLine, = self.ax.plot(xs, ys, '--', linewidth=1.5, color='#81C784')
         else:
             # restore the clean background
             canvas.restore_region(self._roi_bg)
@@ -1429,13 +1414,7 @@ class MovieCanvas(ImageCanvas):
             except Exception:
                 pass
             self.tempRoiLine = None
-        # Now remove all stored x markers.
-        # markers = getattr(self, 'x_markers', []) or []
-        # for marker in markers:
-        #     try: marker.remove()
-        #     except: pass
-        # # Reset the list.
-        # self.x_markers = []
+
         self.draw()
 
     def display_sum_frame(self):
@@ -1551,17 +1530,17 @@ class MovieCanvas(ImageCanvas):
         self.manual_zoom = False
         self.image = None
 
-    def draw_manual_x_marker(self):
+    def draw_manual_marker(self):
         """Draw a translucent circle at the current manual position."""
         # Remove any existing manual marker
-        if getattr(self, "_manual_x_marker_artist", None) is not None:
+        if getattr(self, "_manual_marker_artist", None) is not None:
             try:
-                self._manual_x_marker_artist.remove()
+                self._manual_marker_artist.remove()
             except Exception:
                 pass
 
         # Draw a semi‑transparent circle
-        x, y = self._manual_x_marker_pos
+        x, y = self._manual_marker_pos
         radius = 3  # adjust as desired
         circ = Circle(
             (x, y),
@@ -1571,26 +1550,17 @@ class MovieCanvas(ImageCanvas):
             alpha=0.6,
             linewidth=1.5
         )
-        self._manual_x_marker_artist = circ
+        self._manual_marker_artist = circ
         self.ax.add_patch(circ)
 
-    def clear_manual_x_marker(self):
+    def clear_manual_marker(self):
         """Remove the manual marker circle from the canvas."""
-        if getattr(self, "_manual_x_marker_artist", None) is not None:
+        if getattr(self, "_manual_marker_artist", None) is not None:
             try:
-                self._manual_x_marker_artist.remove()
+                self._manual_marker_artist.remove()
             except Exception:
                 pass
-            self._manual_x_marker_artist = None
-
-    def clear_x_marker(self):
-        """Remove the blue overlay circle from the movie canvas, if present."""
-        if getattr(self, "_x_marker", None) is not None:
-            try:
-                self._x_marker.remove()
-            except Exception:
-                pass
-            self._x_marker = None
+            self._manual_marker_artist = None
 
     def add_gaussian_circle(self, fitted_center, fitted_sigma):
         self.gaussian_circle = Circle(
@@ -1730,21 +1700,18 @@ class MovieCanvas(ImageCanvas):
             self.inset_circle = None
 
 # -----------------------------
-# IntensityCanvas: for the integrated intensity plot
+# IntensityCanvas
 # -----------------------------
 class IntensityCanvas(FigureCanvas):
     def __init__(self, parent=None, navigator=None):
-        # 1) Create the Figure *before* calling super()
         self.fig = Figure(figsize=(5.5, 4), constrained_layout=False)
         
-        # 2) Now initialize the FigureCanvas with that figure
         super().__init__(self.fig)
         self.setParent(parent)
         self.navigator = navigator
         self.setFocusPolicy(Qt.StrongFocus)
         self.setFocus()
 
-        # 3) Build your two‐panel layout
         gs = GridSpec(2, 1, height_ratios=[0.1, 0.9], figure=self.fig)
         self.ax_top = self.fig.add_subplot(gs[0])
         self.ax_bottom = self.fig.add_subplot(gs[1], sharex=self.ax_top)
@@ -1755,7 +1722,6 @@ class IntensityCanvas(FigureCanvas):
         self.ax_bottom.patch.set_alpha(0)
         self.ax_bottom.set_facecolor('none')
 
-        # 4) Create the highlight artists *once* and leave them invisible
         self.highlight_marker_bottom, = self.ax_bottom.plot(
             [], [], marker='s', markersize=12,
             markerfacecolor='none', markeredgecolor='#7da1ff',
@@ -1774,20 +1740,26 @@ class IntensityCanvas(FigureCanvas):
         )
         self.ax_top.add_line(self.top_vline)
 
-        # 5) Draw *once* to populate the renderer and axes
         self.draw()
-        # 6) Capture the background for blitting
+
+        # Capture the background for blitting
         self._background = self.copy_from_bbox(self.fig.bbox)
 
-        # 7) Hook draw_event so we re‐capture on any full redraw (e.g. resize)
+        # Hook draw_event so we re‐capture on any full redraw (e.g. resize)
         self.mpl_connect("draw_event", self._on_full_draw)
-        # 8) Hook pick_event for your scatter dots
+        # Hook pick_event for your scatter dots
         self.mpl_connect("pick_event", self.on_pick_event)
 
         self.current_index = 0
         self.scatter_obj_top = None
         self.scatter_obj_bottom = None
         self.point_highlighted=False
+        self._last_plot_args = None
+
+
+    # def showEvent(self, event):
+    #     super().showEvent(event)
+    #     QTimer.singleShot(0, lambda: self.plot_intensity(**self._last_plot_args))
 
     def plot_intensity(self, frames, intensities, avg_intensity=None, median_intensity=None,
                     colors=None, max_frame=None):
@@ -1974,6 +1946,15 @@ class IntensityCanvas(FigureCanvas):
 
         self.fig.canvas.draw()                       # synchronous full draw
         self._background = self.copy_from_bbox(self.fig.bbox)
+
+        self._last_plot_args = dict(
+            frames=frames,
+            intensities=intensities,
+            avg_intensity=avg_intensity,
+            median_intensity=median_intensity,
+            colors=colors,
+            max_frame=max_frame
+        )
          
     def on_pick_event(self, event):
         # ignore middle-click picks
@@ -2040,6 +2021,8 @@ class IntensityCanvas(FigureCanvas):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if self._last_plot_args:
+            self.plot_intensity(**self._last_plot_args)
         # force a full redraw so axes, legend, etc. get laid out
         self.fig.canvas.draw_idle()
         # now replay the highlight exactly as before
@@ -2083,41 +2066,6 @@ class TrajectoryCanvas(QWidget):
         header.setHighlightSections(False)
         header.setDefaultAlignment(Qt.AlignCenter)
 
-        # 3) Apply a flat, modern stylesheet
-        self.table_widget.setStyleSheet("""
-            /* overall table */
-            QTableWidget {
-                background-color: #F5F5F5;
-                gridline-color: #E0E0E0;
-                font-family: 'Segoe UI', Arial, sans-serif;
-                font-size: 11pt;
-                border: none;
-            }
-            /* header */
-            QHeaderView::section {
-                background-color: #2C3E50;
-                color: #ECF0F1;
-                padding: 8px;
-                border: none;
-            }
-            /* rows */
-            QTableWidget::item {
-                padding: 6px;
-            }
-            /* alternating row color */
-            QTableWidget::item:alternate {
-                background-color: #FFFFFF;
-            }
-            QTableWidget::item:!alternate {
-                background-color: #FAFAFA;
-            }
-            /* selection */
-            QTableWidget::item:selected {
-                background-color: #3498DB;
-                color: #FFFFFF;
-            }
-        """)
-
         # 4) hide the grid or only show horizontal lines:
         self.table_widget.setShowGrid(False)
         self.table_widget.setAlternatingRowColors(True)
@@ -2155,7 +2103,6 @@ class TrajectoryCanvas(QWidget):
             "avgintensity":"Avg. Intensity",
             "avgspeed":     "Avg. Speed μm/s",
         }
-        self.table_widget.setStyleSheet("QTableWidget::item { text-align: center; }")
         self.table_widget.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
         self.table_widget.verticalHeader().setDefaultAlignment(Qt.AlignCenter)
         self.table_widget.verticalHeader().setVisible(False)
@@ -2323,7 +2270,7 @@ class TrajectoryCanvas(QWidget):
         try:
             summary_rows = []
             data_rows = []
-            for traj in self.trajectories:
+            for traj in traj_list:
                 channel = int(traj["channel"])
                 fixed_background = traj["fixed_background"]
                 save_start_frame = int(traj["start"][0]) + 1
@@ -2517,6 +2464,10 @@ class TrajectoryCanvas(QWidget):
             for roi_val, grp in df_roi.groupby("ROI"):
                 n_trajs = len(grp)
                 total_time_s = grp["Time (s)"].sum()
+                if total_time_s > 0:
+                    events_per_min = n_trajs / (total_time_s / 60.0)
+                else:
+                    events_per_min = float('nan')
                 if pixel_size_um and total_time_s > 0:
                     events_per_um_per_min = n_trajs / (total_time_s / 60.0) / pixel_size_um
                 else:
@@ -2525,7 +2476,8 @@ class TrajectoryCanvas(QWidget):
                 per_roi_list.append({
                     "ROI": roi_val,
                     "Number of trajectories": n_trajs,
-                    "Events (/μm/min)": events_per_um_per_min,
+                    "Events (/min)": events_per_um_per_min,
+                    "Events (/μm/min)": events_per_min,
                     "Average net speed (μm/s)": grp["Net Speed (μm/s)"].mean(),
                     "Average average speed (μm/s)": grp["Avg. Speed (μm/s)"].mean(),
                     "Average run length (μm)": grp["Distance (μm)"].mean(),
@@ -2880,11 +2832,11 @@ class TrajectoryCanvas(QWidget):
         movie_base = self.navigator.movieNameLabel.text()  # assuming this holds the filename, e.g. "my_movie.tif"
         # Remove the current extension and add ".csv"
         default_filename = os.path.splitext(movie_base)[0] + ".csv"
-        # Use default_filename as the third argument.
+        default_filename = os.path.join(self.navigator._last_dir, default_filename)
         filename, _ = QFileDialog.getOpenFileName(
             self, 
             "Load Trajectories File", 
-            default_filename,  # <-- default file name here
+            default_filename,
             "Excel and CSV Files (*.xlsx *.csv)"
         )
         if not filename:
@@ -3906,6 +3858,7 @@ class TrajectoryCanvas(QWidget):
             # print("❌ No trajectory selected to delete!")
             return
         row = selected_rows[0].row()
+        deleted_number = self.trajectories[row]["trajectory_number"]
         self.trajectories.pop(row)
         self.table_widget.removeRow(row)
 
@@ -3922,6 +3875,9 @@ class TrajectoryCanvas(QWidget):
 
         if row_count == 0:
             self._trajectory_counter = 1
+        else:
+            if deleted_number == self._trajectory_counter - 1:
+                self._trajectory_counter -= 1
             
         if self.navigator is not None:
             self.kymoCanvas.draw_trajectories_on_kymo()
@@ -3992,26 +3948,6 @@ class TrajectoryCanvas(QWidget):
         menu  = QMenu(self.table_widget)
         menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint)
         menu.setAttribute(Qt.WA_TranslucentBackground)
-        menu.setStyleSheet("""
-            /* the menu “shell” */
-            QMenu {
-                background-color: #FFFFFF;
-                border: 1px solid #CCCCCC;
-                border-radius: 8px;
-                padding: 4px;          /* space around items */
-            }
-            /* each menu item */
-            QMenu::item {
-                padding: 4px;
-                color: #333333;
-                background: transparent;
-            }
-            /* hovered or selected item */
-            QMenu::item:selected {
-                background-color: #E8F0FE;  /* light blue */
-                color: #333333;             /* keep text dark */
-            }
-        """)
         # Save action
         act_save   = menu.addAction(save_label)
         act_save.triggered.connect(lambda: self.save_trajectories(rows))
@@ -4019,31 +3955,29 @@ class TrajectoryCanvas(QWidget):
 
         # 2) If exactly one row is selected, add Go→kymograph entries
         if len(rows) == 1:
-            r = rows[0]
+            r    = rows[0]
             traj = self.trajectories[r]
             sf, sx, sy = traj["start"]
             ef, ex, ey = traj["end"]
+            traj_ch     = traj["channel"]   # 1, 2, 3, …
 
-            # 1) find any ROI that contains both start & end
+            # find the ROI that contains both start & end
             for roi_name, roi in self.navigator.rois.items():
-                if (is_point_near_roi((sx, sy), roi)
-                and is_point_near_roi((ex, ey), roi)):
-
-                    # 2) now find all kymographs for that ROI
+                if is_point_near_roi((sx, sy), roi) and is_point_near_roi((ex, ey), roi):
+                    # now only show kymographs for *this* ROI *and* *this* channel*
                     for kymo_name, info in self.navigator.kymo_roi_map.items():
-                        if info["roi"] == roi_name:
+                        if (info["roi"] == roi_name
+                        and info.get("channel", None) == traj_ch):
                             action = menu.addAction(f"Go to kymograph {kymo_name}")
-                            def make_cb(kn=kymo_name, row=r):
-                                def cb():
-                                    self.on_trajectory_selected_by_index(row)
-                                    idx = self.navigator.kymoCombo.findText(kn)
-                                    if idx >= 0:
-                                        self.navigator.kymoCombo.setCurrentIndex(idx)
-                                        self.navigator.kymograph_changed()
-                                return cb
-                            action.triggered.connect(make_cb())
-
-                    # only need the first matching ROI
+                            action.triggered.connect(
+                                lambda _, kn=kymo_name, row=r: (
+                                    self.on_trajectory_selected_by_index(row),
+                                    self.navigator.kymoCombo.setCurrentIndex(
+                                        self.navigator.kymoCombo.findText(kn)
+                                    ),
+                                    self.navigator.kymograph_changed()
+                                )
+                            )
                     break
 
         # Change ID action
@@ -4148,27 +4082,6 @@ class TrajectoryCanvas(QWidget):
         # make it frameless + translucent
         menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint)
         menu.setAttribute(Qt.WA_TranslucentBackground)
-        # apply the custom stylesheet
-        menu.setStyleSheet("""
-            /* the menu “shell” */
-            QMenu {
-                background-color: #FFFFFF;
-                border: 1px solid #CCCCCC;
-                border-radius: 8px;
-                padding: 4px;          /* space around items */
-            }
-            /* each menu item */
-            QMenu::item {
-                padding: 6px 12px;
-                color: #333333;
-                background: transparent;
-            }
-            /* hovered or selected item */
-            QMenu::item:selected {
-                background-color: #E8F0FE;  /* light blue */
-                color: #333333;             /* keep text dark */
-            }
-        """)
 
         # always allow adding a new column
         # 1) Add binary column

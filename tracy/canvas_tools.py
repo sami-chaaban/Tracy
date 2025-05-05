@@ -111,7 +111,7 @@ class RangeSlider(QtWidgets.QSlider):
         painter.drawLine(slider_min, line_y, slider_max, line_y)
 
         # 2) Draw the selected range (blue) on top
-        blue_pen = QtGui.QPen(QtGui.QColor("#C8D2EB"), 6, cap=Qt.RoundCap)
+        blue_pen = QtGui.QPen(QtGui.QColor("#D3DFFF"), 6, cap=Qt.RoundCap)
         painter.setPen(blue_pen)
         painter.drawLine(int(lower_pos), line_y, int(upper_pos), line_y)
 
@@ -297,7 +297,7 @@ class ToggleSwitch(QAbstractButton):
         switchRect = QRectF(switchX, self._switchMargin, self._switchWidth, self._switchHeight)
         
         # Use green for ROI (checked) and blue for Spot (unchecked)
-        bg_color = QColor("#4CAF50") if self.isChecked() else QColor("#C8D2EB")
+        bg_color = QColor("#4CAF50") if self.isChecked() else QColor("#D3DFFF")
         painter.setPen(Qt.NoPen)
         painter.setBrush(bg_color)
         painter.drawRoundedRect(switchRect, switchRect.height() / 2, switchRect.height() / 2)
@@ -382,12 +382,12 @@ class SetScaleDialog(QDialog):
         self.setWindowTitle("Set Scale")
         layout = QVBoxLayout(self)
 
-        bold_font = QFont()
-        bold_font.setBold(True)
+        # bold_font = QFont()
+        # bold_font.setBold(True)
 
         # Create a label and line edit for Pixel Size (nm)
         self.pixelLabel = QLabel("Pixel size (nm):")
-        self.pixelLabel.setFont(bold_font)
+        # self.pixelLabel.setFont(bold_font)
         self.pixelLabel.setAlignment(Qt.AlignCenter)
         self.pixelEdit = QLineEdit()
         self.pixelEdit.setValidator(QDoubleValidator(0.001, 1_000_000, 2, self))
@@ -405,7 +405,7 @@ class SetScaleDialog(QDialog):
 
         # Create a label and line edit for Frame Interval (ms)
         self.frameLabel = QLabel("Frame interval (ms):")
-        self.frameLabel.setFont(bold_font)
+        # self.frameLabel.setFont(bold_font)
         self.frameLabel.setAlignment(Qt.AlignCenter)  
         self.frameEdit = QLineEdit()
         self.frameEdit.setValidator(QDoubleValidator(0.001, 1_000_000, 2, self))
@@ -508,9 +508,9 @@ class CustomSplitterHandle(QSplitterHandle):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        pen = QPen(QColor("#555555"), 0)
+        pen = QPen(QColor("#888888"), 0)
         painter.setPen(pen)
-        painter.setBrush(QColor("#555555"))
+        painter.setBrush(QColor("#888888"))
         if self.orientation() == Qt.Horizontal:
             handle_width = 2
             handle_length = 20
@@ -603,12 +603,12 @@ class RecalcDialog(QDialog):
         # Search radius spin box
         radius_layout = QHBoxLayout()
         radius_label = QLabel("Search Radius:")
-        radius_label.setStyleSheet(
-            "font-weight: bold"
-        )
+        # radius_label.setStyleSheet(
+        #     "font-weight: bold"
+        # )
         radius_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.radius_spin = QSpinBox()
-        self.radius_spin.setRange(1, 40)  # adjust range as necessary
+        self.radius_spin.setRange(8, 50)
         self.radius_spin.setValue(current_radius)
         radius_layout.addWidget(radius_label)
         radius_layout.addWidget(self.radius_spin)
@@ -779,20 +779,26 @@ class RadiusDialog(QDialog):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet("""
             QDialog {
-                background-color: #F1F5FF;
                 border-radius: 10px;
             }
             QLabel {
-                border-radius: 8px;
-                padding: 4px;
+                border-radius: 10px;
+                padding: 10px;
                 font-size: 14px;
             }
             QSpinBox {
-                min-width: 15px;
-                border: 1px solid #ccc
+                background-color: #F5F7FF;
+                border: 1px solid #ccc;
+                border-radius: 10px;
+                padding: 4px 8px;
+                font-size: 14px;
+                min-height: 24px;
             }
+
             QSpinBox QLineEdit {
-                background-color: '#F5F7FF';
+                background: transparent;
+                border: none;
+                padding: 0;
             }
         """)
 
@@ -801,7 +807,7 @@ class RadiusDialog(QDialog):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8,4,8,4)
         radiuslabel = QLabel("Search Radius:")
-        radiuslabel.setStyleSheet("font-weight:bold")
+        # radiuslabel.setStyleSheet("font-weight:bold")
         lay.addWidget(radiuslabel)
         spin = QSpinBox(self)
         spin.setStyleSheet("background: #F5F7FF")

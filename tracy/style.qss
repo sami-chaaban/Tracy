@@ -1,8 +1,8 @@
 /* Base style for all widgets */
 QWidget {
-    background-color: #F5F7FF;
+    background-color:rgb(231, 239, 255);
     font-family: Helvetica, Arial, sans-serif;
-    font-size: 14pt;
+    font-size: 15pt;
 }
 
 /* Common button reset */
@@ -16,11 +16,11 @@ QPushButton#Passive {
 
 /* Button states */
 QPushButton:hover {
-    background-color: #DCE6FF;
+    background-color:rgb(215, 225, 252);
 }
 QPushButton:pressed,
 QPushButton:checked {
-    background-color: #497ce2;
+    background-color: #7da1ff;
 }
 QPushButton#Passive {
     color: white;
@@ -86,17 +86,33 @@ QComboBox QAbstractItemView::item:hover {
     background-color: #e8f0ff;
 }
 
-/* Table widget + headers */
 QTableWidget {
     background-color: #e8f0ff;
-    border: 1px solid #dddddd;
+    gridline-color: #E0E0E0;
+    border: none;
     border-radius: 5px;
-    gridline-color: #dddddd;
+    gridline-color: #dddddd
 }
-
+/* header */
+QHeaderView::section {
+    background-color: #2C3E50;
+    color: #ECF0F1;
+    padding: 8px;
+    border: none;
+}
+QTableWidget::item {
+    padding: 6px;
+    text-align: center;
+}
+QTableWidget::item:alternate {
+    background-color: #FFFFFF;
+}
+QTableWidget::item:!alternate {
+    background-color: #FAFAFA;
+}
 QTableWidget::item:selected {
-    background-color: #497ce2;
-    color: #ffffff;
+    background-color: #7da1ff;
+    color: #FFFFFF;
 }
 
 QHeaderView::section {
@@ -105,7 +121,6 @@ QHeaderView::section {
     padding: 4px;
     border: 1px solid #dddddd;
     font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-    font-size: 14pt;
 }
 
 /* Scrollbars */
@@ -156,7 +171,6 @@ QSpinBox {
     border: 1px solid #ccc;
     border-radius: 6px;
     padding: 3px 2px 3px 3px;
-    font-size: 14px;
 }
 QSpinBox::up-button,
 QSpinBox::down-button {
@@ -197,4 +211,21 @@ QSlider::handle:horizontal {
 QLabel, QListWidget, QTableWidget, QSpinBox, QComboBox {
   padding-top: 4px;
   padding-bottom: 4px;
+}
+QMenu {
+    background-color: #FFFFFF;
+    border: 1px solid #CCCCCC;
+    border-radius: 8px;
+    padding: 4px;
+}
+/* each menu item */
+QMenu::item {
+    padding: 4px;
+    color: #333333;
+    background: transparent;
+}
+/* hovered or selected item */
+QMenu::item:selected {
+    background-color: #E8F0FE;
+    color: #333333;
 }

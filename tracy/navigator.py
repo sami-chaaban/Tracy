@@ -29,7 +29,7 @@ import read_roi
 import numpy as np
 from functools import partial
 import pandas as pd
-
+from pathlib import Path
 from .canvases import (
     KymoCanvas, MovieCanvas,
     IntensityCanvas, TrajectoryCanvas, HistogramCanvas,
@@ -175,6 +175,8 @@ class KymographNavigator(QMainWindow):
         self.roiShortcut.setContext(Qt.ApplicationShortcut)
         self.roiShortcut.activated.connect(self._on_n_pressed)
 
+        self._last_dir = str(Path.home())
+
         # ─── Channel keys 1–8 ───────────────────────────────────────
         for n in range(1, 9):
             sc = QShortcut(QKeySequence(Qt.Key_0 + n), self)
@@ -283,7 +285,7 @@ class KymographNavigator(QMainWindow):
         self.movieNameLabel = QLabel("")
         self.movieNameLabel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.movieNameLabel.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.movieNameLabel.setStyleSheet("font-weight: bold; background: transparent; font-size:14pt")
+        self.movieNameLabel.setStyleSheet("background: transparent")
         topLayout.addWidget(self.movieNameLabel)
 
         
@@ -297,8 +299,8 @@ class KymographNavigator(QMainWindow):
         #topLayout.addWidget(create_pair("Search radius:", self.searchWindowSpin))
         
         self.insetViewSize = QSpinBox()
-        self.insetViewSize.setRange(4, 50)
-        self.insetViewSize.setValue(12)
+        self.insetViewSize.setRange(4, 14)
+        self.insetViewSize.setValue(10)
         
         # Add stretch and right-aligned labels.
         topLayout.addStretch()
@@ -329,6 +331,7 @@ class KymographNavigator(QMainWindow):
 
         # Create the kymograph label, right justified
         kymoLabel = QLabel("Kymograph")
+        # kymoLabel.setStyleSheet("color: #666666;")
         kymoLabel.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         # Optionally, set a fixed minimum width so that your labels line up:
         kymoLabel.setMinimumWidth(40)
@@ -550,6 +553,25 @@ class KymographNavigator(QMainWindow):
         self.channelControlContainer.move(10, 10)   # tweak x/y offsets as you
         self.channelControlContainer.raise_()
 
+        # in create_ui, replace the overlay QLabel with:
+        self._ch_overlay = ClickableLabel("", parent=self.movieDisplayContainer)
+        self._ch_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self._ch_overlay.setStyleSheet("""
+            background: transparent;
+            color: #999999;
+            font-size: 40pt;
+            font-weight: bold;
+        """)
+        self._ch_overlay.hide()
+
+        # shadow = QGraphicsDropShadowEffect(self._ch_overlay)
+        # shadow.setBlurRadius(5)
+        # shadow.setColor(QColor(250, 250, 250, 200))
+        # shadow.setOffset(0, 0)
+        # self._ch_overlay.setGraphicsEffect(shadow)
+
+        self._ch_overlay.clicked.connect(self._on_overlay_clicked)
+
         movieLayout.addSpacing(10)
         
         sliderWidget = QWidget()
@@ -631,7 +653,7 @@ class KymographNavigator(QMainWindow):
                 background-color: transparent;
             }
             QPushButton:checked, QPushButton:checked:hover {
-                background-color: #4CAF50;
+                background-color: #81C784;
             }
             QPushButton:hover {
                 background-color: #D8EDD9;
@@ -663,7 +685,7 @@ class KymographNavigator(QMainWindow):
 
         # Column 3: Right Panel with additional canvases.
         rightPanel = QWidget()
-        rightPanel.setMinimumWidth(250)
+        rightPanel.setMinimumWidth(350)
         rightPanelLayout = QVBoxLayout(rightPanel)
         rightPanelLayout.setContentsMargins(6, 6, 6, 6)
         rightPanelLayout.setSpacing(10)
@@ -919,12 +941,12 @@ class KymographNavigator(QMainWindow):
     def _make_colored_circle_cursor(self, size=12, thickness=2, shade='green'):
         """
         Create a smooth, anti‑aliased circular cursor in either 'green' or 'blue':
-          - green → outline & fill from "#4CAF50"
+          - green → outline & fill from "#81C784"
           - blue  → outline & fill from "#7DA1FF"
         """
         # choose your hex
         color_map = {
-            'green': '#4CAF50',
+            'green': '#81C784',
             'blue':  '#7DA1FF',
         }
         hex_color = color_map.get(shade.lower(), color_map['green'])
@@ -967,7 +989,7 @@ class KymographNavigator(QMainWindow):
         if enabled:
             cursor = self._make_colored_circle_cursor(shade='green')
             self.movieCanvas.setCursor(cursor)
-            self.movieDisplayContainer.setBorderColor("#4CAF50")
+            self.movieDisplayContainer.setBorderColor("#81C784")
             if not self.roi_overlay_button.isChecked():
                 self.roi_overlay_button.setChecked(True)
                 self.toggle_roi_overlay()
@@ -1008,7 +1030,7 @@ class KymographNavigator(QMainWindow):
 
         # 3) put the label inside
         lbl = QLabel(text, frame)
-        lbl.setStyleSheet("color: black; font-weight: bold; font-size: 14px;")
+        lbl.setStyleSheet("color: black; font-size: 14px;")
         lay = QHBoxLayout(frame)
         lay.setContentsMargins(12,6,12,6)
         lay.addWidget(lbl)
@@ -1331,7 +1353,7 @@ class KymographNavigator(QMainWindow):
         kymopreferencesAction.triggered.connect(self.open_kymopreferences_dialog)
         kymoMenu.addAction(kymopreferencesAction)
 
-        kymoGenerateFromTrajAction = QAction("Generate from trajectories", self)
+        kymoGenerateFromTrajAction = QAction("Draw from trajectories", self)
         kymoGenerateFromTrajAction.triggered.connect(self.generate_rois_from_trajectories)
         kymoMenu.addAction(kymoGenerateFromTrajAction)
 
@@ -1508,24 +1530,6 @@ class KymographNavigator(QMainWindow):
         self.insetViewSize.setValue(value)
         dialog.accept()
 
-    def handle_movie_load(self, fname=None, pixelsize=None, frameinterval=None):
-        # If save_and_load_routine is active, don't open the dialog.
-        if self.save_and_load_routine:
-            # Reset the flag so it only applies once.
-            self.save_and_load_routine = False
-        else:
-            # Open the file dialog (you can use self as parent for a nicer look)
-            fname, _ = QFileDialog.getOpenFileName(
-                self, "Open Movie TIFF", "", "TIFF Files (*.tif *.tiff)"
-            )
-        
-        # If no file was chosen, exit.
-        if not fname:
-            return
-
-        # Pass the chosen filename to load_movie.
-        self.load_movie(fname, pixelsize=pixelsize, frameinterval=frameinterval)
-
     def infer_axes_from_shape(shape):
         """
         Build an ImageJ-style axes string from a NumPy shape tuple:
@@ -1541,6 +1545,24 @@ class KymographNavigator(QMainWindow):
         axes += ['Y', 'X']
         # Only keep the “real” axes (uppercase)
         return ''.join(ax for ax in axes if ax.isupper())
+
+    def handle_movie_load(self, fname=None, pixelsize=None, frameinterval=None):
+        # If save_and_load_routine is active, don't open the dialog.
+        if self.save_and_load_routine:
+            # Reset the flag so it only applies once.
+            self.save_and_load_routine = False
+        else:
+            # Open the file dialog (you can use self as parent for a nicer look)
+            fname, _ = QFileDialog.getOpenFileName(
+                self, "Open Movie TIFF", self._last_dir, "TIFF Files (*.tif *.tiff)"
+            )
+        
+        # If no file was chosen, exit.
+        if not fname:
+            return
+
+        # Pass the chosen filename to load_movie.
+        self.load_movie(fname, pixelsize=pixelsize, frameinterval=frameinterval)
 
     def load_movie(self, fname=None, pixelsize=None, frameinterval=None):
 
@@ -1560,6 +1582,7 @@ class KymographNavigator(QMainWindow):
                 self.clear_flag = True
 
         if fname:
+            self._last_dir = os.path.dirname(fname)
             try:
                 with tifffile.TiffFile(fname) as tif:
                     temp_movie = tif.asarray()
@@ -1895,19 +1918,69 @@ class KymographNavigator(QMainWindow):
             frame     = self.get_movie_frame(frame_idx)
             mc.update_image_data(frame)
 
+        ch = index + 1
+        self._ch_overlay.setText(f"ch{ch}")
+        self._ch_overlay.adjustSize()
+        self._reposition_channel_overlay()
+        self._ch_overlay.show()
+
+
+    def _on_overlay_clicked(self):
+        # build a stand-alone QMenu
+        menu = QMenu(None)
+        menu.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
+        menu.setAttribute(Qt.WA_TranslucentBackground)
+
+        # populate it
+        n_channels = (self.movie.shape[self._channel_axis]
+                    if self.movie is not None and self.movie.ndim == 4 else 1)
+        for i in range(n_channels):
+            action = menu.addAction(f"ch{i+1}")
+            action.setData(i)
+
+        # compute global positions
+        lbl = self._ch_overlay
+        lbl_global = lbl.mapToGlobal(QPoint(0, 0))
+        lbl_width  = lbl.width()
+        # measure menu width from its sizeHint
+        menu_width = menu.sizeHint().width()
+
+        # center the menu’s x under the label
+        x = lbl_global.x() + (lbl_width  - menu_width)//2
+        # drop it just below the label
+        y = lbl_global.y() + lbl.height()
+
+        chosen = menu.exec_(QPoint(x, y))
+        if chosen:
+            idx = chosen.data()
+            self.movieChannelCombo.setCurrentIndex(idx)
+
+    def _reposition_channel_overlay(self):
+        lbl = self._ch_overlay
+        # 10px from left, 10px from top
+        x = 10
+        y = 10
+        lbl.move(x, y)
+
     def update_movie_channel_combo(self, flash=False):
         if self.movie is None:
             self.channelControlContainer.setVisible(False)
+            self._ch_overlay.hide()
             return
 
         current_channel = 1
         if self.movie.ndim == 4:
-            self.channelControlContainer.setVisible(True)
+            self.channelControlContainer.setVisible(False) #OVERRIDE
             channel_axis = self._channel_axis
             try:
                 current_channel = int(self.movieChannelCombo.currentText())
             except Exception:
                 current_channel = 1
+
+            self._ch_overlay.setText(f"ch{current_channel}")
+            self._ch_overlay.adjustSize()
+            self._reposition_channel_overlay()
+            self._ch_overlay.show()
 
             self.movieChannelCombo.blockSignals(True)
             self.movieChannelCombo.clear()
@@ -1922,6 +1995,7 @@ class KymographNavigator(QMainWindow):
             first_frame = self.get_movie_frame(0)
         else:
             self.channelControlContainer.setVisible(False)
+            self._ch_overlay.hide()
             self.movieChannelCombo.blockSignals(True)
             self.movieChannelCombo.clear()
             self.movieChannelCombo.addItem("1")
@@ -1987,6 +2061,156 @@ class KymographNavigator(QMainWindow):
 
         # Finally, display the first frame with the correct contrast.
         self.movieCanvas.update_image_data(first_frame)
+
+
+
+    def load_reference(self):
+        if self.movie is None:
+            QMessageBox.warning(self, "", 
+                "Please load a movie before loading a reference.")
+            return
+        fname, _ = QFileDialog.getOpenFileName(
+            self, "Open Reference Image", "", "Image Files (*.tif *.tiff *.png *.jpg)"
+        )
+        if not fname:
+            return
+        try:
+            ref_img = tifffile.imread(fname)
+            if ref_img.ndim == 3:
+                # Heuristic to decide if the image is multi‐channel:
+                small_first = ref_img.shape[0] <= 4 and ref_img.shape[0] > 1
+                small_last = ref_img.shape[-1] <= 4 and ref_img.shape[-1] > 1
+
+                if small_first and small_last:
+                    choice, ok = QtWidgets.QInputDialog.getItem(
+                        self, "Channel Axis Ambiguity",
+                        "Is the reference image stored as channels-first (axis 0) or channels-last (last axis)?",
+                        ["Channels-first", "Channels-last"],
+                        0, False
+                    )
+                    if not ok:
+                        return
+                    channel_axis = 0 if choice == "Channels-first" else -1
+                elif small_first:
+                    channel_axis = 0
+                elif small_last:
+                    channel_axis = -1
+                else:
+                    channel_axis = None
+
+                if channel_axis is not None:
+                    if channel_axis == 0:
+                        channels = ref_img.shape[0]
+                        prompt = "Reference image has multiple channels (channels-first). Choose one:"
+                    else:
+                        channels = ref_img.shape[-1]
+                        prompt = "Reference image has multiple channels (channels-last). Choose one:"
+                    if channels > 1:
+                        channel_str, ok = QtWidgets.QInputDialog.getItem(
+                            self, "Select Channel", prompt,
+                            [f"Channel {i+1}" for i in range(channels)], 0, False
+                        )
+                        if not ok:
+                            return
+                        chosen_channel = int(channel_str.split()[-1]) - 1
+                        if channel_axis == 0:
+                            ref_img = ref_img[chosen_channel, :, :]
+                        else:
+                            ref_img = ref_img[:, :, chosen_channel]
+            ref_img = np.squeeze(ref_img)
+
+            # (Optionally, verify that its dimensions match the current movie frame.)
+            if self.movie is not None:
+                movie_frame = self.movieCanvas.image
+                if movie_frame is None:
+                    movie_frame = self.get_movie_frame(0)
+                if movie_frame.shape[0:2] != ref_img.shape[0:2]:
+                    QMessageBox.warning(
+                        self,
+                        "Dimension Mismatch",
+                        "The reference image x/y dimensions do not match the currently displayed movie frame."
+                    )
+                    return
+
+            self.referenceImage = ref_img
+
+            # *** Compute reference contrast settings ***
+            p15, p99 = np.percentile(ref_img, (15, 99))
+            ref_vmin = int(p15)
+            ref_vmax = int(p99 * 1.1)
+            delta = ref_vmax - ref_vmin
+            self.reference_contrast_settings = {
+                'vmin': ref_vmin,
+                'vmax': ref_vmax,
+                'extended_min': ref_vmin - int(0.7 * delta),
+                'extended_max': ref_vmax + int(1.4 * delta)
+            }
+            # Make the Ref. button visible.
+            self.refBtn.setVisible(True)
+        except Exception as e:
+            QMessageBox.critical(self, "Load Error", f"Could not load reference image:\n{str(e)}")
+
+
+    def on_ref_toggled(self, checked):
+        if checked:
+            self.refBtn.setStyleSheet("background-color: #375bb5;")
+            # Turn off sum mode if active.
+            if self.sumBtn.isChecked():
+                self.sumBtn.setChecked(False)
+            # Apply the reference image and its contrast.
+            settings = self.reference_contrast_settings
+            self.movieCanvas.set_display_range(settings['vmin'], settings['vmax'])
+            self.movieCanvas.image = self.referenceImage
+            self.movieCanvas._im.set_data(self.referenceImage)
+            self.movieCanvas.draw_idle()
+        else:
+            self.refBtn.setStyleSheet("")
+            # Only revert if sum mode is off.
+            if not self.sumBtn.isChecked():
+                frame = self.get_movie_frame(self.frameSlider.value())
+                if frame is not None:
+                    # Determine the appropriate contrast settings.
+                    if self.movie.ndim == 4:
+                        try:
+                            current_channel = int(self.movieChannelCombo.currentText())
+                        except Exception:
+                            current_channel = 1
+                        # If the contrast settings haven't been set for the current channel, compute defaults.
+                        if current_channel not in self.channel_contrast_settings:
+                            p15, p99 = np.percentile(frame, (15, 99))
+                            default_vmin = int(p15)
+                            default_vmax = int(p99 * 1.1)
+                            delta = default_vmax - default_vmin
+                            settings = {
+                                'vmin': default_vmin,
+                                'vmax': default_vmax,
+                                'extended_min': default_vmin - int(0.7 * delta),
+                                'extended_max': default_vmax + int(1.4 * delta)
+                            }
+                            self.channel_contrast_settings[current_channel] = settings
+                        else:
+                            settings = self.channel_contrast_settings[current_channel]
+                    else:
+                        # For a single-channel (3D) movie, we always use channel 1.
+                        if 1 not in self.channel_contrast_settings:
+                            p15, p99 = np.percentile(frame, (15, 99))
+                            default_vmin = int(p15)
+                            default_vmax = int(p99 * 1.1)
+                            delta = default_vmax - default_vmin
+                            settings = {
+                                'vmin': default_vmin,
+                                'vmax': default_vmax,
+                                'extended_min': default_vmin - int(0.7 * delta),
+                                'extended_max': default_vmax + int(1.4 * delta)
+                            }
+                            self.channel_contrast_settings[1] = settings
+                        else:
+                            settings = self.channel_contrast_settings[1]
+                    # Now apply the contrast to the movie canvas.
+                    self.movieCanvas.set_display_range(settings['vmin'], settings['vmax'])
+                    self.movieCanvas.image = frame
+                    self.movieCanvas._im.set_data(frame)
+                    self.movieCanvas.draw_idle()
 
     def load_kymographs(self):
         fnames, _ = QFileDialog.getOpenFileNames(
@@ -2597,7 +2821,7 @@ class KymographNavigator(QMainWindow):
         for lbl, bbox in self.kymoCanvas._kymo_label_bboxes.items():
             if bbox.contains(event.x, event.y):
                 # it’s a label: get its trajectory row
-                row = self.navigator._kymo_label_to_row.get(lbl, -1)
+                row = self._kymo_label_to_row.get(lbl, -1)
                 if row < 0:
                     return
 
@@ -3014,7 +3238,7 @@ class KymographNavigator(QMainWindow):
 
                 # ——— 2) Pan/zoom once ———
                 if animate == "ramp":
-                    self.animate_axes_transition(new_xlim, new_ylim, duration=100)
+                    self.animate_axes_transition(new_xlim, new_ylim, duration=300)
                 elif animate == "linear":
                     self.animate_view_transition(new_xlim, new_ylim, duration=15)
                 else:
@@ -3773,9 +3997,9 @@ class KymographNavigator(QMainWindow):
         self.analysis_anchors = []
         self.analysis_roi = None
         self.update_movie_analysis_line()
-        self.movieCanvas.clear_manual_x_marker()
-        self.movieCanvas.clear_x_marker()
-        self.movieCanvas._manual_x_marker_active = False
+        self.movieCanvas.clear_manual_marker()
+        # self.movieCanvas.clear_manual_marker()
+        self.movieCanvas._manual_marker_active = False
 
     # def compute_step_features(self, spot_centers, frame_interval_ms, pixel_size_nm):
     #     """
@@ -4175,32 +4399,11 @@ class KymographNavigator(QMainWindow):
                     pass
             self.permanent_analysis_lines = []
 
-        if hasattr(self.kymoCanvas, 'x_marker') and self.kymoCanvas.x_marker is not None:
-            markers = self.kymoCanvas.x_marker
-            # Normalize to a list
-            if not isinstance(markers, (list, tuple)):
-                markers = [markers]
-            for marker in markers:
-                try:
-                    marker.remove()
-                except Exception:
-                    pass
-            # Reset the attribute
-            self.kymoCanvas.x_marker = None
-
         if hasattr(self, "temp_movie_analysis_line") and self.temp_movie_analysis_line is not None:
             try:
                 self.temp_movie_analysis_line.remove()
             except Exception:
                 pass
-
-        if hasattr(self.movieCanvas, "x_markers") and self.movieCanvas.x_markers is not None:
-            for marker in self.movieCanvas.x_markers:
-                try:
-                    marker.remove()
-                except Exception:
-                    pass
-            self.movieCanvas.x_markers = None
 
         self.movieCanvas.draw_idle()
         self.kymoCanvas.draw_idle()
@@ -4329,7 +4532,6 @@ class KymographNavigator(QMainWindow):
                     self.movieCanvas.clear_temporary_roi_markers()
                     self.movieCanvas.roiPoints = []
                 self.movieCanvas.roiPoints.append((event.xdata, event.ydata))
-                # self.movieCanvas.add_x_marker(event.xdata, event.ydata, size=6, color='#4CAF50')
                 self.movieCanvas.update_roi_drawing(current_pos=(event.xdata, event.ydata))
                 if event.dblclick:
                     # On double-click, now finalize the ROI (after adding the current click)
@@ -4441,8 +4643,8 @@ class KymographNavigator(QMainWindow):
 
             self._last_hover_xy = (event.xdata, event.ydata)
             if not getattr(self, "analysis_points", None):
-                self.movieCanvas._manual_x_marker_active = False
-            self.movieCanvas.clear_manual_x_marker()
+                self.movieCanvas._manual_marker_active = False
+            self.movieCanvas.clear_manual_marker()
         else:
             self.pixelValueLabel.setText("")
 
@@ -4497,11 +4699,11 @@ class KymographNavigator(QMainWindow):
             self.analysis_points = [(frame_idx, x_click, y_click)]
 
         # # deactivate the dotted‐line while we draw our X
-        # self.movieCanvas._manual_x_marker_active = True
-        # self.movieCanvas._manual_x_marker_pos = (x_click, y_click)
+        # self.movieCanvas._manual_marker_active = True
+        # self.movieCanvas._manual_marker_pos = (x_click, y_click)
 
         # # draw the marker once onto the axes
-        # self.movieCanvas.draw_manual_x_marker()
+        # self.movieCanvas.draw_manual_marker()
 
         # now do a full draw & snapshot the clean background for blitting
         canvas = self.movieCanvas.figure.canvas
@@ -4697,7 +4899,7 @@ class KymographNavigator(QMainWindow):
         canvas = self.movieCanvas
 
         # initialize on first WASD press
-        if not getattr(canvas, "_manual_x_marker_active", False):
+        if not getattr(canvas, "_manual_marker_active", False):
             # 1) last analysis point?
             if getattr(self, "analysis_points", None):
                 _, x0, y0 = self.analysis_points[-1]
@@ -4713,21 +4915,21 @@ class KymographNavigator(QMainWindow):
                     x0, y0 = hv
 
                 # 2b) last manual marker?
-                elif getattr(canvas, "_manual_x_marker_pos", None):
-                    x0, y0 = canvas._manual_x_marker_pos
+                elif getattr(canvas, "_manual_marker_pos", None):
+                    x0, y0 = canvas._manual_marker_pos
 
                 # 2c) true center
                 else:
                     x0 = 0.5 * (xmin + xmax)
                     y0 = 0.5 * (ymin + ymax)
 
-            canvas._manual_x_marker_pos    = [x0, y0]
-            canvas._manual_x_marker_active = True
+            canvas._manual_marker_pos    = [x0, y0]
+            canvas._manual_marker_active = True
 
         # then nudge by (dx,dy)
-        canvas._manual_x_marker_pos[0] += dx
-        canvas._manual_x_marker_pos[1] += dy
-        canvas.draw_manual_x_marker()
+        canvas._manual_marker_pos[0] += dx
+        canvas._manual_marker_pos[1] += dy
+        canvas.draw_manual_marker()
         canvas.draw_idle()
 
     def _simulate_left_click(self):
@@ -4738,8 +4940,8 @@ class KymographNavigator(QMainWindow):
 
         self.intensityCanvas.clear_highlight()
 
-        if getattr(canvas, "_manual_x_marker_active", False):
-            x, y = canvas._manual_x_marker_pos
+        if getattr(canvas, "_manual_marker_active", False):
+            x, y = canvas._manual_marker_pos
         else:
             pos = canvas.mapFromGlobal(QtGui.QCursor.pos())
             x, y = canvas.ax.transData.inverted().transform((pos.x(), pos.y()))
@@ -5032,40 +5234,40 @@ class KymographNavigator(QMainWindow):
 
         # self.movieCanvas.draw_idle()
 
-    def overlay_roi_line(self):
-        # Remove any existing ROI overlay line.
-        if hasattr(self.movieCanvas, "roi_line") and self.movieCanvas.roi_line is not None:
-            try:
-                self.movieCanvas.roi_line.remove()
-            except Exception as e:
-                print("Error removing ROI overlay line:", e)
-            self.movieCanvas.roi_line = None
-            self.movieCanvas.draw_idle()
+    # def overlay_roi_line(self):
+    #     # Remove any existing ROI overlay line.
+    #     if hasattr(self.movieCanvas, "roi_line") and self.movieCanvas.roi_line is not None:
+    #         try:
+    #             self.movieCanvas.roi_line.remove()
+    #         except Exception as e:
+    #             print("Error removing ROI overlay line:", e)
+    #         self.movieCanvas.roi_line = None
+    #         self.movieCanvas.draw_idle()
         
-        # If no ROI is available, do nothing.
-        if self.roiCombo.count() == 0:
-            return
-        roi_key = self.roiCombo.currentText()
-        if roi_key not in self.rois:
-            return
-        roi = self.rois[roi_key]
-        if "x" not in roi or "y" not in roi:
-            return
+    #     # If no ROI is available, do nothing.
+    #     if self.roiCombo.count() == 0:
+    #         return
+    #     roi_key = self.roiCombo.currentText()
+    #     if roi_key not in self.rois:
+    #         return
+    #     roi = self.rois[roi_key]
+    #     if "x" not in roi or "y" not in roi:
+    #         return
 
-        # Convert ROI points to numpy arrays.
-        roi_x = np.array(roi["x"], dtype=float)
-        roi_y = np.array(roi["y"], dtype=float)
+    #     # Convert ROI points to numpy arrays.
+    #     roi_x = np.array(roi["x"], dtype=float)
+    #     roi_y = np.array(roi["y"], dtype=float)
 
-        # Draw a line connecting the ROI points on the movie canvas.
-        # Use a thicker line (linewidth=3), semi-transparent (alpha=0.8),
-        # rounded end caps, and a nice yellow color.
-        line, = self.movieCanvas.ax.plot(roi_x, roi_y,
-                                        color="#FFCC00",
-                                        linewidth=3,
-                                        alpha=0.8,
-                                        solid_capstyle="round")
-        self.movieCanvas.roi_line = line
-        self.movieCanvas.draw_idle()
+    #     # Draw a line connecting the ROI points on the movie canvas.
+    #     # Use a thicker line (linewidth=3), semi-transparent (alpha=0.8),
+    #     # rounded end caps, and a nice yellow color.
+    #     line, = self.movieCanvas.ax.plot(roi_x, roi_y,
+    #                                     color="#FFCC00",
+    #                                     linewidth=3,
+    #                                     alpha=0.8,
+    #                                     solid_capstyle="round")
+    #     self.movieCanvas.roi_line = line
+    #     self.movieCanvas.draw_idle()
 
     def overlay_all_rois(self):
         # 1) clear old overlays
@@ -5098,7 +5300,7 @@ class KymographNavigator(QMainWindow):
             # draw the core ROI line
             line, = self.movieCanvas.ax.plot(
                 xs, ys,
-                color="#4CAF50",
+                color="#81C784",
                 linewidth=2.5,
                 solid_capstyle="round",
                 alpha=0.8
@@ -5110,7 +5312,7 @@ class KymographNavigator(QMainWindow):
             self.movieCanvas.roi_lines.append(line)
 
             # material green 500
-            base_green   = "#4CAF50"
+            base_green   = "#81C784"
             # material green 300
             lighter_green = "#81C784"
 
@@ -5171,7 +5373,7 @@ class KymographNavigator(QMainWindow):
     # def update_roi_overlay_button_style(self, checked):
     #     if checked:
     #         # Change to a different color when the button is toggled on
-    #         self.roi_overlay_button.setStyleSheet("background-color: #4CAF50")
+    #         self.roi_overlay_button.setStyleSheet("background-color: #81C784")
     #     else:
     #         # Revert back to default when toggled off
     #         self.roi_overlay_button.setStyleSheet("")
@@ -5321,155 +5523,6 @@ class KymographNavigator(QMainWindow):
                     disp_frame = (self.movie.shape[0] - 1) - frame
                     color = "magenta" if fc is not None else "grey"
                     self.kymoCanvas.overlay_spot_center(xk, disp_frame, size=6, color=color)
-
-
-    def load_reference(self):
-        if self.movie is None:
-            QMessageBox.warning(self, "", 
-                "Please load a movie before loading a reference.")
-            return
-        fname, _ = QFileDialog.getOpenFileName(
-            self, "Open Reference Image", "", "Image Files (*.tif *.tiff *.png *.jpg)"
-        )
-        if not fname:
-            return
-        try:
-            ref_img = tifffile.imread(fname)
-            if ref_img.ndim == 3:
-                # Heuristic to decide if the image is multi‐channel:
-                small_first = ref_img.shape[0] <= 4 and ref_img.shape[0] > 1
-                small_last = ref_img.shape[-1] <= 4 and ref_img.shape[-1] > 1
-
-                if small_first and small_last:
-                    choice, ok = QtWidgets.QInputDialog.getItem(
-                        self, "Channel Axis Ambiguity",
-                        "Is the reference image stored as channels-first (axis 0) or channels-last (last axis)?",
-                        ["Channels-first", "Channels-last"],
-                        0, False
-                    )
-                    if not ok:
-                        return
-                    channel_axis = 0 if choice == "Channels-first" else -1
-                elif small_first:
-                    channel_axis = 0
-                elif small_last:
-                    channel_axis = -1
-                else:
-                    channel_axis = None
-
-                if channel_axis is not None:
-                    if channel_axis == 0:
-                        channels = ref_img.shape[0]
-                        prompt = "Reference image has multiple channels (channels-first). Choose one:"
-                    else:
-                        channels = ref_img.shape[-1]
-                        prompt = "Reference image has multiple channels (channels-last). Choose one:"
-                    if channels > 1:
-                        channel_str, ok = QtWidgets.QInputDialog.getItem(
-                            self, "Select Channel", prompt,
-                            [f"Channel {i+1}" for i in range(channels)], 0, False
-                        )
-                        if not ok:
-                            return
-                        chosen_channel = int(channel_str.split()[-1]) - 1
-                        if channel_axis == 0:
-                            ref_img = ref_img[chosen_channel, :, :]
-                        else:
-                            ref_img = ref_img[:, :, chosen_channel]
-            ref_img = np.squeeze(ref_img)
-
-            # (Optionally, verify that its dimensions match the current movie frame.)
-            if self.movie is not None:
-                movie_frame = self.movieCanvas.image
-                if movie_frame is None:
-                    movie_frame = self.get_movie_frame(0)
-                if movie_frame.shape[0:2] != ref_img.shape[0:2]:
-                    QMessageBox.warning(
-                        self,
-                        "Dimension Mismatch",
-                        "The reference image x/y dimensions do not match the currently displayed movie frame."
-                    )
-                    return
-
-            self.referenceImage = ref_img
-
-            # *** Compute reference contrast settings ***
-            p15, p99 = np.percentile(ref_img, (15, 99))
-            ref_vmin = int(p15)
-            ref_vmax = int(p99 * 1.1)
-            delta = ref_vmax - ref_vmin
-            self.reference_contrast_settings = {
-                'vmin': ref_vmin,
-                'vmax': ref_vmax,
-                'extended_min': ref_vmin - int(0.7 * delta),
-                'extended_max': ref_vmax + int(1.4 * delta)
-            }
-            # Make the Ref. button visible.
-            self.refBtn.setVisible(True)
-        except Exception as e:
-            QMessageBox.critical(self, "Load Error", f"Could not load reference image:\n{str(e)}")
-
-
-    def on_ref_toggled(self, checked):
-        if checked:
-            self.refBtn.setStyleSheet("background-color: #375bb5;")
-            # Turn off sum mode if active.
-            if self.sumBtn.isChecked():
-                self.sumBtn.setChecked(False)
-            # Apply the reference image and its contrast.
-            settings = self.reference_contrast_settings
-            self.movieCanvas.set_display_range(settings['vmin'], settings['vmax'])
-            self.movieCanvas.image = self.referenceImage
-            self.movieCanvas._im.set_data(self.referenceImage)
-            self.movieCanvas.draw_idle()
-        else:
-            self.refBtn.setStyleSheet("")
-            # Only revert if sum mode is off.
-            if not self.sumBtn.isChecked():
-                frame = self.get_movie_frame(self.frameSlider.value())
-                if frame is not None:
-                    # Determine the appropriate contrast settings.
-                    if self.movie.ndim == 4:
-                        try:
-                            current_channel = int(self.movieChannelCombo.currentText())
-                        except Exception:
-                            current_channel = 1
-                        # If the contrast settings haven't been set for the current channel, compute defaults.
-                        if current_channel not in self.channel_contrast_settings:
-                            p15, p99 = np.percentile(frame, (15, 99))
-                            default_vmin = int(p15)
-                            default_vmax = int(p99 * 1.1)
-                            delta = default_vmax - default_vmin
-                            settings = {
-                                'vmin': default_vmin,
-                                'vmax': default_vmax,
-                                'extended_min': default_vmin - int(0.7 * delta),
-                                'extended_max': default_vmax + int(1.4 * delta)
-                            }
-                            self.channel_contrast_settings[current_channel] = settings
-                        else:
-                            settings = self.channel_contrast_settings[current_channel]
-                    else:
-                        # For a single-channel (3D) movie, we always use channel 1.
-                        if 1 not in self.channel_contrast_settings:
-                            p15, p99 = np.percentile(frame, (15, 99))
-                            default_vmin = int(p15)
-                            default_vmax = int(p99 * 1.1)
-                            delta = default_vmax - default_vmin
-                            settings = {
-                                'vmin': default_vmin,
-                                'vmax': default_vmax,
-                                'extended_min': default_vmin - int(0.7 * delta),
-                                'extended_max': default_vmax + int(1.4 * delta)
-                            }
-                            self.channel_contrast_settings[1] = settings
-                        else:
-                            settings = self.channel_contrast_settings[1]
-                    # Now apply the contrast to the movie canvas.
-                    self.movieCanvas.set_display_range(settings['vmin'], settings['vmax'])
-                    self.movieCanvas.image = frame
-                    self.movieCanvas._im.set_data(frame)
-                    self.movieCanvas.draw_idle()
 
     def save_rois(self):
         # Ask user where to save the ZIP file.
@@ -6139,7 +6192,6 @@ class KymographNavigator(QMainWindow):
         """Callback for when the mouse leaves the kymograph axes.
         This removes the blue X marker from the movie canvas."""
         if self.movieCanvas is not None:
-            self.movieCanvas.clear_x_marker()
             self.movieCanvas.draw_idle()
 
     def on_tracking_mode_changed(self, mode):
@@ -6176,23 +6228,6 @@ class KymographNavigator(QMainWindow):
         menu = QMenu(self.kymoCanvas)
         menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint)
         menu.setAttribute(Qt.WA_TranslucentBackground)
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: #FFFFFF;
-                border: 1px solid #CCCCCC;
-                border-radius: 8px;
-                padding: 4px;
-            }
-            QMenu::item {
-                padding: 4px;
-                color: #333333;
-                background: transparent;
-            }
-            QMenu::item:selected {
-                background-color: #E8F0FE;
-                color: #333333;
-            }
-        """)
 
         tbl = self.trajectoryCanvas.table_widget
         for col in unique_cols:
