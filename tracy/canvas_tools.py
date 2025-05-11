@@ -10,10 +10,12 @@ from PyQt5.QtWidgets import (
 from PyQt5 import QtCore, QtWidgets, QtGui
 from PyQt5.QtCore import (
     Qt, QObject, pyqtSignal, QSize, QRectF, pyqtProperty, QPropertyAnimation,
-    QEasingCurve, QObject, QPropertyAnimation, pyqtSlot
+    QEasingCurve, QObject, QPropertyAnimation, pyqtSlot, QEvent, QRect, QPointF,
+    QTimer, QPoint, QElapsedTimer
     )
 from PyQt5.QtGui import (
-    QPainter, QColor, QFont, QDoubleValidator, QPen, QBrush
+    QPainter, QColor, QFont, QDoubleValidator, QPen, QBrush, QFontMetrics, QPainterPath,
+    QCursor, QPolygonF
     )
 
 import numpy as np
@@ -111,7 +113,7 @@ class RangeSlider(QtWidgets.QSlider):
         painter.drawLine(slider_min, line_y, slider_max, line_y)
 
         # 2) Draw the selected range (blue) on top
-        blue_pen = QtGui.QPen(QtGui.QColor("#D3DFFF"), 6, cap=Qt.RoundCap)
+        blue_pen = QtGui.QPen(QtGui.QColor("#97b4ff"), 6, cap=Qt.RoundCap)
         painter.setPen(blue_pen)
         painter.drawLine(int(lower_pos), line_y, int(upper_pos), line_y)
 
@@ -297,7 +299,7 @@ class ToggleSwitch(QAbstractButton):
         switchRect = QRectF(switchX, self._switchMargin, self._switchWidth, self._switchHeight)
         
         # Use green for ROI (checked) and blue for Spot (unchecked)
-        bg_color = QColor("#4CAF50") if self.isChecked() else QColor("#D3DFFF")
+        bg_color = QColor("#4CAF50") if self.isChecked() else QColor("#97b4ff")
         painter.setPen(Qt.NoPen)
         painter.setBrush(bg_color)
         painter.drawRoundedRect(switchRect, switchRect.height() / 2, switchRect.height() / 2)
@@ -331,6 +333,11 @@ class ToggleSwitch(QAbstractButton):
         )
 
         painter.setPen(QColor("black"))
+
+        font = painter.font()
+        font.setBold(True)
+        painter.setFont(font)
+
         painter.drawText(leftTextRect, Qt.AlignRight | Qt.AlignVCenter, "Spot")
         painter.drawText(rightTextRect, Qt.AlignLeft | Qt.AlignVCenter, "Line")
     
@@ -742,6 +749,58 @@ class RecalcWorker(QObject):
             "average_velocity": avg_vpf
         }
 
+        nav = self._navigator
+        n_chan = nav.movie.shape[nav._channel_axis]
+        ref_ch = old["channel"]
+
+        if getattr(nav, "check_colocalization", False):
+            # rehydrate analysis state
+            nav.analysis_frames     = new_traj["frames"]
+            nav.analysis_fit_params = list(zip(
+                new_traj["spot_centers"],
+                new_traj["sigmas"],
+                new_traj["peaks"]
+            ))
+            # overall-any
+            nav.analysis_channel    = ref_ch
+            nav._compute_colocalization(showprogress=False)
+            any_list = list(nav.analysis_colocalized)
+
+            # per‐channel if >2
+            by_ch = {}
+            if n_chan > 2:
+                for tgt in range(1, n_chan+1):
+                    if tgt == ref_ch:
+                        continue
+                    nav.analysis_channel = tgt
+                    nav._compute_colocalization(showprogress=False)
+                    by_ch[tgt] = list(nav.analysis_colocalized)
+        else:
+            any_list = [None]*len(new_traj["frames"])
+            by_ch    = { c: [None]*len(new_traj["frames"])
+                         for c in range(1, n_chan+1) if c!=ref_ch }
+
+        new_traj["colocalization_any"]   = any_list
+        new_traj["colocalization_by_ch"] = by_ch
+
+        # now populate the custom_fields so your table + draw() sees them:
+        cf = new_traj.setdefault("custom_fields", {})
+        if n_chan == 2:
+            valid = [s for s in any_list if s is not None]
+            pct   = f"{100*sum(1 for s in valid if s=='Yes')/len(valid):.1f}" if valid else ""
+            for ch in (1,2):
+                cf[f"Ch. {ch} co. %"] = "" if ch==ref_ch else pct
+        else:
+            for ch in range(1, n_chan+1):
+                name = f"Ch. {ch} co. %"
+                if ch == ref_ch:
+                    cf[name] = ""
+                else:
+                    flags = by_ch.get(ch, [])
+                    valid = [s for s in flags if s is not None]
+                    cf[name] = (f"{100*sum(1 for s in valid if s=='Yes')/len(valid):.1f}"
+                                if valid else "")
+
         return new_traj
     
     def _build_pts_for(self, old):
@@ -765,40 +824,52 @@ class ClickableLabel(QLabel):
     clicked = pyqtSignal()
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # show a hand cursor on hover
-        #self.setCursor(Qt.PointingHandCursor)
+        self.setMouseTracking(True)
+
+    def mousePressEvent(self, ev):
+        self.setProperty("pressed", True)
+        self.style().unpolish(self); self.style().polish(self)
+        super().mousePressEvent(ev)
+
     def mouseReleaseEvent(self, ev):
-        if ev.button() == Qt.LeftButton:
-            self.clicked.emit()
+        self.setProperty("pressed", False)
+        self.style().unpolish(self); self.style().polish(self)
         super().mouseReleaseEvent(ev)
+        self.clicked.emit()
 
 class RadiusDialog(QDialog):
     def __init__(self, current_radius, parent=None):
         # Popup + frameless so it grabs focus but has no titlebar
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
+
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+
         self.setStyleSheet("""
             QDialog {
-                border-radius: 10px;
+                background-color: transparent;
             }
             QLabel {
-                border-radius: 10px;
-                padding: 10px;
+                background-color: white;
+                border-radius: 12px;
+                padding: 8px;
                 font-size: 14px;
+                border: 1px solid #ccc;
             }
             QSpinBox {
-                background-color: #F5F7FF;
+                background-color: white;
                 border: 1px solid #ccc;
-                border-radius: 10px;
-                padding: 4px 8px;
+                border-radius: 12px;
+                padding: 4px 0px 4px 16px;
                 font-size: 14px;
-                min-height: 24px;
+                min-height: 26px;
             }
 
             QSpinBox QLineEdit {
                 background: transparent;
                 border: none;
                 padding: 0;
+                text-align: center;
             }
         """)
 
@@ -806,14 +877,14 @@ class RadiusDialog(QDialog):
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8,4,8,4)
-        radiuslabel = QLabel("Search Radius:")
+        radiuslabel = QLabel("Search Radius")
         # radiuslabel.setStyleSheet("font-weight:bold")
         lay.addWidget(radiuslabel)
         spin = QSpinBox(self)
-        spin.setStyleSheet("background: #F5F7FF")
         spin.setRange(8, 50)
         spin.setValue(current_radius)
         spin.setAlignment(Qt.AlignCenter)
+        spin.lineEdit().setAlignment(Qt.AlignCenter)
         lay.addWidget(spin)
         self._spin = spin
         spin.setFocus()
@@ -832,6 +903,8 @@ class RadiusDialog(QDialog):
         event.accept()
 
     def keyReleaseEvent(self, event):
+        if event.isAutoRepeat():
+            return
         if event.key() == Qt.Key_R:
             # write value back to the main window
             val = self._spin.value()
@@ -857,10 +930,8 @@ class SaveKymographDialog(QDialog):
     def __init__(self, movie_name, kymo_items, parent=None):
         super().__init__(parent)
 
-        self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet("""
             QDialog {
-                background-color: #F1F5FF;
                 border-radius: 10px;
             }
             QLabel, QCheckBox {
@@ -875,14 +946,7 @@ class SaveKymographDialog(QDialog):
                 padding: 4px 6px;
                 background-color: white;
             }
-            QPushButton {
-                background-color: #DCE4FF;
-                border-radius: 6px;
-                padding: 6px 12px;
-            }
-            QPushButton:hover {
-                background-color: #C0D0FF;
-            }
+
             QSpinBox {
                 min-width: 15px;
             }
@@ -893,7 +957,13 @@ class SaveKymographDialog(QDialog):
         self.movie_name = movie_name
         self.kymo_list  = [n for n, _ in kymo_items]
         self.selected   = []
-        self.directory  = os.getcwd()
+
+        if parent and hasattr(parent, "_last_dir"):
+            self.directory = parent._last_dir
+        else:
+            self.directory = os.getcwd()
+        self.dir_le = QLineEdit(self.directory)
+ 
         self._all_formats = ["tif","png","jpg"]
 
         main_v = QVBoxLayout(self)
@@ -1091,7 +1161,11 @@ class SaveKymographDialog(QDialog):
         if d:
             self.directory = d
             self.dir_le.setText(d)
-
+            # write it back to the navigator
+            parent = self.parent()
+            if parent and hasattr(parent, "_last_dir"):
+                parent._last_dir = d
+                
     def _update_preview(self):
         # only update in multi‑select mode
         if self.controls_stack.currentIndex() != 0:
@@ -1127,3 +1201,333 @@ class SaveKymographDialog(QDialog):
 
         self._update_preview()
 
+
+class BubbleTip(QWidget):
+    def __init__(self, text: str, parent=None, placement: str="right"):
+        super().__init__(parent, Qt.ToolTip | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+
+        self.text      = text
+        self.placement = placement  # "right" (bubble to right of widget) or "left"
+        self.padding   = 8
+        self.triangle  = 10
+
+        fm = QFontMetrics(self.font())
+        tw = fm.horizontalAdvance(text)
+        th = fm.height()
+
+        # Compute total size: text + padding on both sides + triangle width
+        body_w = tw + 2*self.padding
+        body_h = th + 2*self.padding
+        total_w = body_w + self.triangle
+        total_h = body_h
+
+        # Body rect sits *after* the triangle if placement=="right",
+        # or at x=0 if placement=="left".
+        if self.placement == "right":
+            self.body = QRectF(self.triangle, 0, body_w, body_h)
+        else:
+            self.body = QRectF(0, 0, body_w, body_h)
+
+        self.resize(int(total_w), int(total_h))
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+
+        # 1) Rounded‐rect for the “body”
+        path = QPainterPath()
+        path.addRoundedRect(self.body, 8, 8)
+
+        # 2) Triangle arrow
+        mid_y = self.body.top() + self.body.height()/2
+        t     = self.triangle
+        pts   = []
+
+        if self.placement == "right":
+            # Bubble is to the right ➔ arrow on left edge of body
+            x0 = self.body.left()
+            pts = [
+                QPointF(x0,       mid_y - t/2),
+                QPointF(0,        mid_y),
+                QPointF(x0,       mid_y + t/2),
+            ]
+        else:
+            # Bubble is to the left ➔ arrow on right edge of body
+            x1 = self.body.right()
+            pts = [
+                QPointF(x1,       mid_y - t/2),
+                QPointF(x1 + t,   mid_y),
+                QPointF(x1,       mid_y + t/2),
+            ]
+
+        tri = QPainterPath()
+        tri.moveTo(pts[0])
+        tri.lineTo(pts[1])
+        tri.lineTo(pts[2])
+        tri.closeSubpath()
+
+        # 3) Merge and draw
+        shape = path.united(tri)
+        p.fillPath(shape, QColor(255, 255, 255, 230))
+        pen = QPen(QColor(200, 200, 200))
+        pen.setWidth(1)
+        p.setPen(pen)
+        p.drawPath(shape)
+
+        # 4) Draw the text inside the body
+        p.setPen(Qt.black)
+        inner = self.body.adjusted(
+            self.padding, self.padding,
+           -self.padding, -self.padding
+        )
+        p.drawText(inner, Qt.AlignCenter, self.text)
+
+class BubbleTipFilter(QObject):
+    def __init__(self, text: str, parent=None, placement: str = "right"):
+        super().__init__(parent)
+        self.text      = text
+        self.placement = placement  # "right" or "left"
+        self.bubble    = None
+        self._wobj     = None
+
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(800)
+        self._timer.timeout.connect(self._showBubble)
+
+        self._force_show = False
+
+        QApplication.instance().installEventFilter(self)
+
+    def _showBubble(self, force: bool = False):
+        if force:
+            self._force_show = True
+        if not self._wobj:
+            return
+        gp = QCursor.pos()
+        btn_tl   = self._wobj.mapToGlobal(QPoint(0,0))
+        btn_rect = QRect(btn_tl, self._wobj.size())
+        if not force and not btn_rect.contains(gp):
+            return
+
+        # create & position bubble
+        b = BubbleTip(self.text, parent=self._wobj.window(),
+                      placement=self.placement)
+        b.installEventFilter(self)
+        self.bubble = b
+
+        # compute x based on placement
+        if self.placement == "right":
+            btn_edge = self._wobj.mapToGlobal(self._wobj.rect().topRight())
+            x = btn_edge.x()
+        else:
+            x = btn_tl.x() - b.width()
+
+        y = btn_tl.y() + (self._wobj.height() - b.height())//2
+        b.move(x, y)
+        b.show()
+
+        QTimer.singleShot(3000, self._hideBubble)
+
+    def eventFilter(self, obj, ev):
+        # — Global mouse‐move: maybe hide
+        if ev.type() == QEvent.MouseMove and self.bubble and not self._force_show:
+            self._checkHide()
+
+        # — Enter on *our* button?
+        if ev.type() == QEvent.Enter and getattr(obj, "_bubble_filter", None) is self:
+            self._wobj = obj
+            self._timer.start()
+
+        # — Leave or click on *our* button?
+        elif ev.type() in (QEvent.Leave, QEvent.MouseButtonPress) \
+             and getattr(obj, "_bubble_filter", None) is self:
+            self._timer.stop()
+            self._hideBubble()
+
+        return False  # Always let events continue
+
+    def _checkHide(self):
+        gp = QCursor.pos()
+        # button rect
+        btn_tl = self._wobj.mapToGlobal(QPoint(0,0))
+        btn_rect = QRect(btn_tl, self._wobj.size())
+        # bubble rect
+        bub_tl = self.bubble.mapToGlobal(QPoint(0,0))
+        bub_rect = QRect(bub_tl, self.bubble.size())
+        if not (btn_rect.contains(gp) or bub_rect.contains(gp)):
+            self._hideBubble()
+
+    def _hideBubble(self):
+        self._force_show = False
+        if self.bubble:
+            self.bubble.hide()
+            self.bubble.deleteLater()
+            self.bubble = None
+
+class CenteredBubble(QWidget):
+    def __init__(self, text: str, parent=None, pen_width=1):
+        super().__init__(parent)
+        self.text      = text
+        self.padding   = 8
+        self.pen_width = pen_width
+
+        fm = QFontMetrics(self.font())
+        tw = fm.horizontalAdvance(text)
+        th = fm.height()
+        body_w = tw + 2*self.padding
+        body_h = th + 2*self.padding
+
+        half = self.pen_width/2
+        self.rect_body = QRectF(half, half, body_w, body_h)
+
+        total_w = int(body_w + self.pen_width)
+        total_h = int(body_h + self.pen_width)
+        self.resize(total_w, total_h)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+
+        path = QPainterPath()
+        path.addRoundedRect(self.rect_body, 8, 8)
+        p.fillPath(path, QColor(255,255,255,230))
+
+        pen = QPen(QColor(200,200,200))
+        pen.setWidth(self.pen_width)
+        p.setPen(pen)
+        p.drawPath(path)
+
+        p.setPen(Qt.black)
+        inner = self.rect_body.adjusted(
+            self.padding, self.padding,
+            -self.padding, -self.padding
+        )
+        p.drawText(inner, Qt.AlignCenter, self.text)
+
+class CenteredBubbleFilter(QObject):
+    def __init__(self, text: str,
+                 delay_ms: int = 1000,
+                 visible_ms: int = 3000,
+                 poll_interval: int = 50,
+                 parent=None):
+        super().__init__(parent)
+        self.text        = text
+        self.delay_ms    = delay_ms
+        self.visible_ms  = visible_ms
+        self.target      = None
+        self.bubble      = None
+
+        # Poll timer: checks every poll_interval ms
+        self._pollTimer = QTimer(self)
+        self._pollTimer.setInterval(poll_interval)
+        self._pollTimer.timeout.connect(self._checkIdle)
+
+        # High‐resolution timer to measure idle time
+        self._idleTimer = QElapsedTimer()
+        self._lastPos   = None
+
+        # Auto‐hide timer
+        self._hideTimer = QTimer(self)
+        self._hideTimer.setSingleShot(True)
+        self._hideTimer.setInterval(self.visible_ms)
+        self._hideTimer.timeout.connect(self._hide)
+
+    def attachTo(self, widget: QWidget):
+        """Start polling; widget is the canvas to watch."""
+        self.target = widget
+        self._idleTimer.invalidate()
+        self._lastPos = None
+        self._pollTimer.start()
+        return self
+
+    def _checkIdle(self):
+        if not self.target:
+            return
+
+        # Get canvas rect in global coords
+        rect = QRect(
+            self.target.mapToGlobal(QPoint(0, 0)),
+            self.target.size()
+        )
+        pos = QCursor.pos()
+
+        # If mouse left the canvas: reset everything & hide
+        if not rect.contains(pos):
+            self._lastPos = None
+            self._idleTimer.invalidate()
+            self._hide()
+            return
+
+        # If it moved: restart the idle clock
+        if self._lastPos is None or pos != self._lastPos:
+            self._lastPos = pos
+            self._idleTimer.restart()
+            # If a bubble was showing, hide it immediately
+            self._hide()
+            return
+
+        # Still inside and still at same point: check if we've sat still long enough
+        if self._idleTimer.hasExpired(self.delay_ms) and self.bubble is None:
+            self._show()
+
+    def _show(self):
+        # Double‐check we're still inside
+        rect = QRect(
+            self.target.mapToGlobal(QPoint(0, 0)),
+            self.target.size()
+        )
+        if not rect.contains(QCursor.pos()):
+            return
+
+        # Create & center the bubble
+        self.bubble = CenteredBubble(self.text, parent=self.target)
+        bw, bh = self.bubble.width(), self.bubble.height()
+        tw, th = self.target.width(), self.target.height()
+        self.bubble.move((tw - bw)//2, (th - bh)//90)
+        self.bubble.show()
+
+        # Schedule auto‐hide
+        self._hideTimer.start()
+
+    def _hide(self):
+        if self.bubble:
+            self.bubble.hide()
+            self.bubble.deleteLater()
+            self.bubble = None
+
+class AnimatedIconButton(QPushButton):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # set up the animation on the built-in iconSize property
+        self._anim = QPropertyAnimation(self, b"iconSize", self)
+        self._anim.setDuration(100)
+        self._anim.setEasingCurve(QEasingCurve.InOutQuad)
+
+        # we'll capture whatever size you set, then grow by 20%
+        self._base_size  = self.iconSize()
+        self._hover_size = QSize(
+            int(self._base_size.width()  * 1.1),
+            int(self._base_size.height() * 1.1)
+        )
+
+        self.setFixedSize(self.sizeHint())
+
+    def enterEvent(self, event):
+        # animate up to hover size
+        self._anim.stop()
+        self._anim.setStartValue(self.iconSize())
+        self._anim.setEndValue(self._hover_size)
+        self._anim.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        # animate back down
+        self._anim.stop()
+        self._anim.setStartValue(self.iconSize())
+        self._anim.setEndValue(self._base_size)
+        self._anim.start()
+        super().leaveEvent(event)

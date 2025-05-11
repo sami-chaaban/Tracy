@@ -12,7 +12,7 @@ from PyQt5.QtCore import Qt, QTimer, QThread, QEvent
 from PyQt5.QtWidgets import (QVBoxLayout, QApplication, QDialog,
                              QWidget, QFileDialog, QMessageBox, QTableWidget,
                              QTableWidgetItem, QMessageBox, QProgressDialog,
-                             QHeaderView, QMenu, QInputDialog)
+                             QHeaderView, QMenu, QInputDialog, QLineEdit, QLabel)
 from PyQt5.QtGui import QPainter,QMouseEvent
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -112,11 +112,11 @@ class KymoCanvas(ImageCanvas):
         self._orig_xlim = None
         self._orig_ylim = None
         self.scale = 1.0  # Data units per pixel (uniform in x and y)
+        self.padding = 1.25
         self.zoom_center = None  # in data coordinates
         self.manual_zoom = False
         self._update_pending = False
         self.manual_zoom = False
-        self.color_by_column = None
 
         self._kymo_label_bboxes: dict[Text, Bbox] = {}
 
@@ -134,12 +134,6 @@ class KymoCanvas(ImageCanvas):
         self.mpl_connect("button_release_event", self.on_mouse_release)
 
         self._ctrl_panning = False
-
-    def set_color_by(self, column_name):
-        for act in self.navigator._colorByActions:
-            act.setChecked(act.text() == f"Color by {column_name}")
-        self.color_by_column = column_name
-        self.draw_trajectories_on_kymo()
 
     def mousePressEvent(self, event):
         # ⇨ Ctrl+Left should act like Middle
@@ -204,26 +198,49 @@ class KymoCanvas(ImageCanvas):
         self.scale = 1.0
 
     def display_image(self, image):
+        """Show kymo image but preserve zoom if user has panned or scrolled."""
+        if image is None:
+            return
+
+        # If we’re already in a manual zoom state, just update the data
+        if self._im is not None and self.manual_zoom:
+            self._im.set_data(image)
+            self.draw()
+            return
+
+        # Otherwise do the initial full reset + fit
         self.reset_canvas()
         p15, p99 = np.percentile(image, (15, 99))
-        image = np.clip((image - p15) / (p99 - p15), 0, 1)
-        image = (image * 255).astype(np.uint8)
-        h, w = image.shape
+        img8     = np.clip((image - p15)/(p99-p15), 0, 1)*255
+        img8     = img8.astype(np.uint8)
+        h, w     = img8.shape
+
         self.ax.set_xlim(0, w)
         self.ax.set_ylim(0, h)
         self.ax.set_aspect('auto')
-        cmap = "gray_r" if getattr(self.navigator, "inverted_cmap", False) else "gray"
-        self._im = self.ax.imshow(image, cmap=cmap)
-        self.ax.axis('off')
+        cmap      = "gray_r" if self.navigator.inverted_cmap else "gray"
+        self._im  = self.ax.imshow(img8, cmap=cmap)
+        self.ax.axis("off")
         self.draw()
-        self.image = image
+        self.image = img8
 
-        self.zoom_center = (w / 2.0, h / 2.0)
-        widget_w = self.size().width() if self.size().width() > 0 else w
-        widget_h = self.size().height() if self.size().height() > 0 else h
-        self.scale = max(w / widget_w, h / widget_h)
-        self.max_scale = self.scale
+        # initial zoom parameters only once
+        self.zoom_center = (w/2, h/2)
+        widget_w = max(self.width(), 1)
+        widget_h = max(self.height(),1)
+        self.scale     = max(w/widget_w, h/widget_h)
+        self.max_scale = self.scale * self.padding
         self.update_view()
+    #     QTimer.singleShot(0, self._init_scale_and_view)
+
+    # def _init_scale_and_view(self):
+    #     # now the widget has its proper size
+    #     widget_w = self.width()
+    #     widget_h = self.height()
+    #     w, h = self.image.shape[1], self.image.shape[0]
+    #     self.scale = max(w / widget_w, h / widget_h)
+    #     self.max_scale = self.scale * self.padding
+    #     self.update_view()
 
     def update_view(self):
         if self.image is None or self.zoom_center is None:
@@ -344,68 +361,47 @@ class KymoCanvas(ImageCanvas):
             h, w = self.image.shape[:2]
             widget_w = self.width() if self.width() > 0 else w
             widget_h = self.height() if self.height() > 0 else h
-            self.max_scale = max(w / widget_w, h / widget_h)
+            base = max(w / widget_w, h / widget_h)
+            self.max_scale = base * self.padding
         # When resizing, update the view so that the zoom_center and scale are maintained.
         self.update_view()
 
-    def overlay_spot_center(self, x, y, size=12, color='red'):
+    def add_gaussian_circle(self, x, y, size=14, color='grey'):
         """
-        Draw a semi‑transparent circle marker at (x, y) using blitting for performance.
+        Draw a hollow circle marker at (x, y) using blitting for performance.
         """
-        # Ensure any previous marker is removed
+        # Remove previous marker
         if getattr(self, "_marker", None) is not None:
             try:
                 self._marker.remove()
             except Exception:
                 pass
 
-        # If we have a cached background, use blitting
-        if hasattr(self, "_bg") and self._bg is not None:
-            # Restore the background (clears old marker)
-            self.fig.canvas.restore_region(self._bg)
-            self.fig.canvas.blit(self.ax.bbox)
+        # Prepare blitting background
+        if not hasattr(self, "_bg") or self._bg is None:
+            # first time: full draw and cache
+            self.draw()
+            self._bg = self.copy_from_bbox(self.ax.bbox)
 
-            # Create and draw the new marker
-            radius = size / 2.0
-            circ = Circle((x, y),
-                          radius=radius,
-                          edgecolor=color,
-                          facecolor=color,
-                          alpha=0.6,
-                          linewidth=2,
-                          zorder=6)
-            self.ax.add_patch(circ)
-            self._marker = circ
+        # Restore background to clear old marker
+        self.fig.canvas.restore_region(self._bg)
 
-            # Draw only the new marker artist and blit it
-            self.ax.draw_artist(circ)
-            self.fig.canvas.blit(self.ax.bbox)
-        else:
-            # Fallback: clear any old marker visually, then blit new one
-            if hasattr(self, "_bg") and self._bg is not None:
-                # Restore the clean background (with static overlays but no marker)
-                self.fig.canvas.restore_region(self._bg)
-            else:
-                # No background snapshot yet: do a full redraw to clear marker
-                self.draw()
-                # Capture a fresh background for future blits
-                self._bg = self.copy_from_bbox(self.ax.bbox)
+        # Create a hollow circle via a Line2D
+        marker, = self.ax.plot(
+            [x], [y],
+            linestyle='none',
+            marker='o',
+            markersize=size,
+            markeredgecolor=color,
+            markerfacecolor='none',
+            markeredgewidth=2,
+            zorder=6
+        )
+        self._marker = marker
 
-            # Create and add the new marker patch
-            radius = size / 2.0
-            circ = Circle((x, y),
-                          radius=radius,
-                          edgecolor=color,
-                          facecolor=color,
-                          alpha=0.6,
-                          linewidth=2,
-                          zorder=6)
-            self.ax.add_patch(circ)
-            self._marker = circ
-
-            # Draw only the new marker artist and blit it
-            self.ax.draw_artist(circ)
-            self.fig.canvas.blit(self.ax.bbox)
+        # Draw just the marker and blit
+        self.ax.draw_artist(marker)
+        self.fig.canvas.blit(self.ax.bbox)
 
     def temporary_circle(self, x, y, size=12, color='red'):
         """
@@ -429,7 +425,9 @@ class KymoCanvas(ImageCanvas):
         self.draw()
         return [circ]
 
-    def draw_trajectories_on_kymo(self):
+    def draw_trajectories_on_kymo(self, showsearchline=True):
+
+        ax = self.ax
 
         kymo_name = self.navigator.kymoCombo.currentText()
         info = self.navigator.kymo_roi_map.get(kymo_name, {})
@@ -487,33 +485,32 @@ class KymoCanvas(ImageCanvas):
             is_hl = (idx == selected_idx)
             halo_lw = 10 if is_hl else 0
             traj_label = traj.get("file_index", str(traj["trajectory_number"]))
-            face = "#7da1ff" if is_hl else "black"
+            face = "#7da1ff" if is_hl else "#cbd9ff"
+            textcolor = "white" if is_hl else "black"
             alpha_lbl = 0.8 if is_hl else 0.6
 
-            main_color = "magenta"
-            if self.color_by_column is not None:
-                val = traj["custom_fields"].get(self.color_by_column, "")
-                main_color = "orange" if val else "magenta"
 
             # build display points
             frames = traj["frames"]
             orig = traj["original_coords"]
-            disp = [
-                (compute_x_roi(roi, x, y, kymo_w), num_frames_m1 - f)
-                for f, (x, y) in zip(frames, orig)
-            ]
-            xs_disp, ys_disp = zip(*disp)
 
-            # 5a) dotted start/end connector
-            dotted, = ax.plot(
-                xs_disp, ys_disp,
-                color="#7da1ff", linestyle="--", linewidth=2,
-                alpha=0.8, zorder=2,
-                solid_capstyle='round', dash_capstyle='round'
-            )
-            markers.append(dotted)
+            if showsearchline:
+                disp = [
+                    (compute_x_roi(roi, x, y, kymo_w), num_frames_m1 - f)
+                    for f, (x, y) in zip(frames, orig)
+                ]
+                xs_disp, ys_disp = zip(*disp)
 
-            # 5b) magenta line through spot centers (with NaN breaks)
+                # 5a) dotted start/end connector
+                dotted, = ax.plot(
+                    xs_disp, ys_disp,
+                    color="#7da1ff", linestyle="--", linewidth=2,
+                    alpha=0.8, zorder=2,
+                    solid_capstyle='round', dash_capstyle='round'
+                )
+                markers.append(dotted)
+
+            # 5b) magenta line through spot centers
             spots = traj.get("spot_centers", [None]*len(frames))
             pts = []
             for (x_o, y_o), f, spot in zip(orig, frames, spots):
@@ -526,19 +523,36 @@ class KymoCanvas(ImageCanvas):
                     pts.append((np.nan, np.nan))
             xs_pts, ys_pts = map(np.array, zip(*pts))
 
-            line, = ax.plot(
-                xs_pts, ys_pts,
-                linestyle='-', color=main_color,
-                linewidth=1.1, alpha=0.8, zorder=3
-            )
+            scatter_kwargs, line_color = self.navigator._get_traj_colors(traj)
+
+            line, = ax.plot(xs_pts, ys_pts, linestyle='-', color=line_color,
+                            linewidth=1.1, alpha=0.8, zorder=3)
+
             markers.append(line)
 
-            scatter = ax.scatter(
-                xs_pts, ys_pts,
-                s=1, marker='o',
-                color=main_color, alpha=0.8,
-                linewidth=1.1, zorder=4
-            )
+            sx0, sy0 = x0, y0
+            sx1, sy1 = x1, y1
+
+            # 5b.5) optionally connect non‐adjacent valid spots with a dimmer line
+            if getattr(self.navigator, "connect_all_spots", False):
+                # find the indices of all actually‐fitted spots
+                valid_idxs = [i for i,(x,y) in enumerate(pts) if not np.isnan(x)]
+                for a, b in zip(valid_idxs, valid_idxs[1:]):
+                    # whenever they’re not immediate neighbors…
+                    if b != a + 1:
+                        gx0, gy0 = pts[a]
+                        gx1, gy1 = pts[b]
+                        # draw a fainter connector
+                        gap_line, = ax.plot(
+                            [gx0, gx1], [gy0, gy1],
+                            linestyle='-', color=line_color,
+                            linewidth=1.1, alpha=0.4, zorder=2
+                        )
+                        markers.append(gap_line)
+
+            # per-point coloring
+            scatter = ax.scatter(xs_pts, ys_pts, s=11, **scatter_kwargs)
+                
             markers.append(scatter)
 
             # 5c) optional halo behind
@@ -546,18 +560,18 @@ class KymoCanvas(ImageCanvas):
                 halo, = ax.plot(
                     xs_pts, ys_pts,
                     linestyle='-', color="#7da1ff",
-                    linewidth=halo_lw, alpha=0.2, zorder=1
+                    linewidth=halo_lw, alpha=0.3, zorder=1
                 )
                 markers.append(halo)
 
             # 5d) annotate A/B
             # compute pixel‐space offsets once
-            dispA = ax.transData.transform((x0, y0))
-            dispB = ax.transData.transform((x1, y1))
+            dispA = ax.transData.transform((sx0, sy0))
+            dispB = ax.transData.transform((sx1, sy1))
             v = dispB - dispA
             norm = np.hypot(*v)
             u = v / norm if norm else np.array([1.0, 0.0])
-            offset = 10
+            offset = 20
             for (cx, cy, suf), sign in [((x0, y0, 'A'), -1), ((x1, y1, 'B'), +1)]:
                 dx, dy = u * (offset * sign)
                 lbl = ax.annotate(
@@ -566,7 +580,7 @@ class KymoCanvas(ImageCanvas):
                     xytext=(dx, dy),
                     textcoords='offset pixels',
                     ha='center', va='center',
-                    color='white', fontsize=8,
+                    color=textcolor, fontsize=8, fontweight='bold',
                     bbox=dict(
                         boxstyle='circle,pad=0.3',
                         facecolor=face,
@@ -606,6 +620,14 @@ class KymoCanvas(ImageCanvas):
                     pass
             self.kymo_trajectory_markers = []
 
+    def remove_gaussian_circle(self):
+        if hasattr(self, "_marker"):
+            try:
+                self._marker.remove()
+            except Exception as e:
+                pass
+            self._marker = None
+
 # -----------------------------
 # MovieCanvas
 # -----------------------------
@@ -636,6 +658,7 @@ class MovieCanvas(ImageCanvas):
 
         # New attributes for zooming:
         self.scale = 1.0  # Data units per pixel (uniform in x and y)
+        self.padding = 1.25
         self.zoom_center = None  # in data (image) coordinates
 
         # Connect mouse events.
@@ -649,7 +672,7 @@ class MovieCanvas(ImageCanvas):
         self._manual_marker_artist = None   # store the drawn marker
 
         self.sum_mode = False
-        self.sum_frame_cache = None
+        self.sum_frame_cache = {}
 
         self._norm_slider_settings = None  # to store normal mode slider settings
         self._sum_slider_settings = None 
@@ -753,8 +776,9 @@ class MovieCanvas(ImageCanvas):
         widget_w = self.width() if self.width() > 0 else w
         widget_h = self.height() if self.height() > 0 else h
         # To show the entire image without zooming, choose the maximum scale needed to cover both dimensions.
-        self.scale = max(w / widget_w, h / widget_h)
-        self.max_scale = self.scale
+        base = max(w / widget_w, h / widget_h)
+        self.max_scale = base * self.padding
+        self.scale = base
         
         # Draw or update the image.
         if self._im is None:
@@ -824,7 +848,7 @@ class MovieCanvas(ImageCanvas):
             return
 
         # 2) compute new scale
-        base = 1.15
+        base = 1.2
         if event.button == 'up':
             new_scale = old_scale / base
         else:
@@ -846,7 +870,7 @@ class MovieCanvas(ImageCanvas):
         # schedule a single zoom/pan update per event loop
         if not self._update_pending:
             self._update_pending = True
-            QTimer.singleShot(0, self._perform_throttled_update)
+            QTimer.singleShot(1, self._perform_throttled_update)
 
     def _perform_throttled_update(self):
         """
@@ -926,7 +950,8 @@ class MovieCanvas(ImageCanvas):
             h, w = self.image.shape[:2]
             widget_w = self.width() if self.width() > 0 else w
             widget_h = self.height() if self.height() > 0 else h
-            self.max_scale = max(w / widget_w, h / widget_h)
+            base = max(w / widget_w, h / widget_h)
+            self.max_scale = base * self.padding
 
         # 3) redraw using the existing scale & center
         self.update_view()
@@ -1063,7 +1088,7 @@ class MovieCanvas(ImageCanvas):
             #                         shade=False, rstride=2, cstride=2, linewidth=0)
             # surf.set_sort_zpos(float(G.max()))
             wf = ax3d.plot_wireframe(X, Y, G, color='magenta', alpha=0.3,
-                                    rstride=2, cstride=2, linewidth=1.2)
+                                    rstride=2, cstride=2, linewidth=1.3)
             wf.set_zorder(10)
             z_top = G.max()
         else:
@@ -1188,7 +1213,7 @@ class MovieCanvas(ImageCanvas):
             # Optionally, draw magenta circles if fit parameters are provided.
             if fitted_center is not None and fitted_sigma is not None and intensity_value is not None:
                 self.inset_circle = Circle(fitted_center, radius=fitted_sigma * 2, 
-                                edgecolor='magenta', facecolor='none', linewidth=1.5, alpha=1)
+                                edgecolor='magenta', facecolor='none', linewidth=2, alpha=1)
                 inset_ax.add_patch(self.inset_circle)
 
             if fitted_center is not None and intensity_value is not None:
@@ -1379,7 +1404,7 @@ class MovieCanvas(ImageCanvas):
 
         for ch in range(n_chan):
             kymo = self.generate_kymograph(roi, channel_override=ch)
-            kymo_name = f"C{ch+1}-{name}"
+            kymo_name = f"ch{ch+1}-{name}"
             self.navigator.kymographs[kymo_name] = kymo
             self.navigator.kymo_roi_map[kymo_name] = {
                 "roi":      name,
@@ -1403,7 +1428,8 @@ class MovieCanvas(ImageCanvas):
             self.tempRoiLine = None
 
         self.navigator.update_kymo_visibility()
-        self.navigator.kymoCanvas.draw_trajectories_on_kymo()
+        self.navigator.update_kymo_list_for_channel()
+
         self.draw()
 
     def clear_temporary_roi_markers(self):
@@ -1421,41 +1447,43 @@ class MovieCanvas(ImageCanvas):
         if self.navigator is None or self.navigator.movie is None:
             return
 
-        # If a sum frame is already cached, use it.
-        if self.sum_frame_cache is not None:
-            sum_frame = self.sum_frame_cache
-        else:
-            movie = self.navigator.movie
+        movie = self.navigator.movie
 
-            # For multi-channel movies.
+        # figure out which channel key to use
+        if movie.ndim == 4:
+            try:
+                ch = int(self.navigator.movieChannelCombo.currentText()) - 1
+            except Exception:
+                ch = 0
+        else:
+            # we’ll just key everything as channel 0 in the single-channel case
+            ch = 0
+
+        # reuse if we’ve already done this channel
+        if ch in self.sum_frame_cache:
+            sum_frame = self.sum_frame_cache[ch]
+        else:
+            # compute the max-proj exactly as you did before
             if movie.ndim == 4:
                 channel_axis = self.navigator._channel_axis
-                try:
-                    current_channel = int(self.navigator.movieChannelCombo.currentText()) - 1
-                except Exception:
-                    current_channel = 0  # default to channel 0 if something goes wrong
-                # Build an index for the selected channel.
-                idx = [0] * movie.ndim
-                idx[0] = slice(None)  # all frames
-                for ax in range(1, movie.ndim):
-                    idx[ax] = current_channel if ax == channel_axis else slice(None)
+                idx = [slice(None)] * movie.ndim
+                idx[channel_axis] = ch
                 channel_movie = movie[tuple(idx)]
                 sum_frame = np.max(channel_movie, axis=0)
-            
-            # For single-channel (3D) movies.
+
             elif movie.ndim == 3:
-                # Determine if the first axis is channel or time.
-                # If the size along axis 0 is small (<=4), then assume channels.
+                # if first axis is “small,” treat as channel
                 if movie.shape[0] <= 4:
-                    idx = [0]  # select the first (or only) channel
-                    sum_frame = movie[tuple(idx)]
+                    sum_frame = movie[0]
                 else:
                     sum_frame = np.max(movie, axis=0)
             else:
                 sum_frame = movie
 
-            self.sum_frame_cache = sum_frame
+            # stash it
+            self.sum_frame_cache[ch] = sum_frame
 
+        # now render exactly like you did
         self.image = sum_frame
         if self._im is None:
             self.ax.clear()
@@ -1466,9 +1494,15 @@ class MovieCanvas(ImageCanvas):
             self._im.set_data(sum_frame)
             self.draw()
 
-    def clear_sum_cache(self):
-        # Call this when a new movie is loaded.
-        self.sum_frame_cache = None
+    def clear_sum_cache(self, channel=None):
+        """
+        If channel is None, flush everything (e.g. on new movie).
+        Otherwise just remove that one channel’s cache.
+        """
+        if channel is None:
+            self.sum_frame_cache.clear()
+        else:
+            self.sum_frame_cache.pop(channel, None)
 
     def set_display_range(self, vmin, vmax):
         """
@@ -1488,19 +1522,29 @@ class MovieCanvas(ImageCanvas):
             self._im.set_clim(self._vmin, self._vmax)
             self.draw_idle()
 
-    def overlay_rectangle(self, center_x, center_y, size, frame_number=None, color='#7da1ff'):
-        # Remove any existing rectangle
-        if hasattr(self, "rect_overlay") and self.rect_overlay is not None:
+    def overlay_rectangle(self, cx, cy, size, color='#7da1ff'):
+        # remove old
+        if getattr(self, "rect_overlay", None) is not None:
             try:    self.rect_overlay.remove()
             except: pass
-            self.rect_overlay = None
 
-        # Draw the rectangle
-        lower_left = (center_x - size/2, center_y - size/2)
-        rect = Rectangle(lower_left, size, size,
-                        edgecolor=color, facecolor='none', linewidth=1.5)
-        self.ax.add_patch(rect)
-        self.rect_overlay = rect
+        half = size / 2.0
+        x0, x1 = cx - half, cx + half
+        y0, y1 = cy - half, cy + half
+
+        # a closed polyline (4 corners + back to first)
+        verts_x = [x0, x1, x1, x0, x0]
+        verts_y = [y0, y0, y1, y1, y0]
+
+        line, = self.ax.plot(
+            verts_x,
+            verts_y,
+            color=color,
+            linewidth=2,
+            zorder=6,
+            linestyle='-'
+        )
+        self.rect_overlay = line
 
     def is_zoomed_in(self):
         if self.image is None or not hasattr(self, "full_extent"):
@@ -1568,7 +1612,7 @@ class MovieCanvas(ImageCanvas):
                 radius=2 * fitted_sigma,
                 edgecolor='magenta',
                 facecolor='none',
-                linewidth=1.5
+                linewidth=2
             )
         self.ax.add_patch(self.gaussian_circle)
 
@@ -1586,7 +1630,7 @@ class MovieCanvas(ImageCanvas):
     def draw_trajectories_on_movie(self):
         # Clear any existing movie canvas trajectory markers.
         self.clear_movie_trajectory_markers()
-        
+
         idx = self.navigator.trajectoryCanvas.table_widget.currentRow()
 
         if idx < 0:
@@ -1630,6 +1674,7 @@ class MovieCanvas(ImageCanvas):
                 textcoords="offset points",
                 color='white',
                 fontsize=10,
+                fontweight='bold',
                 ha="center",
                 va="center",
                 bbox=dict(boxstyle='circle,pad=0.3', facecolor='#7da1ff', alpha=0.7, linewidth=1.5),
@@ -1642,6 +1687,7 @@ class MovieCanvas(ImageCanvas):
                 textcoords="offset points",
                 color='white',
                 fontsize=10,
+                fontweight='bold',
                 ha="center",
                 va="center",
                 bbox=dict(boxstyle='circle,pad=0.3', facecolor='#7da1ff', alpha=0.7, linewidth=1.5),
@@ -1652,33 +1698,29 @@ class MovieCanvas(ImageCanvas):
         # extract your x/y lists, turning None → np.nan
         xs = [pt[0] if pt is not None else np.nan for pt in traj['spot_centers']]
         ys = [pt[1] if pt is not None else np.nan for pt in traj['spot_centers']]
+        frames = traj["frames"]
 
-        # 2) overlay a  circle at eac
-        scatter = self.ax.scatter(
-            xs, ys,
-            s=1,
-            color='magenta',
-            alpha=0.8,
-            lw=1.5,
-            zorder=5)
-        
+        scatter_kwargs, line_color = self.navigator._get_traj_colors(traj)
+            
+        scatter = self.ax.scatter(xs, ys, s=11, **scatter_kwargs)
+
         self.movie_trajectory_markers.append(scatter)
 
+        # 2) overlay a  circle at eac
+        # scatter = self.ax.scatter(
+        #     xs, ys,
+        #     s=1,
+        #     color='magenta',
+        #     alpha=0.8,
+        #     lw=1.5,
+        #     zorder=5)
+        
+        # self.movie_trajectory_markers.append(scatter)
+
         # draws lines
-        line, = self.ax.plot(
-            xs, ys,
-            linestyle='-',
-            color='magenta',
-            linewidth=1.5,    # same stroke for line
-            markersize=4,     # tweak diameter until it feels right
-            markeredgewidth=1.5,
-            markeredgecolor='magenta',
-            markerfacecolor='magenta',
-            zorder=4
-        )
+        line, = self.ax.plot(xs, ys, linestyle='-', color=line_color, linewidth=1.5, zorder=3)
 
         self.movie_trajectory_markers.append(line)
-
 
     def clear_movie_trajectory_markers(self):
         if hasattr(self, "movie_trajectory_markers"):
@@ -1819,7 +1861,7 @@ class IntensityCanvas(FigureCanvas):
 
         self.ax_top.xaxis.set_major_locator(MaxNLocator(integer=True))
         
-        bar_height = 0.2
+        bar_height = 0.3
         y0 = 0.5 - bar_height/2
         radius = bar_height / 2.0
 
@@ -1827,9 +1869,22 @@ class IntensityCanvas(FigureCanvas):
         if n == 0:
             return
 
+        # --- Build a canonical colors list of exactly length n ---
+        if colors and "c" in colors:
+            raw = list(colors["c"])
+            # truncate or pad with magenta so it's exactly n long
+            if len(raw) < n:
+                colors_list = raw + ["magenta"] * (n - len(raw))
+            else:
+                colors_list = raw[:n]
+        elif colors and "color" in colors:
+            colors_list = [colors["color"]] * n
+        else:
+            colors_list = ["magenta"] * n
+
         for i, frame in enumerate(frames_display):
             # pick colour
-            col = colors[i] if colors and i < len(colors) else "magenta"
+            col = colors_list[i]
 
             # compute segment width
             if i < n - 1:
@@ -1837,73 +1892,45 @@ class IntensityCanvas(FigureCanvas):
             else:
                 width = 1
 
-            if i == 0:
-                # Leftmost: round only the left edge
-                # 1) draw a half-circle at the left
-                circ = Circle(
-                    (frame + radius, y0 + radius),
-                    radius,
-                    facecolor=col,
-                    edgecolor="none"
-                )
-                # 2) draw the rest as a rectangle
-                rect = Rectangle(
-                    (frame + radius, y0),
-                    width - radius,
-                    bar_height,
-                    facecolor=col,
-                    edgecolor="none"
-                )
-                self.ax_top.add_patch(circ)
-                self.ax_top.add_patch(rect)
-
-            elif i == n - 1:
-                # Rightmost: round only the right edge
-                # 1) draw the main rectangle
-                rect = Rectangle(
-                    (frame, y0),
-                    width - radius,
-                    bar_height,
-                    facecolor=col,
-                    edgecolor="none"
-                )
-                # 2) draw a half-circle at the right
-                circ = Circle(
-                    (frame + width - radius, y0 + radius),
-                    radius,
-                    facecolor=col,
-                    edgecolor="none"
-                )
-                self.ax_top.add_patch(rect)
-                self.ax_top.add_patch(circ)
-
-            else:
-                # Middle segments: plain rectangles
-                rect = Rectangle(
-                    (frame, y0),
-                    width,
-                    bar_height,
-                    facecolor=col,
-                    edgecolor="none"
-                )
-                self.ax_top.add_patch(rect)
+            # draw a plain rectangle with square corners
+            rect = Rectangle(
+                (frame, y0),
+                width,
+                bar_height,
+                facecolor=col,
+                edgecolor="none"
+            )
+            self.ax_top.add_patch(rect)
 
         self.ax_bottom.set_ylabel("Intensity (AU)", fontsize=12)
         self.ax_bottom.set_xlabel("Frame", fontsize=12)
         self.ax_bottom.tick_params(axis='both', which='major', labelsize=12)
-        if colors is not None:
-            self.scatter_obj_bottom = self.ax_bottom.scatter(frames_display, intensities,s=20, c=colors, picker=True)
+        self.ax_bottom.tick_params(axis='x', which='major', labelsize=10)
+
+        # === build scatter_args correctly ===
+        if isinstance(colors, dict):
+            # you were handed a full kwargs dict from _get_traj_colors
+            scatter_args = dict(colors)              # clone it
+            scatter_args.update(picker=True, s=20)   # add these defaults
         else:
-            self.scatter_obj_bottom = self.ax_bottom.scatter(frames_display, intensities,s=20, c='magenta', picker=True)
+            # colors should be a list of hex strings (or None)
+            scatter_args = {
+                "c": colors if colors else "magenta",
+                "picker": True,
+                "s": 20
+            }
+
+        self.scatter_obj_bottom = self.ax_bottom.scatter(frames_display, intensities, **scatter_args)
+
         try:
-            self.ax_bottom.axhline(avg_intensity, color='grey', linestyle='--', linewidth=1.5,
-                solid_capstyle='round',
-                dash_capstyle='round',
-                label=f"Avg: {avg_intensity:.2f}")
             self.ax_bottom.axhline(median_intensity, color='magenta', linestyle='--', linewidth=1.5,
                 solid_capstyle='round',
                 dash_capstyle='round',
                 label=f"Med: {median_intensity:.2f}")
+            self.ax_bottom.axhline(avg_intensity, color='grey', linestyle='--', linewidth=1.5,
+                solid_capstyle='round',
+                dash_capstyle='round',
+                label=f"Avg: {avg_intensity:.2f}")
         except np.linalg.LinAlgError as e: 
             pass
             #print("Warning: could not plot horizontal line due to singular transform matrix:", e)
@@ -1924,14 +1951,19 @@ class IntensityCanvas(FigureCanvas):
         frame.set_edgecolor("none")
         frame.set_boxstyle("round,pad=0.2")
 
-        if colors is not None:
-            valid_intensities = [val for val, col in zip(intensities, colors) if col != 'grey']
-            if valid_intensities:
-                ymin = min(valid_intensities)
-                ymax = max(valid_intensities)
-                margin = 0.1 * (ymax - ymin) if ymax > ymin else 1
-                self.ax_bottom.set_ylim(ymin - margin, ymax + margin)
-                self.highlight_current_point()
+        valid_vals = [
+            val for val, col in zip(intensities, colors_list)
+            if col != "grey" and val is not None
+        ]
+
+        if valid_vals:
+            ymin, ymax = min(valid_vals), max(valid_vals)
+            # if there’s any real spread, pad by 10%; otherwise default to ±1
+            margin = 0.1 * (ymax - ymin) if ymax > ymin else 1
+            self.ax_bottom.set_ylim(ymin - margin, ymax + margin)
+
+        # and still highlight whichever point is current
+        self.highlight_current_point()
         
         try:
             self.fig.tight_layout(
@@ -2077,8 +2109,7 @@ class TrajectoryCanvas(QWidget):
             "Start X,Y", "End X,Y",
             "Distance μm", "Time s", "Net Speed μm/s",
             "Total", "Valid %",
-            "Med. Intensity", "Avg. Intensity",
-            "Avg. Speed μm/s"
+            "Med. Intensity",
         ]
         self.table_widget.setColumnCount(len(self._headers))
         self.table_widget.setHorizontalHeaderLabels(self._headers)
@@ -2100,8 +2131,6 @@ class TrajectoryCanvas(QWidget):
             "total":        "Total",
             "valid":        "Valid %",
             "medintensity":"Med. Intensity",
-            "avgintensity":"Avg. Intensity",
-            "avgspeed":     "Avg. Speed μm/s",
         }
         self.table_widget.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
         self.table_widget.verticalHeader().setDefaultAlignment(Qt.AlignCenter)
@@ -2117,7 +2146,7 @@ class TrajectoryCanvas(QWidget):
             if i in [1,2,3,7,9,10]:
                 self.table_widget.horizontalHeader().setSectionResizeMode(i, QHeaderView.Interactive)
                 self.table_widget.setColumnWidth(i, 70)
-            elif i in [4,5,6,12]:
+            elif i in [4,5,6]:
                 self.table_widget.horizontalHeader().setSectionResizeMode(i, QHeaderView.Interactive)
                 self.table_widget.setColumnWidth(i, 100)              
             elif i in [8,11]:
@@ -2370,8 +2399,16 @@ class TrajectoryCanvas(QWidget):
 
                 for col in self.custom_columns:
                     col_type = self._column_types.get(col, "binary")
-                    suffixed = f"{col} [{col_type}]"
-                    summary_rows[-1][suffixed] = traj.get("custom_fields", {}).get(col, "")
+
+                    print(col, col_type)
+
+                    # >>> special‐case coloc columns so they get no “[value]” suffix:
+                    if col.startswith("Ch.") and col.endswith("co. %"):
+                        header = col
+                    else:
+                        header = f"{col} [{col_type}]"
+
+                    summary_rows[-1][header] = traj.get("custom_fields", {}).get(col, "")
 
                 traj_name = str(traj.get("trajectory_number", "?"))
                 coords_list = traj.get("original_coords", [])
@@ -2427,7 +2464,7 @@ class TrajectoryCanvas(QWidget):
                     if fixed_background is not None:
                         fixedstr = "Yes"
 
-                    data_rows.append({
+                    base = {
                         "Trajectory": traj_name,
                         "Channel": channel,
                         "Frame": frames_list[i] + 1,
@@ -2445,7 +2482,23 @@ class TrajectoryCanvas(QWidget):
                         "Speed (px/frame)": velocity,
                         "Speed (μm/s)": vel_nm_per_ms,
                         "Speed (μm/min)": vel_um_min
-                    })
+                    }
+
+                    if self.navigator.movie.ndim == 4 and self.navigator._channel_axis is not None:
+                        n_chan = self.navigator.movie.shape[self.navigator._channel_axis]
+
+                        # build the coloc dict with *all* channel columns
+                        coloc = {"coloc_any": traj["colocalization_any"][i] or ""}
+
+                        for ch in range(1, n_chan+1):
+                            key = f"coloc_ch{ch}"
+                            # for the reference channel this will just be blank
+                            flags = traj["colocalization_by_ch"].get(ch, [None]*num_points)
+                            coloc[key] = flags[i] or ""
+
+                        data_rows.append({**base, **coloc})
+                    else:
+                        data_rows.append(base)
 
             df_summary = pd.DataFrame(summary_rows)
             df_data = pd.DataFrame(data_rows)
@@ -2505,15 +2558,14 @@ class TrajectoryCanvas(QWidget):
             "End X,Y",
             "Total",
             "Valid %",
-            "Med. Intensity",
-            "Avg. Intensity"
+            "Med. Intensity"
         }
 
         for col in range(self.table_widget.columnCount()):
             hdr = self._headers[col]
 
-            # always keep ID, custom columns, and any in always_visible
-            if col == 0 or hdr in self.custom_columns or hdr in always_visible:
+            # always keep ID and any in always_visible
+            if col == 0 or hdr in always_visible:
                 self.table_widget.setColumnHidden(col, False)
                 continue
 
@@ -2533,7 +2585,7 @@ class TrajectoryCanvas(QWidget):
         index = selected_rows[0].row()
         self.on_trajectory_selected_by_index(index)
 
-    def on_trajectory_selected_by_index(self, index):
+    def on_trajectory_selected_by_index(self, index, zoom=False):
         if index < 0 or index >= len(self.trajectories):
             return
 
@@ -2577,7 +2629,7 @@ class TrajectoryCanvas(QWidget):
                             traj["intensities"],
                             avg_intensity=traj["average"],
                             median_intensity=traj["median"],
-                            colors=traj.get("colors"))
+                            colors=nav._get_traj_colors(traj)[0])
             vc.plot_velocity_histogram(traj["velocities"])
 
             # ——— 3) reset looping & zoom state ———
@@ -2585,7 +2637,7 @@ class TrajectoryCanvas(QWidget):
                 self.navigator.stoploop()
             mc.manual_zoom   = False
             nav.loop_index   = 0
-            nav.jump_to_analysis_point(0, animate="ramp")
+            nav.jump_to_analysis_point(0, animate="ramp", zoom=zoom)
 
             ic.current_index = 0
             ic.highlight_current_point()
@@ -2657,6 +2709,7 @@ class TrajectoryCanvas(QWidget):
 
         if trajid is None:
             trajid = self._trajectory_counter
+            
 
         traj_data = {
             "trajectory_number": trajid,
@@ -2681,7 +2734,21 @@ class TrajectoryCanvas(QWidget):
             "average_velocity": average_velocity
         } 
 
+        traj_data["colocalization_any"]    = list(self.navigator.analysis_colocalized)
+        traj_data["colocalization_by_ch"]  = {
+            ch: list(flags)
+            for ch, flags in self.navigator.analysis_colocalized_by_ch.items()
+        }
+
         traj_data["custom_fields"] = {}
+    
+        new = [
+            (f, cx, cy)
+            for f, c in zip(frames, spot_centers)
+            if isinstance(c, (tuple,list)) and c[0] is not None and c[1] is not None
+            for cx, cy in [c]
+        ]
+        self.navigator.past_centers.extend(new)
 
         if len(frames) == 0 or len(intensities) == 0:
             print("Error: no frames or intensities to add!")
@@ -2735,10 +2802,44 @@ class TrajectoryCanvas(QWidget):
         median_text = "" if median_intensity is None else f"{median_intensity:.2f}"
         avg_text = "" if avg_intensity is None else f"{avg_intensity:.2f}"
         self.writeToTable(row, "medintensity", median_text)
-        self.writeToTable(row, "avgintensity", avg_text)
-        self.writeToTable(row, "avgspeed", avg_vel_um_s)
-        self._trajectory_counter += 1
 
+        # 3) Fill in the Channel X co. % custom columns
+        # Compute your one-per-trajectory % from self.analysis_colocalized:
+
+        if self.navigator.movie.ndim == 4 and self.navigator._channel_axis is not None:
+            n_chan = self.navigator.movie.shape[self.navigator._channel_axis]
+            r = self.table_widget.rowCount() - 1
+            ch_ref = channel
+            # 1) overall percent (two-channel case)
+            valid_any = [s for s in traj_data['colocalization_any'] if s is not None]
+            if valid_any:
+                pct_any = f"{100 * sum(1 for s in valid_any if s == 'Yes') / len(valid_any):.1f}"
+            else:
+                pct_any = ""
+
+            # 2) per-channel percents (multi-channel case)
+            pct_by_ch = {}
+            for tgt_ch, flags in traj_data['colocalization_by_ch'].items():
+                valid = [s for s in flags if s is not None]
+                if valid:
+                    pct_by_ch[tgt_ch] = (
+                        f"{100 * sum(1 for s in valid if s == 'Yes') / len(valid):.1f}"
+                    )
+                else:
+                    pct_by_ch[tgt_ch] = ""
+            # 3) now populate
+            for ch in range(1, n_chan+1):
+                col_name = f"Ch. {ch} co. %"
+                if ch == ch_ref:
+                    val = ""
+                elif n_chan == 2:
+                    val = pct_any
+                else:
+                    val = pct_by_ch.get(ch, "")
+                self._mark_custom(r, col_name, val)
+
+
+        self._trajectory_counter += 1
         self.navigator.update_table_visibility()
 
         # Set the table's selection to the newly added trajectory.
@@ -2749,9 +2850,7 @@ class TrajectoryCanvas(QWidget):
 
         # Also update the current index in the plot canvas and trigger a selection update.
         self.intensity_canvas.current_index = new_row
-        self.on_trajectory_selected_by_index(new_row)
-
-        self.navigator.update_table_visibility()
+        self.on_trajectory_selected_by_index(new_row, zoom=True)
         
     def update_trajectory(self, idx, fitted_center, sigma, peak, intensity):
         # 1) Figure out which trajectory row is active
@@ -2760,18 +2859,22 @@ class TrajectoryCanvas(QWidget):
             return
         row = selected[0].row()
 
-        # 2) Toggle: if intensity was None we’re re-validating, else we’re invalidating
-        if self.navigator.analysis_intensities[idx] is None:
-            # re-analysis: store new fit
+        # 2) Toggle: are we invalidating or re‐validating?
+        revalidating = (self.navigator.analysis_intensities[idx] is None)
+        if revalidating:
+            # re‐analysis: write the new fit back into the navigator
             if fitted_center is not None:
                 self.navigator.analysis_fit_params[idx] = (fitted_center, sigma, peak)
                 self.navigator.analysis_intensities[idx] = intensity
                 self.navigator.analysis_colors[idx] = "magenta"
         else:
-            # invalidation: clear this point
+            # invalidation: clear that intensity+fit
             self.navigator.analysis_fit_params[idx] = (None, None, None)
             self.navigator.analysis_intensities[idx] = None
             self.navigator.analysis_colors[idx] = "grey"
+
+        traj = self.trajectories[row]
+        N    = len(self.navigator.analysis_frames)
 
         # 3) Unpack all fit params and rebuild velocity list
         centers, sigmas, peaks = zip(*self.navigator.analysis_fit_params)
@@ -2817,8 +2920,57 @@ class TrajectoryCanvas(QWidget):
         # 8) Update the table
         self.writeToTable(row, "valid",        str(pct_valid))
         self.writeToTable(row, "medintensity", "" if new_median is None else f"{new_median:.2f}")
-        self.writeToTable(row, "avgintensity", "" if new_avg    is None else f"{new_avg:.2f}")
-        self.writeToTable(row, "avgspeed",     avg_um_s_txt)
+
+
+        if getattr(self, 'check_colocalization', False) and self.movie.ndim == 4:
+            if self.navigator.movie is not None and self.navigator._channel_axis is not None:
+                n_chan = self.navigator.movie.shape[self.navigator._channel_axis]
+            else:
+                n_chan = 1
+            # make sure every non-ref channel has a list in the *traj* dict
+            col_any = traj.setdefault("colocalization_any", [None]*N)
+            col_by  = traj.setdefault("colocalization_by_ch", {})
+
+            # ensure the per-channel lists exist
+            for ch in range(1, n_chan+1):
+                if ch == traj["channel"]:
+                    continue
+                col_by.setdefault(ch, [None]*N)
+
+            if revalidating:
+                # recompute only that frame
+                self.navigator._compute_colocalization_single_frame(idx)
+                col_any[idx] = self.navigator.analysis_colocalized[idx]
+                for ch, lst in col_by.items():
+                    # use the navigator’s freshly computed flag
+                    lst[idx] = (
+                        "Yes" if self.navigator.analysis_colocalized_by_ch[ch][idx]
+                            else "No"
+                    )
+            else:
+                # invalidation → clear only that frame
+                col_any[idx] = None
+                for lst in col_by.values():
+                    lst[idx] = None
+
+            # now write the *percent* columns back into the UI
+            valid_any = [s for s in col_any if s is not None]
+            pct_any   = f"{100*sum(1 for s in valid_any if s=='Yes')/len(valid_any):.1f}" if valid_any else ""
+
+            pct_by_ch = {}
+            for ch, lst in col_by.items():
+                vals = [s for s in lst if s is not None]
+                pct_by_ch[ch] = f"{100*sum(1 for s in vals if s=='Yes')/len(vals):.1f}" if vals else ""
+
+            for ch in range(1, n_chan+1):
+                hdr = f"Ch. {ch} co. %"
+                if ch == traj["channel"]:
+                    val = ""
+                elif n_chan == 2:
+                    val = pct_any
+                else:
+                    val = pct_by_ch.get(ch, "")
+                self._mark_custom(row, hdr, val)
 
     def load_trajectories(self):
         if self.navigator.movie is None:
@@ -2842,181 +2994,247 @@ class TrajectoryCanvas(QWidget):
         if not filename:
             return
         
-        try:
-            ext = os.path.splitext(filename)[1].lower()
+        # try:
+        ext = os.path.splitext(filename)[1].lower()
 
-            anchors_map = {}
-            roi_map     = {}
+        anchors_map = {}
+        roi_map     = {}
 
-            # ----- Excel branch -----
-            if ext == ".xlsx":
-                xls = pd.ExcelFile(filename)
-                if "Data Points" not in xls.sheet_names:
-                    QMessageBox.critical(self, "Error", "Sheet 'Data Points' not found.")
-                    return
+        # ----- Excel branch -----
+        if ext == ".xlsx":
+            xls = pd.ExcelFile(filename)
+            if "Data Points" not in xls.sheet_names:
+                QMessageBox.critical(self, "Error", "Sheet 'Data Points' not found.")
+                return
 
-                if "Per-trajectory" in xls.sheet_names:
-                    summary_df = pd.read_excel(xls, sheet_name="Per-trajectory")
-                    for _, row in summary_df.iterrows():
-                        traj_id = int(row["Trajectory"])
-
-                        # parse anchors
-                        a = row.get("Anchors", "")
-                        if isinstance(a, str) and a.strip():
-                            try:
-                                anchors_py = json.loads(a)
-                            except json.JSONDecodeError:
-                                anchors_py = []
-                        else:
-                            anchors_py = []
-                        anchors_map[traj_id] = anchors_py
-
-                        # parse ROI
-                        r = row.get("ROI", "")
-                        if isinstance(r, str) and r.strip():
-                            try:
-                                roi_clean = json.loads(r)
-                                # make sure points are tuples
-                                roi_clean["points"] = [
-                                    tuple(pt) for pt in roi_clean.get("points", [])
-                                ]
-                            except json.JSONDecodeError:
-                                roi_clean = None
-                        else:
-                            roi_clean = None
-                        roi_map[traj_id] = roi_clean
-
-                # — detect any extra columns —
-                known = {"Movie","Trajectory","Channel","Start_Frame","End_Frame",
-                        "Anchors","ROI","Num_Points","Valid_Points","Percent Valid",
-                        "Search Center X Start","Search Center Y Start",
-                        "Search Center X End","Search Center Y End",
-                        "Distance (μm)","Time (s)","Background",
-                        "Average Intensity","Median Intensity",
-                        "Net Speed (px/frame)","Net Speed (μm/s)","Net Speed (μm/min)",
-                        "Avg. Speed (px/frame)","Avg. Speed (μm/s)","Avg. Speed (μm/min)"}
-                # full headers as they appear in the sheet, e.g. "Foo [value]"
-                full_extra = [c for c in summary_df.columns if c not in known]
-
-                # build the load-map using the full names
-                custom_map = {}
+            if "Per-trajectory" in xls.sheet_names:
+                summary_df = pd.read_excel(xls, sheet_name="Per-trajectory")
                 for _, row in summary_df.iterrows():
-                    tid = int(row["Trajectory"])
-                    d = {}
-                    for full in full_extra:
-                        # strip off the suffix so our key is the plain name
-                        m = re.match(r"(.+)\s\[(?:binary|value)\]$", full)
-                        name = m.group(1) if m else full
+                    traj_id = int(row["Trajectory"])
 
-                        val = row[full]
-                        if pd.isna(val):
-                            d[name] = ""
-                        elif isinstance(val, float):
-                            # turn 2.0 → "2", but leave 2.5 as "2.5"
-                            if val.is_integer():
-                                d[name] = str(int(val))
-                            else:
-                                d[name] = str(val)
-                        else:
-                            # covers ints, strings, etc.
-                            d[name] = str(val)
-
-                    custom_map[tid] = d
-
-                self._custom_load_map = custom_map
-
-                # parse off “[binary]” or “[value]”
-                parsed = []
-                self._column_types.clear()
-                for full in full_extra:
-                    m = re.match(r"(.+)\s\[(binary|value)\]$", full)
-                    if m:
-                        name, typ = m.group(1), m.group(2)
+                    # parse anchors
+                    a = row.get("Anchors", "")
+                    if isinstance(a, str) and a.strip():
+                        try:
+                            anchors_py = json.loads(a)
+                        except json.JSONDecodeError:
+                            anchors_py = []
                     else:
-                        # no suffix → assume binary
-                        name, typ = full, "binary"
-                    parsed.append(name)
-                    self._column_types[name] = typ
+                        anchors_py = []
+                    anchors_map[traj_id] = anchors_py
 
-                self.custom_columns = []
-                for name in parsed:
-                    if name not in self._col_index:
-                        self._add_custom_column(name, col_type=self._column_types[name])
-                # at this point, _add_custom_column has built self.custom_columns correctly
-                self.navigator._rebuild_color_by_actions()
+                    # parse ROI
+                    r = row.get("ROI", "")
+                    if isinstance(r, str) and r.strip():
+                        try:
+                            roi_clean = json.loads(r)
+                            # make sure points are tuples
+                            roi_clean["points"] = [
+                                tuple(pt) for pt in roi_clean.get("points", [])
+                            ]
+                        except json.JSONDecodeError:
+                            roi_clean = None
+                    else:
+                        roi_clean = None
+                    roi_map[traj_id] = roi_clean
 
-                # finally read the Data Points sheet
-                df = pd.read_excel(xls, sheet_name="Data Points")
-            
-            # ----- CSV branch -----
-            elif ext == ".csv":
-                # Read CSV assuming first row is the header.
-                df_temp = pd.read_csv(filename, header=0, engine="python")
+            # — detect any extra columns —
+            known = {"Movie","Trajectory","Channel","Start_Frame","End_Frame",
+                    "Anchors","ROI","Num_Points","Valid_Points","Percent Valid",
+                    "Search Center X Start","Search Center Y Start",
+                    "Search Center X End","Search Center Y End",
+                    "Distance (μm)","Time (s)","Background",
+                    "Average Intensity","Median Intensity",
+                    "Net Speed (px/frame)","Net Speed (μm/s)","Net Speed (μm/min)",
+                    "Avg. Speed (px/frame)","Avg. Speed (μm/s)","Avg. Speed (μm/min)"}
+            # full headers as they appear in the sheet, e.g. "Foo [value]"
+            full_extra = [c for c in summary_df.columns if c not in known]
 
-                # Helper: check if value is numeric.
-                def is_numeric(x):
-                    try:
-                        float(x)
-                        return True
-                    except (ValueError, TypeError):
-                        return False
 
-                # Find first row index where the FRAME column is numeric.
-                data_start = None
-                for idx, val in df_temp["FRAME"].items():
-                    if is_numeric(val):
-                        data_start = idx
-                        break
-                if data_start is None:
-                    QMessageBox.critical(self, "Error", "No numeric data found in the 'FRAME' column.")
-                    return
-                # Keep only the rows from that index onward.
-                df_temp = df_temp.loc[data_start:].reset_index(drop=True)
+            coloc_rx = re.compile(r"^(?:coloc_any|Ch\.\s*\d+\s*co\.\s*%)$")
+            full_extra = [
+                c for c in summary_df.columns
+                if c not in known and not coloc_rx.match(c)
+            ]
 
-                # Verify expected columns.
-                required_csv_cols = {"TRACK_ID", "FRAME", "POSITION_X", "POSITION_Y"}
-                if not required_csv_cols.issubset(set(df_temp.columns)):
-                    QMessageBox.critical(
-                        self, "Error",
-                        "CSV is missing one or more required columns: TRACK_ID, FRAME, POSITION_X, POSITION_Y"
-                    )
-                    return
+            # build the load-map using the full names
+            custom_map = {}
+            for _, row in summary_df.iterrows():
+                tid = int(row["Trajectory"])
+                d = {}
+                for full in full_extra:
+                    # strip off the suffix so our key is the plain name
+                    m = re.match(r"(.+)\s\[(?:binary|value)\]$", full)
+                    name = m.group(1) if m else full
 
-                # Check if the pixel size hasn't been set yet.
-                if self.navigator.pixel_size is None:
-                    self.set_scale()  # This will open the Set Scale dialog
-                    # If pixel_size is still not set, bail out.
-                    if self.navigator.pixel_size is None:
-                        return
+                    val = row[full]
+                    if pd.isna(val):
+                        d[name] = ""
+                    elif isinstance(val, float):
+                        # turn 2.0 → "2", but leave 2.5 as "2.5"
+                        if val.is_integer():
+                            d[name] = str(int(val))
+                        else:
+                            d[name] = str(val)
+                    else:
+                        # covers ints, strings, etc.
+                        d[name] = str(val)
 
-                # By here, you should have a pixel size already.
-                pixelsize = self.navigator.pixel_size
-                conversion_factor = float(pixelsize) / 1000.0
+                custom_map[tid] = d
 
-                # Convert POSITION columns to numeric.
-                df_temp["POSITION_X"] = pd.to_numeric(df_temp["POSITION_X"], errors="coerce")
-                df_temp["POSITION_Y"] = pd.to_numeric(df_temp["POSITION_Y"], errors="coerce")
-                # (If necessary, drop an extra row of NaNs)
-                df_temp = df_temp.iloc[1:].reset_index(drop=True)
-
-                # Build new DataFrame with expected column names.
-                new_data = {
-                    "Trajectory": df_temp["TRACK_ID"],
-                    "Frame": pd.to_numeric(df_temp["FRAME"], errors="coerce").astype(int),
-                    "Original Coordinate X": df_temp["POSITION_X"] / conversion_factor,
-                    "Original Coordinate Y": df_temp["POSITION_Y"] / conversion_factor,
-                }
-                df = pd.DataFrame(new_data)
-                df["Trajectory"] = pd.to_numeric(df["Trajectory"], errors="coerce")
-                df["Frame"] = pd.to_numeric(df["Frame"], errors="coerce")
-                df = df.sort_values(by=["Trajectory", "Frame"]).reset_index(drop=True)
+            # 1) figure out how many channels this movie really has:
+            if self.navigator.movie is not None and self.navigator._channel_axis is not None:
+                n_chan = self.navigator.movie.shape[self.navigator._channel_axis]
             else:
-                raise Exception("Unsupported file type.")
+                n_chan = 1
 
-            self.load_trajectories_from_df(df, anchors_map=anchors_map, roi_map=roi_map)
+            # 2) now prune out any stray colocalization columns that don't apply
+            for traj_id, fields in custom_map.items():
+                # overall‐coloc only makes sense if exactly 2 channels
+                if "colocalization" in fields and n_chan != 2:
+                    del fields["colocalization"]
+                # per‐channel coloc columns have names "Ch. {ch} co. %"
+                for name in list(fields):
+                    m = re.match(r"Ch\.\s*(\d+)\s*co\.\s*%", name)
+                    if m:
+                        ch = int(m.group(1))
+                        # drop if it refers to a channel outside 1..n_chan
+                        if ch < 1 or ch > n_chan:
+                            del fields[name]
 
-        except Exception as e:
-            QMessageBox.critical(self, "Load Error", f"Failed to load trajectories: {str(e)}")
+            # 3) store the pruned map for later
+            self._custom_load_map = custom_map
+
+            base = [
+                "", "Channel", "Frame A", "Frame B",
+                "Start X,Y", "End X,Y",
+                "Distance μm", "Time s", "Net Speed μm/s",
+                "Total", "Valid %",
+                "Med. Intensity",
+            ]
+
+            # 1) reset your in‐memory header list & index map
+            self._headers    = base.copy()
+            self._col_index  = {hdr: i for i, hdr in enumerate(self._headers)}
+            self.custom_columns = []
+            self._column_types.clear()
+
+            # 2) tell Qt about it
+            self.table_widget.setColumnCount(len(self._headers))
+            self.table_widget.setHorizontalHeaderLabels(self._headers)
+
+            # parse off “[binary]” or “[value]”
+            parsed = []
+            for full in full_extra:
+                m = re.match(r"(.+)\s\[(binary|value)\]$", full)
+                if m:
+                    name, typ = m.group(1), m.group(2)
+                else:
+                    # no suffix → assume binary
+                    name, typ = full, "binary"
+                parsed.append(name)
+                self._column_types[name] = typ
+
+            # # keep any existing coloc columns
+            # old_colocs = [
+            #     c for c in self.custom_columns
+            #     if self._column_types.get(c) == "coloc"
+            # ]
+
+            # first, clear out and re-add all user-saved fields
+            self.custom_columns = []
+            # (we keep _column_types around so we know each field's type)
+            for name in parsed:
+                self._add_custom_column(name, col_type=self._column_types[name])
+
+            print("load_trajectories", "custom_columns after adding parsed", self.custom_columns)
+
+            # now make sure every “Ch. N co. %” column is registered
+            if self.navigator.movie is not None and self.navigator._channel_axis is not None:
+                n_chan = self.navigator.movie.shape[self.navigator._channel_axis]
+                for ch in range(1, n_chan+1):
+                    col_name = f"Ch. {ch} co. %"
+                    if col_name not in self.custom_columns: 
+                        self._add_custom_column(col_name, col_type="coloc")
+            else:
+                n_chan = 1
+
+            print("load_trajectories", "custom_columns after adding coloc", self.custom_columns)
+
+            self.navigator._rebuild_color_by_actions()
+
+            # finally read the Data Points sheet
+            df = pd.read_excel(xls, sheet_name="Data Points")
+        
+        # ----- CSV branch -----
+        elif ext == ".csv":
+            # Read CSV assuming first row is the header.
+            df_temp = pd.read_csv(filename, header=0, engine="python")
+
+            # Helper: check if value is numeric.
+            def is_numeric(x):
+                try:
+                    float(x)
+                    return True
+                except (ValueError, TypeError):
+                    return False
+
+            # Find first row index where the FRAME column is numeric.
+            data_start = None
+            for idx, val in df_temp["FRAME"].items():
+                if is_numeric(val):
+                    data_start = idx
+                    break
+            if data_start is None:
+                QMessageBox.critical(self, "Error", "No numeric data found in the 'FRAME' column.")
+                return
+            # Keep only the rows from that index onward.
+            df_temp = df_temp.loc[data_start:].reset_index(drop=True)
+
+            # Verify expected columns.
+            required_csv_cols = {"TRACK_ID", "FRAME", "POSITION_X", "POSITION_Y"}
+            if not required_csv_cols.issubset(set(df_temp.columns)):
+                QMessageBox.critical(
+                    self, "Error",
+                    "CSV is missing one or more required columns: TRACK_ID, FRAME, POSITION_X, POSITION_Y"
+                )
+                return
+
+            # Check if the pixel size hasn't been set yet.
+            if self.navigator.pixel_size is None:
+                self.set_scale()  # This will open the Set Scale dialog
+                # If pixel_size is still not set, bail out.
+                if self.navigator.pixel_size is None:
+                    return
+
+            # By here, you should have a pixel size already.
+            pixelsize = self.navigator.pixel_size
+            conversion_factor = float(pixelsize) / 1000.0
+
+            # Convert POSITION columns to numeric.
+            df_temp["POSITION_X"] = pd.to_numeric(df_temp["POSITION_X"], errors="coerce")
+            df_temp["POSITION_Y"] = pd.to_numeric(df_temp["POSITION_Y"], errors="coerce")
+            # (If necessary, drop an extra row of NaNs)
+            df_temp = df_temp.iloc[1:].reset_index(drop=True)
+
+            # Build new DataFrame with expected column names.
+            new_data = {
+                "Trajectory": df_temp["TRACK_ID"],
+                "Frame": pd.to_numeric(df_temp["FRAME"], errors="coerce").astype(int),
+                "Original Coordinate X": df_temp["POSITION_X"] / conversion_factor,
+                "Original Coordinate Y": df_temp["POSITION_Y"] / conversion_factor,
+            }
+            df = pd.DataFrame(new_data)
+            df["Trajectory"] = pd.to_numeric(df["Trajectory"], errors="coerce")
+            df["Frame"] = pd.to_numeric(df["Frame"], errors="coerce")
+            df = df.sort_values(by=["Trajectory", "Frame"]).reset_index(drop=True)
+        else:
+            raise Exception("Unsupported file type.")
+
+        self.load_trajectories_from_df(df, anchors_map=anchors_map, roi_map=roi_map)
+
+        # except Exception as e:
+        #     QMessageBox.critical(self, "Load Error", f"Failed to load trajectories: {str(e)}")
 
         self.navigator.update_table_visibility()
 
@@ -3046,6 +3264,26 @@ class TrajectoryCanvas(QWidget):
         elif have_centers and not have_coords:
             df["Original Coordinate X"] = df["Search Center X"]
             df["Original Coordinate Y"]  = df["Search Center Y"]
+
+        # --- handle legacy per-point coloc columns ---
+        # determine current channel count
+        if self.navigator.movie is not None and self.navigator._channel_axis is not None:
+            n_chan = self.navigator.movie.shape[self.navigator._channel_axis]
+        else:
+            n_chan = 1
+
+        expected_any = {"coloc_any"}
+        expected_by_ch = {f"coloc_ch{ch}" for ch in range(1, n_chan+1)}
+        expected_cols = expected_any | expected_by_ch
+        present = set(df.columns) & expected_cols
+        if present and present != expected_cols:
+            missing = expected_cols - present
+            QMessageBox.warning(
+                self, "Colocalization columns",
+                "Trajectory file has a partial set of colocalization columns;\n"
+                f"missing {missing}. They will be dropped."
+            )
+            df = df.drop(columns=list(present), errors='ignore')
 
         # Determine whether intensity, sigma, and peak columns exist.
         intensity_exists = "Intensity" in df.columns
@@ -3103,6 +3341,7 @@ class TrajectoryCanvas(QWidget):
         progress.show()
 
         loaded = []
+        self.navigator.past_centers = []
 
         for t, (traj_num, group) in enumerate(groups):
 
@@ -3123,6 +3362,27 @@ class TrajectoryCanvas(QWidget):
                     return
             else:
                 channel = None
+
+            # build the names we expect
+            expected_any   = {"coloc_any"}
+            expected_by_ch = {f"coloc_ch{ch}" for ch in range(1, n_chan+1)}
+            # (we'll ignore the one for the reference‐channel itself later)
+            expected_cols = expected_any | expected_by_ch
+
+            # find which of these actually live in df
+            present = set(df.columns) & expected_cols
+
+            if present:
+                # if *any* coloc columns are present, require *all* of them
+                missing = expected_cols - present
+                if missing:
+                    QMessageBox.warning(
+                        self, "Colocalization columns",
+                        "Trajectory file has some colocalization columns but not the full set\n"
+                        f"({missing}). They will be dropped."
+                    )
+                    # drop any partials
+                    df = df.drop(columns=list(present), errors='ignore')
 
             group = group.sort_values("Frame")
             anchors = anchors_map.get(traj_num, [])
@@ -3276,14 +3536,9 @@ class TrajectoryCanvas(QWidget):
                                 fixed_background = None
 
                 # Attempt to retrieve velocities from the imported file.
-                if ("Avg. Speed (px/frame)" in group.columns) and ("Speed (px/frame)" in group.columns):
+                if "Speed (px/frame)" in group.columns:
                     # Use the value from the first row (or any row) as the summary,
                     # and obtain the list from the 'Speed (px/frame)' column.
-                    try:
-                        average_velocity = float(row_first["Avg. Speed (px/frame)"])
-                    except Exception:
-                        average_velocity = None
-                    # Convert the velocities column to a list.
                     velocities = group["Speed (px/frame)"].tolist()
                 else:
                     # Recalculate velocities based on spot centers.
@@ -3295,11 +3550,11 @@ class TrajectoryCanvas(QWidget):
                             dx = spot_centers[i][0] - spot_centers[i-1][0]
                             dy = spot_centers[i][1] - spot_centers[i-1][1]
                             velocities.append(np.hypot(dx, dy))
-                    if velocities:
-                        valid_vels = [v for v in velocities if v is not None]
-                        average_velocity = float(np.mean(valid_vels)) if valid_vels else None
-                    else:
-                        average_velocity = None
+                if velocities:
+                    valid_vels = [v for v in velocities if v is not None]
+                    average_velocity = float(np.mean(valid_vels)) if valid_vels else None
+                else:
+                    average_velocity = None
 
             colors = ['magenta' if sc is not None else 'grey' for sc in spot_centers]
             traj = {
@@ -3325,9 +3580,63 @@ class TrajectoryCanvas(QWidget):
                 "average_velocity": average_velocity
             }
 
-            traj_id = traj["trajectory_number"]
-            # copy in any loaded‐back user fields:
-            traj["custom_fields"] = self._custom_load_map.get(traj_id, {})
+            # --- load per-point colocalization flags if present ---
+            n_pts = len(frames_used)
+            # overall-any flags
+            if "coloc_any" in group.columns:
+                traj["colocalization_any"] = [
+                    v if v in ("Yes", "No") else None
+                    for v in group["coloc_any"].fillna("").tolist()
+                ]
+            else:
+                traj["colocalization_any"] = [None] * n_pts
+
+            # per-channel flags
+            by_ch = {}
+            for ch in range(1, n_chan+1):
+                if ch == channel:
+                    continue
+                col = f"coloc_ch{ch}"
+                if col in group.columns:
+                    flags = group[col].fillna("").tolist()
+                    by_ch[ch] = [v if v in ("Yes", "No") else None for v in flags]
+                else:
+                    by_ch[ch] = [None] * n_pts
+            traj["colocalization_by_ch"] = by_ch
+
+            # 3) compute the per‐trajectory percentages
+            computed_cf = {}
+            valid_any = [v for v in traj["colocalization_any"] if v is not None]
+            pct_any   = f"{100*sum(1 for s in valid_any if s=='Yes')/len(valid_any):.1f}" if valid_any else ""
+
+            for ch in range(1, n_chan+1):
+                col_name = f"Ch. {ch} co. %"
+                if ch == channel:
+                    computed_cf[col_name] = ""
+                elif n_chan == 2:
+                    computed_cf[col_name] = pct_any
+                else:
+                    flags = traj["colocalization_by_ch"].get(ch, [])
+                    valid = [v for v in flags if v is not None]
+                    computed_cf[col_name] = (
+                        f"{100*sum(1 for s in valid if s=='Yes')/len(valid):.1f}"
+                        if valid else ""
+                    )
+
+            # 4) merge in any other custom fields the user saved
+            loaded_cf = self._custom_load_map.get(traj_num, {})
+            merged_cf = {**loaded_cf, **computed_cf}
+            traj["custom_fields"] = merged_cf
+
+            print("traj[custom_fields] after load from df", traj["custom_fields"])
+
+            new = [
+                (f, cx, cy)
+                for f, c in zip(frames_used, spot_centers)
+                if isinstance(c, (tuple,list)) and c[0] is not None and c[1] is not None
+                for cx, cy in [c]
+            ]
+            self.navigator.past_centers.extend(new)
 
             loaded.append(traj)
             progress.setValue(t+1)
@@ -3388,14 +3697,16 @@ class TrajectoryCanvas(QWidget):
             median_text = "" if traj['median'] is None else f"{traj['median']:.2f}"
             avg_text = "" if traj['average'] is None else f"{traj['average']:.2f}"
             self.writeToTable(row, "medintensity", median_text)
-            self.writeToTable(row, "avgintensity", avg_text)
-            self.writeToTable(row, "avgspeed", avg_vel_um_s_txt)
+
+            print("custom_columns before writing to table", self.custom_columns)
+
             for col in self.custom_columns:
                 val = traj.get("custom_fields", {}).get(col, "")
+                print("write to table at the end of load from df: col, val", col, val)
                 if val is None or (isinstance(val, float) and math.isnan(val)) or pd.isna(val):
                     val = ""
                 # Make sure the column really exists in the table:
-                if col in self._col_index:
+                if col in self.custom_columns:
                     self.writeToTable(row, col, str(val))
 
         self._trajectory_counter = max(traj["trajectory_number"] for traj in loaded) + 1
@@ -3425,7 +3736,7 @@ class TrajectoryCanvas(QWidget):
         for col in range(self.table_widget.columnCount()):
             self.table_widget.takeItem(row, col)
 
-        # grab everything back out…
+        # grab everything back out
         start = traj["start"]
         end   = traj["end"]
         frames = traj["frames"]
@@ -3481,8 +3792,6 @@ class TrajectoryCanvas(QWidget):
         self.writeToTable(row, "total",        str(total_pts))
         self.writeToTable(row, "valid",        str(valid_pct))
         self.writeToTable(row, "medintensity", med_txt)
-        self.writeToTable(row, "avgintensity", avg_txt)
-        self.writeToTable(row, "avgspeed",     avvel_txt)
 
         for col in self.custom_columns:
             # get the saved string (or "")
@@ -3517,6 +3826,16 @@ class TrajectoryCanvas(QWidget):
 
         # --- BACKUP originals ---
         originals = {r: copy.deepcopy(self.trajectories[r]) for r in rows}
+
+        for r in rows:
+            old = self.trajectories[r]
+            centers_to_remove = [
+                (f, cx, cy)
+                for f, c in zip(old["frames"], old["search_centers"])
+                if isinstance(c, (tuple,list)) and len(c)==2 and c[0] is not None
+                for cx, cy in [c]
+            ]
+            self.navigator._remove_past_centers(centers_to_remove)
 
         # 2) single‐trajectory: do it inline on the GUI thread
         if len(rows) == 1:
@@ -3601,6 +3920,67 @@ class TrajectoryCanvas(QWidget):
 
             traj_data["custom_fields"] = originals[row].get("custom_fields", {}).copy()
 
+            new_centers = [
+                (f, cx, cy)
+                for f, c in zip(traj_data["frames"], traj_data["search_centers"])
+                if isinstance(c, (tuple,list)) and len(c)==2 and c[0] is not None
+                for cx, cy in [c]
+            ]
+            self.navigator.past_centers.extend(new_centers)
+
+            # after you compute spots, ints, fit, etc. and before you call updateTableRow:
+            if self.navigator.movie.ndim == 4 and self.navigator._channel_axis is not None:
+                n_chan = self.navigator.movie.shape[self.navigator._channel_axis]
+            else:
+                n_chan = 1
+            ref_ch = traj_data["channel"]
+
+            # --- Custom colocalization block ---
+            if getattr(self.navigator, "check_colocalization", False):
+                # rehydrate analysis state
+                self.navigator.analysis_frames     = traj_data["frames"]
+                self.navigator.analysis_fit_params = list(zip(
+                    traj_data["spot_centers"],
+                    traj_data["sigmas"],
+                    traj_data["peaks"]
+                ))
+                # compute everything in one pass exactly like run_analysis_points
+                self.navigator.analysis_channel = ref_ch
+                self.navigator._compute_colocalization(showprogress=True)
+                any_list = list(self.navigator.analysis_colocalized)
+                # grab the per-channel lists that _compute_colocalization just built
+                by_ch = {
+                    ch: list(flags)
+                    for ch, flags in self.navigator.analysis_colocalized_by_ch.items()
+                }
+                traj_data["colocalization_any"]   = any_list
+                traj_data["colocalization_by_ch"] = by_ch
+                # compute per-trajectory percentages
+                cf = traj_data.setdefault("custom_fields", {})
+                valid_any = [s for s in any_list if s is not None]
+                pct_any = f"{100*sum(1 for s in valid_any if s=='Yes')/len(valid_any):.1f}" if valid_any else ""
+                for ch in range(1, n_chan+1):
+                    key = f"Ch. {ch} co. %"
+                    if ch == ref_ch:
+                        cf[key] = ""
+                    elif n_chan == 2:
+                        cf[key] = pct_any
+                    else:
+                        flags = by_ch.get(ch, [])
+                        valid = [s for s in flags if s is not None]
+                        cf[key] = (f"{100*sum(1 for s in valid if s=='Yes')/len(valid):.1f}" if valid else "")
+            else:
+                any_list = [None] * len(traj_data["frames"])
+                by_ch    = {
+                    ch: [None] * len(traj_data["frames"])
+                    for ch in range(1, n_chan+1) if ch != ref_ch
+                }
+                traj_data["colocalization_any"]   = any_list
+                traj_data["colocalization_by_ch"] = by_ch
+
+            # 4) **Populate the custom_fields so your table and the draw() see them:**
+            # (already handled above in the colocalization block)
+
             # — swap it in and refresh UI —
             self.updateTableRow(row, traj_data)
             if self.navigator.traj_overlay_button.isChecked():
@@ -3642,10 +4022,60 @@ class TrajectoryCanvas(QWidget):
         master.canceled.connect(worker.cancel)
 
         def on_finished(results):
-            # apply only the successful traj_data
             for row, traj_data in results:
+                if self.navigator.movie.ndim == 4 and self.navigator._channel_axis is not None:
+                    n_chan = self.navigator.movie.shape[self.navigator._channel_axis]
+                else:
+                    n_chan = 1
+                ref_ch = traj_data["channel"]
+
+                if getattr(self.navigator, "check_colocalization", False):
+                    # rehydrate analysis state
+                    self.navigator.analysis_frames     = traj_data["frames"]
+                    self.navigator.analysis_fit_params = list(zip(
+                        traj_data["spot_centers"],
+                        traj_data["sigmas"],
+                        traj_data["peaks"]
+                    ))
+                    self.navigator.analysis_channel    = ref_ch
+
+                    # run colocalization in one pass
+                    self.navigator._compute_colocalization(showprogress=False)
+                    any_list = list(self.navigator.analysis_colocalized)
+                    by_ch = {
+                        ch: list(flags)
+                        for ch, flags in self.navigator.analysis_colocalized_by_ch.items()
+                    }
+                else:
+                    any_list = [None] * len(traj_data["frames"])
+                    by_ch    = { ch: [None]*len(traj_data["frames"])
+                                for ch in range(1, n_chan+1) if ch!=ref_ch }
+
+                # store the raw flags
+                traj_data["colocalization_any"]   = any_list
+                traj_data["colocalization_by_ch"] = by_ch
+
+                # *** NOW POPULATE the custom_fields columns ***
+                cf = traj_data.setdefault("custom_fields", {})
+                if n_chan == 2:
+                    valid = [s for s in any_list if s is not None]
+                    pct_any = f"{100*sum(1 for s in valid if s=='Yes')/len(valid):.1f}" if valid else ""
+                    for ch in (1,2):
+                        cf[f"Ch. {ch} co. %"] = "" if ch==ref_ch else pct_any
+                else:
+                    for ch in range(1, n_chan+1):
+                        col = f"Ch. {ch} co. %"
+                        if ch == ref_ch:
+                            cf[col] = ""
+                        else:
+                            flags = by_ch.get(ch, [])
+                            valid = [s for s in flags if s is not None]
+                            cf[col] = (f"{100*sum(1 for s in valid if s=='Yes')/len(valid):.1f}" if valid else "")
+
+                # store back and refresh table
                 self.trajectories[row] = traj_data
                 self.updateTableRow(row, traj_data)
+
             cleanup()
 
         worker.finished.connect(on_finished)
@@ -3705,6 +4135,16 @@ class TrajectoryCanvas(QWidget):
         self.navigator._suppress_internal_progress = True
         count = 0
         canceled = False
+
+        all_old = []
+        for old in backup:
+            all_old += [
+                (f, cx, cy)
+                for f, c in zip(old["frames"], old["search_centers"])
+                if isinstance(c, (tuple,list)) and len(c)==2 and c[0] is not None
+                for cx, cy in [c]
+            ]
+        self.navigator._remove_past_centers(all_old)
 
         try:
             for row, old in enumerate(backup):
@@ -3809,7 +4249,63 @@ class TrajectoryCanvas(QWidget):
                     "average_velocity":  avg_vpf
                 }
 
-                traj_data["custom_fields"] = old.get("custom_fields", {}).copy()
+                # 1) start from any old custom fields
+                cf = traj_data.setdefault("custom_fields", {})
+                old_cf = old.get("custom_fields", {})
+                cf.update(old_cf)
+
+                # 2) compute per‐frame colocalization flags
+                if self.navigator.movie.ndim == 4 and self.navigator._channel_axis is not None:
+                    n_chan = self.navigator.movie.shape[self.navigator._channel_axis]
+                else:
+                    n_chan = 1
+                ref_ch = traj_data["channel"]
+                # unified colocalization logic
+                if getattr(self.navigator, "check_colocalization", False):
+                    nav = self.navigator
+                    nav.analysis_frames = traj_data["frames"]
+                    nav.analysis_fit_params = list(zip(
+                        traj_data["spot_centers"], traj_data["sigmas"], traj_data["peaks"]
+                    ))
+                    ref_ch = traj_data["channel"]
+                    nav.analysis_channel = ref_ch
+                    nav._compute_colocalization(showprogress=False)
+                    any_list = list(nav.analysis_colocalized)
+                    by_ch = {ch: list(flags) for ch, flags in nav.analysis_colocalized_by_ch.items()}
+                else:
+                    N = len(traj_data["frames"])
+                    any_list = [None] * N
+                    by_ch = {ch: [None] * N for ch in range(1, n_chan+1) if ch != ref_ch}
+
+                traj_data["colocalization_any"]    = any_list
+                traj_data["colocalization_by_ch"]  = by_ch
+
+                # 3) inject your one‐value‐per‐trajectory % into custom_fields
+                if n_chan == 2:
+                    valid = [s for s in any_list if s is not None]
+                    pct   = f"{100*sum(1 for s in valid if s=='Yes')/len(valid):.1f}" if valid else ""
+                    for ch in (1,2):
+                        cf[f"Ch. {ch} co. %"] = "" if ch == ref_ch else pct
+                else:
+                    for ch in range(1, n_chan+1):
+                        name = f"Ch. {ch} co. %"
+                        if ch == ref_ch:
+                            cf[name] = ""
+                        else:
+                            flags = by_ch.get(ch, [])
+                            valid = [s for s in flags if s is not None]
+                            cf[name] = (
+                                f"{100*sum(1 for s in valid if s=='Yes')/len(valid):.1f}"
+                                if valid else ""
+                            )
+
+                new_centers = [
+                    (f, cx, cy)
+                    for f, c in zip(traj_data["frames"], traj_data["search_centers"])
+                    if isinstance(c, (tuple,list)) and len(c)==2 and c[0] is not None
+                    for cx, cy in [c]
+                ]
+                self.navigator.past_centers.extend(new_centers)
 
                 # update model + table
                 self.trajectories[row] = traj_data
@@ -3859,8 +4355,16 @@ class TrajectoryCanvas(QWidget):
             return
         row = selected_rows[0].row()
         deleted_number = self.trajectories[row]["trajectory_number"]
-        self.trajectories.pop(row)
+        deleted = self.trajectories.pop(row)
         self.table_widget.removeRow(row)
+        centers_to_remove = [
+            (f, cx, cy)
+            for f, c in zip(deleted["frames"], deleted["spot_centers"])
+            # only keep real (x,y) points
+            if isinstance(c, (tuple, list)) and len(c) == 2 and c[0] is not None and c[1] is not None
+            for cx, cy in [c]
+        ]
+        self.navigator._remove_past_centers(centers_to_remove)
 
         row_count = self.table_widget.rowCount()
         if row_count > 0:
@@ -3915,6 +4419,8 @@ class TrajectoryCanvas(QWidget):
             self.kymoCanvas.draw()
             self.movieCanvas.draw()
 
+            self.navigator.past_centers = []
+
     def update_trajectory_visibility(self):
         has_rows = self.table_widget.rowCount() > 0
         if not has_rows:
@@ -3925,7 +4431,6 @@ class TrajectoryCanvas(QWidget):
             # Give some proportion (e.g., 70% to main content, 30% to trajectory canvas)
             total_height = self.navigator.vertSplitter.height()
             self.navigator.vertSplitter.setSizes([int(0.7 * total_height), int(0.3 * total_height)])
-
 
     def open_context_menu(self, pos):
         # 1) Figure out which row was clicked on
@@ -3978,7 +4483,7 @@ class TrajectoryCanvas(QWidget):
                                     self.navigator.kymograph_changed()
                                 )
                             )
-                    break
+                    # break
 
         # Change ID action
         # change_label = "Change trajectory ID" if n == 1 else "Change trajectories' IDs"
@@ -4019,7 +4524,7 @@ class TrajectoryCanvas(QWidget):
                         lambda _, name=col_name, sel=rows: self._toggle_binary_column(name, sel)
                     )
 
-                else:  # “value” column
+                if col_type == "value": 
                     if len(rows) == 1:
                         act_text = f"Set {col_name}"
                     else:
@@ -4056,20 +4561,43 @@ class TrajectoryCanvas(QWidget):
                 self._unmark_custom(r, col_name)
 
         self.kymoCanvas.draw_trajectories_on_kymo()
+        self.kymoCanvas.draw()
+        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw()
 
     def _set_value_column(self, col_name, rows):
         """
-        Pop up a dialog to get a new value, then set it on every row in `rows`.
+        Pop up a styled dialog to get a new value, then set it on every row in `rows`.
         """
         prompt = f"Enter value for {col_name}:"
-        val, ok = QInputDialog.getText(self, f"Set {col_name}", prompt)
-        if not ok:
+        # 1) Create your own QInputDialog instance
+        dlg = QInputDialog(self)
+        dlg.setWindowTitle(f"Set {col_name}")
+        dlg.setLabelText(prompt)
+        dlg.setOkButtonText("OK")
+        dlg.setCancelButtonText("Cancel")
+        dlg.setInputMode(QInputDialog.TextInput)
+        dlg.setTextValue("")  # start empty (or you could prefill with the current value)
+
+        # 2) Style its line‐edit to have a white background
+        line: QLineEdit = dlg.findChild(QLineEdit)
+        if line:
+            line.setStyleSheet("background-color: white;")
+
+        # 3) Show and handle the result
+        if dlg.exec_() != QDialog.Accepted:
             return
+        val = dlg.textValue()
+
+        # 4) Store and update
         for r in rows:
-            # store in your model
             self.trajectories[r].setdefault("custom_fields", {})[col_name] = val
-            # update the table
             self.writeToTable(r, col_name, val)
+
+        self.kymoCanvas.draw_trajectories_on_kymo()
+        self.kymoCanvas.draw()
+        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw()
 
     def _on_header_context_menu(self, pos):
         header = self.table_widget.horizontalHeader()
@@ -4093,55 +4621,97 @@ class TrajectoryCanvas(QWidget):
         val_act.triggered.connect(self._add_value_column_dialog)
 
         # if this is one of the custom columns, allow removal
-        if col_name in self.custom_columns:
-            # check for non-empty cells first in _ask_remove_column
-            remove_act = menu.addAction(f"Remove column “{col_name}”")
+        ctype = self._column_types.get(col_name)
+        # only offer “remove” for our binary/value custom columns
+        if col_name in self.custom_columns and ctype in ("binary", "value"):
+            remove_act = menu.addAction(f"Remove column {col_name}")
             remove_act.triggered.connect(lambda _, c=col, name=col_name: self._ask_remove_column(c, name))
 
         # finally show the menu right at the header click
         menu.exec_(header.mapToGlobal(pos))
 
     def _add_binary_column_dialog(self):
-        name, ok = QInputDialog.getText(self, "Add Binary Column", "Name:")
-        if not (ok and name.strip()):
+        # 1) build your own QInputDialog instance
+        dlg = QInputDialog(self)
+        dlg.setWindowTitle("Add Binary Column")
+        dlg.setLabelText("Name:")
+        dlg.setOkButtonText("OK")
+        dlg.setCancelButtonText("Cancel")
+        dlg.setInputMode(QInputDialog.TextInput)
+        dlg.setTextValue("")
+
+        # 2) style its line‐edit to have a white background
+        line = dlg.findChild(QLineEdit)
+        if line:
+            line.setStyleSheet("background-color: white;")
+
+        # 3) exec and check result
+        if dlg.exec_() != QDialog.Accepted:
             return
-        name = name.strip()
+        name = dlg.textValue().strip()
+        if not name:
+            return
+
+        # 4) duplicate‐check
         if name.lower() in {h.lower() for h in self._headers}:
             QMessageBox.warning(self, "Duplicate", f"“{name}” already exists.")
             return
-        # pass col_type="binary" so we default every cell to "Yes"
+
+        # 5) finally, add the binary column
         self._add_custom_column(name, col_type="binary")
 
     def _add_value_column_dialog(self):
-        name, ok = QInputDialog.getText(self, "Add Value Column", "Name:")
-        if not (ok and name.strip()):
+        # 1) build your own dialog instance
+        dlg = QInputDialog(self)
+        dlg.setWindowTitle("Add Value Column")
+        dlg.setLabelText("Name:")
+        dlg.setOkButtonText("OK")
+        dlg.setCancelButtonText("Cancel")
+        dlg.setInputMode(QInputDialog.TextInput)
+        dlg.setTextValue("")          # start empty
+
+        # 2) style its line‐edit to have a white background
+        line = dlg.findChild(QLineEdit)
+        if line:
+            line.setStyleSheet("background-color: white;")
+
+        # 3) exec and check result
+        if dlg.exec_() != QDialog.Accepted:
             return
-        name = name.strip()
+        name = dlg.textValue().strip()
+        if not name:
+            return
+
+        # 4) duplicate‐check
         if name.lower() in {h.lower() for h in self._headers}:
             QMessageBox.warning(self, "Duplicate", f"“{name}” already exists.")
             return
-        # pass col_type="value" so we leave cells empty for user to fill
+
+        # 5) add the new column
         self._add_custom_column(name, col_type="value")
 
-    def _add_column_dialog(self):
-        """
-        Ask for a new column name, but only accept it if it doesn't
-        case-insensitively collide with any existing header.
-        """
-        existing = {h.lower() for h in self._headers}
-        name, ok = QInputDialog.getText(self, "Add Column", "Column name:")
-        if not ok:
-            return
-        name = name.strip()
-        if not name:
-            return
-        if name.lower() in existing:
-            QMessageBox.warning(self, "Duplicate column", f"'{name}' already exists.")
-            return
+    # def _add_column_dialog(self):
+    #     """
+    #     Ask for a new column name, but only accept it if it doesn't
+    #     case-insensitively collide with any existing header.
+    #     """
+    #     existing = {h.lower() for h in self._headers}
+    #     name, ok = QInputDialog.getText(self, "Add Column", "Column name:")
+    #     if not ok:
+    #         return
+    #     name = name.strip()
+    #     if not name:
+    #         return
+    #     if name.lower() in existing:
+    #         QMessageBox.warning(self, "Duplicate column", f"'{name}' already exists.")
+    #         return
 
-        self._add_custom_column(name)
+    #     self._add_custom_column(name)
 
     def _add_custom_column(self, name, *, col_type="binary"):
+
+        # print("_add_custom_column", "name, col_type", name, col_type)
+        
         # ——— 0) save current row selection ———
         selected_rows = [idx.row()
                          for idx in self.table_widget.selectionModel().selectedRows()]
@@ -4150,6 +4720,8 @@ class TrajectoryCanvas(QWidget):
 
         # 1) track it
         self.custom_columns.append(name)
+
+        # print("_add_custom_column", "self.custom_columns", self.custom_columns)
 
         # 2) extend your header lists & mappings
         self._headers.append(name)
@@ -4173,16 +4745,18 @@ class TrajectoryCanvas(QWidget):
             self.trajectories[row].setdefault("custom_fields", {})[name] = default
 
         # 6) re-apply full-row selection so that the new column is highlighted
+        sel = self.table_widget.selectionModel()
+        sel.blockSignals(True)
         for row in selected_rows:
             self.table_widget.selectRow(row)
+        sel.blockSignals(False)
 
         # 7) final layout tweaks
         self.table_widget.viewport().update()
         self.table_widget.horizontalHeader().resizeSections(
             QHeaderView.ResizeToContents)
 
-        if col_type == "binary":
-            self.navigator._rebuild_color_by_actions()
+        self.navigator._rebuild_color_by_actions()
 
     def _ask_remove_column(self, col_idx, col_name):
         # Check for any non-empty cells
@@ -4214,8 +4788,10 @@ class TrajectoryCanvas(QWidget):
         for traj in self.trajectories:
             traj.get("custom_fields", {}).pop(col_name, None)
 
-        # 3) remove from widget
+        # 3) remove from widget and rebuild our index map
         self.table_widget.removeColumn(col_idx)
+        # rebuild header→index map so no one’s left pointing at the wrong slot
+        self._col_index = { hdr: i for i, hdr in enumerate(self._headers) }
         self.table_widget.setHorizontalHeaderLabels(self._headers)
         self.table_widget.viewport().update()
 
@@ -4273,7 +4849,7 @@ class HistogramCanvas(FigureCanvas):
         Instead of updating immediately, store the parameters and schedule an update
         only once per 16 ms (about 60 FPS).
         """
-        throttletime = 2
+        throttletime = 1
         if not self.isVisible() or self.width() == 0 or self.height() == 0:
             throttletime = 400
         # Save the latest parameters
@@ -4462,7 +5038,7 @@ class VelocityCanvas(FigureCanvas):
         if valid_velocities and self.navigator.pixel_size is not None and self.navigator.frame_interval is not None:
             conversion = self.navigator.pixel_size / self.navigator.frame_interval
             valid_velocities = np.array(valid_velocities) * conversion
-            ax.set_xlabel("Speed (μm/s)", fontsize=12)
+            ax.set_xlabel(r"Speed ($\mathrm{\mu m/s}$)", fontsize=12)
         else:
             ax.set_xlabel("Speed (px/frame)", fontsize=12)
 

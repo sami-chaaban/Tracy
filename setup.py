@@ -6,7 +6,7 @@ long_description = (this_dir / "README.md").read_text(encoding="utf-8")
 
 setup(
     name='tracyspot',
-    version='1.0.3',
+    version='1.0.20',
     description='Spot navigator',
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -16,7 +16,7 @@ setup(
     packages=find_packages(),
     include_package_data=True,
     package_data={
-        'tracy': ['icons/*.svg', 'style.qss']
+        'tracy': ['icons/*.svg', 'icons/*.png', 'fonts/*.ttf', 'style.qss']
     },
     install_requires=[
         'numpy',
@@ -27,6 +27,7 @@ setup(
         'tifffile',
         'read-roi',
         'roifile',
+        'openpyxl'
     ],
     entry_points={
         'gui_scripts': [

@@ -1,1 +1,3 @@
 recursive-include tracy/icons *.svg
+recursive-include tracy/icons *.png
+recursive-include tracy/fonts *.ttf

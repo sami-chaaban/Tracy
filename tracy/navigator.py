@@ -6,22 +6,25 @@ from PyQt5.QtWidgets import (
     QListView, QSlider, QSizePolicy, QAction, QDialog,
     QProgressDialog, QApplication, QFrame,
     QLineEdit, QFormLayout, QGraphicsDropShadowEffect,
-    QInputDialog, QMenu
+    QInputDialog, QMenu, QLayout
 )
 
 from PyQt5 import QtCore, QtWidgets, QtGui
 from PyQt5.QtCore import (
     Qt, QTimer, QSize, QRectF, QPropertyAnimation, QEvent,
     QEasingCurve, QPropertyAnimation, QPoint, pyqtSlot, pyqtSignal,
-    QThreadPool)
+    QThreadPool, QRect)
 from PyQt5.QtGui import (
     QKeySequence, QIcon, QColor, QCursor, QMouseEvent
     )
 
+from concurrent.futures import ThreadPoolExecutor
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
 import tifffile
-from scipy.ndimage import shift
+from scipy.ndimage import shift, gaussian_filter
 from scipy.signal import savgol_filter
 import zipfile
 import time
@@ -40,8 +43,10 @@ from .canvas_tools import (
     ChannelAxisDialog, SetScaleDialog,
     KymoLineOptionsDialog, CustomSplitter, 
     RoundedFrame, AxesRectAnimator, SaveKymographDialog,
-    ClickableLabel, RadiusDialog
+    ClickableLabel, RadiusDialog, BubbleTipFilter,
+    CenteredBubbleFilter, AnimatedIconButton
 )
+from tracy import __version__
 from .gaussian_tools import perform_gaussian_fit
 from .roi_tools import is_point_near_roi, convert_roi_to_binary, parse_roi_blob, generate_multipoint_roi_bytes
 from .track_tools import calculate_velocities
@@ -58,7 +63,7 @@ class KymographNavigator(QMainWindow):
     # debug_plot_hmm_segmentation_requested = pyqtSignal(np.ndarray, np.ndarray, np.ndarray, list, np.ndarray)
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Tracy")
+        self.setWindowTitle(f"Tracy {__version__}")
         self.resize(1000, 1200)
 
         # self.debugPlotRequested.connect(self.debug_plot_track_smoothing)
@@ -90,6 +95,7 @@ class KymographNavigator(QMainWindow):
         self.analysis_frames = []
         self.analysis_original_coords = []
         self.analysis_search_centers = []
+        self.analysis_colocalized = []
 
         # Set up looping through plot points using space bar.
         self.looping = False
@@ -155,9 +161,8 @@ class KymographNavigator(QMainWindow):
         self.analysis_velocities = []
         self.analysis_average_velocity = None
 
-        self.hovered_trajectory = None
-
-        self._radiusPopup   = None
+        self._radiusPopup = None
+        self._radiusSpinLive = None
 
         self.radiusShortcut = QShortcut(QKeySequence(Qt.Key_R), self)
         self.radiusShortcut.setContext(Qt.ApplicationShortcut)
@@ -227,13 +232,24 @@ class KymographNavigator(QMainWindow):
         self._last_kymo_artist = None
         self._skip_next_right = False
 
+        self.avoid_previous_spot = False
+        self.same_spot_threshold = 6
+        self.past_centers = []
+
+        self.colocalization_threshold = 4
+
+        self.connect_all_spots = False
+
+        self.color_by_column = None
+
     def create_ui(self):
         # Create the central widget and overall layout.
         central = QWidget()
+        central.setObjectName("centralContainer")
         self.setCentralWidget(central)
         containerLayout = QVBoxLayout(central)
 
-        videoiconpath = self.resource_path('icons/video-camera.svg')
+        # videoiconpath = self.resource_path('icons/video-camera.svg')
         crossiconpath = self.resource_path('icons/cross-small.svg')
         crossdoticonpath = self.resource_path('icons/cross-dot.svg')
         resetcontrastpath = self.resource_path('icons/contrast.svg')
@@ -255,37 +271,54 @@ class KymographNavigator(QMainWindow):
         # """)
         topLayout = QHBoxLayout(topWidget)
         topLayout.setSpacing(5)
-        topLayout.setContentsMargins(8, 6, 0, 0)
+        topLayout.setContentsMargins(20, 6, 0, 0)
         topLayout.setAlignment(Qt.AlignLeft)
         
-        self.btnLoadMovie = QPushButton("")
-        self.btnLoadMovie.setFixedWidth(50)
-        self.btnLoadMovie.setFixedHeight(30)
-        self.btnLoadMovie.setIcon(QIcon(videoiconpath))
-        self.btnLoadMovie.setStyleSheet("""
-            QPushButton {
-                border: 2px solid transparent;
-                border-radius: 8px;
-                background: transparent;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.5);
-            }
-            QPushButton:pressed {
-                border: 2px solid #ffffff;
-                background-color: #ffffff;
-            }
-        """)
-        self.btnLoadMovie.setIconSize(QSize(16, 16))
-        self.btnLoadMovie.setObjectName("Passive")
-        self.btnLoadMovie.clicked.connect(self.handle_movie_load)
-        self.btnLoadMovie.setMinimumWidth(50)
-        topLayout.addWidget(self.btnLoadMovie)
+        # self.btnLoadMovie = QPushButton("")
+        # self.btnLoadMovie.setFixedWidth(50)
+        # self.btnLoadMovie.setFixedHeight(30)
+        # self.btnLoadMovie.setIcon(QIcon(videoiconpath))
+        # self.btnLoadMovie.setStyleSheet("""
+        #     QPushButton {
+        #         border: 2px solid transparent;
+        #         border-radius: 8px;
+        #         background: transparent;
+        #     }
+        #     QPushButton:hover {
+        #         background-color: rgba(255, 255, 255, 0.5);
+        #     }
+        #     QPushButton:pressed {
+        #         border: 2px solid #ffffff;
+        #         background-color: #ffffff;
+        #     }
+        # """)
+        # self.btnLoadMovie.setIconSize(QSize(16, 16))
+        # self.btnLoadMovie.setObjectName("Passive")
+        # self.btnLoadMovie.clicked.connect(self.handle_movie_load)
+        # self.btnLoadMovie.setMinimumWidth(50)
+        # topLayout.addWidget(self.btnLoadMovie)
 
-        self.movieNameLabel = QLabel("")
+        self.movieNameLabel = ClickableLabel("Load movie")
+        self.movieNameLabel.setObjectName("movieNameLabel")
+        self.movieNameLabel.setProperty("pressed", False)
         self.movieNameLabel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.movieNameLabel.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.movieNameLabel.setStyleSheet("background: transparent")
+        self.movieNameLabel.clicked.connect(self.handle_movie_load)
+        self.movieNameLabel.setStyleSheet("""
+        #movieNameLabel {
+            background: transparent;
+            font-size: 14px;
+            border: 1px solid #DCE6FF;
+            border-radius: 8px;
+            padding: 6px 12px
+        }
+        #movieNameLabel:hover {
+            background: rgb(215, 225, 252);
+        }
+        #movieNameLabel[pressed="true"] {
+            background: #DCE6FF;
+        }
+        """)
         topLayout.addWidget(self.movieNameLabel)
 
         
@@ -307,15 +340,32 @@ class KymographNavigator(QMainWindow):
         self.pixelValueLabel = QLabel("")
         self.pixelValueLabel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.pixelValueLabel.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.pixelValueLabel.setStyleSheet("background: transparent; padding-right: 25px;")
+        self.pixelValueLabel.setStyleSheet("color: #444444; background: transparent; padding-right: 25px;")
         topLayout.addWidget(self.pixelValueLabel)
+
         self.scaleLabel = ClickableLabel("")
+        self.scaleLabel.setObjectName("scaleLabel")
         self.scaleLabel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.scaleLabel.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.scaleLabel.setStyleSheet("background: transparent; padding-right: 25px;")
+        self.scaleLabel.setStyleSheet("""
+        #scaleLabel {
+            background: transparent;
+            font-size: 14px;
+            border-radius: 8px;
+            padding: 6px 6px 6px 6px
+        }
+        #scaleLabel:hover {
+            background: rgb(215, 225, 252);
+        }
+        #scaleLabel[pressed="true"] {
+            background: #DCE6FF;
+        }
+        """)
         self.scaleLabel.clicked.connect(self.open_set_scale_dialog)
         topLayout.addWidget(self.scaleLabel)
         containerLayout.addWidget(topWidget)
+
+        topLayout.addSpacing(25)
         
 
         # --- Main Horizontal Splitter ---
@@ -345,24 +395,29 @@ class KymographNavigator(QMainWindow):
         kymoControlLayout.addWidget(self.kymoCombo)
 
         # Add the kymograph delete and clear buttons
-        kymoDeleteBtn = QPushButton("")
-        kymoDeleteBtn.setIcon(QIcon(crossiconpath))
-        kymoDeleteBtn.setIconSize(QSize(14, 14))
-        kymoDeleteBtn.setToolTip("Delete selected ROI")
-        kymoDeleteBtn.setObjectName("Passive")
-        kymoDeleteBtn.setFixedWidth(32)
-        kymoDeleteBtn.clicked.connect(self.delete_current_kymograph)
-        kymoControlLayout.addWidget(kymoDeleteBtn)
+        self.kymoDeleteBtn = QPushButton("")
+        self.kymoDeleteBtn.setIcon(QIcon(crossiconpath))
+        self.kymoDeleteBtn.setIconSize(QSize(14, 14))
+        # self.kymoDeleteBtn.setToolTip("Delete selected ROI")
+        deletekymo_filter = BubbleTipFilter("Delete this kymograph", self)
+        self.kymoDeleteBtn.installEventFilter(deletekymo_filter)
+        self.kymoDeleteBtn._bubble_filter = deletekymo_filter
+        self.kymoDeleteBtn.setObjectName("Passive")
+        self.kymoDeleteBtn.setFixedWidth(32)
+        self.kymoDeleteBtn.clicked.connect(self.delete_current_kymograph)
+        kymoControlLayout.addWidget(self.kymoDeleteBtn)
 
-        clearKymoBtn = QPushButton("")
-
-        clearKymoBtn.setIcon(QIcon(crossdoticonpath))
-        clearKymoBtn.setIconSize(QSize(14, 14))
-        clearKymoBtn.setToolTip("Clear kymographs")
-        clearKymoBtn.setObjectName("Passive")
-        clearKymoBtn.setFixedWidth(32)
-        clearKymoBtn.clicked.connect(self.clear_kymographs)
-        kymoControlLayout.addWidget(clearKymoBtn)
+        self.clearKymoBtn = QPushButton("")
+        self.clearKymoBtn.setIcon(QIcon(crossdoticonpath))
+        self.clearKymoBtn.setIconSize(QSize(14, 14))
+        # self.clearKymoBtn.setToolTip("Clear kymographs")
+        clearkymo_filter = BubbleTipFilter("Delete all kymographs", self)
+        self.clearKymoBtn.installEventFilter(clearkymo_filter)
+        self.clearKymoBtn._bubble_filter = clearkymo_filter
+        self.clearKymoBtn.setObjectName("Passive")
+        self.clearKymoBtn.setFixedWidth(32)
+        self.clearKymoBtn.clicked.connect(self.clear_kymographs)
+        kymoControlLayout.addWidget(self.clearKymoBtn)
 
 
         # Wrap the horizontal layout in a container widget.
@@ -388,23 +443,29 @@ class KymographNavigator(QMainWindow):
         roiControlLayout.addWidget(self.roiCombo)
 
         # Add the ROI delete and clear buttons
-        roiDeleteBtn = QPushButton("")
-        roiDeleteBtn.setIcon(QIcon(crossiconpath))
-        roiDeleteBtn.setIconSize(QSize(14, 14))
-        roiDeleteBtn.setToolTip("Delete selected ROI")
-        roiDeleteBtn.setObjectName("Passive")
-        roiDeleteBtn.setFixedWidth(32)
-        roiDeleteBtn.clicked.connect(self.delete_current_roi)
-        roiControlLayout.addWidget(roiDeleteBtn)
+        self.roiDeleteBtn = AnimatedIconButton("")
+        self.roiDeleteBtn.setIcon(QIcon(crossiconpath))
+        self.roiDeleteBtn.setIconSize(QSize(14, 14))
+        # self.roiDeleteBtn.setToolTip("Delete selected ROI")
+        roidelete_filter = BubbleTipFilter("Delete selected line ROI", self)
+        self.roiDeleteBtn.installEventFilter(roidelete_filter)
+        self.roiDeleteBtn._bubble_filter = roidelete_filter
+        self.roiDeleteBtn.setObjectName("Passive")
+        self.roiDeleteBtn.setFixedWidth(32)
+        self.roiDeleteBtn.clicked.connect(self.delete_current_roi)
+        roiControlLayout.addWidget(self.roiDeleteBtn)
 
-        clearROIBtn = QPushButton("")
-        clearROIBtn.setIcon(QIcon(crossdoticonpath))
-        clearROIBtn.setIconSize(QSize(14, 14))
-        clearROIBtn.setToolTip("Clear ROIs")
-        clearROIBtn.setObjectName("Passive")
-        clearROIBtn.setFixedWidth(32)
-        clearROIBtn.clicked.connect(self.clear_rois)
-        roiControlLayout.addWidget(clearROIBtn)
+        self.clearROIBtn = AnimatedIconButton("")
+        self.clearROIBtn.setIcon(QIcon(crossdoticonpath))
+        self.clearROIBtn.setIconSize(QSize(14, 14))
+        # self.clearROIBtn.setToolTip("Clear ROIs")
+        clearroi_filter = BubbleTipFilter("Delete all line ROIs", self)
+        self.clearROIBtn.installEventFilter(clearroi_filter)
+        self.clearROIBtn._bubble_filter = clearroi_filter
+        self.clearROIBtn.setObjectName("Passive")
+        self.clearROIBtn.setFixedWidth(32)
+        self.clearROIBtn.clicked.connect(self.clear_rois)
+        roiControlLayout.addWidget(self.clearROIBtn)
 
         # Wrap the horizontal layout in a container widget.
         self.roiContainer = QWidget()
@@ -458,6 +519,22 @@ class KymographNavigator(QMainWindow):
         # Now add the rounded container to your leftLayout instead of directly adding kymoCanvas.
         leftLayout.addWidget(roundedContainer, stretch=1)
         
+        # 1) make a legend container as a child of the rounded frame
+        self.kymoLegendWidget = QWidget(parent=roundedContainer)
+        self.kymoLegendWidget.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
+        self.kymoLegendWidget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.kymoLegendWidget.hide()  # start hidden
+
+        # 2) style / position it absolutely
+        self.kymoLegendWidget.setStyleSheet("background: rgba(255,255,255,200);  border-radius: 8px; ")
+        self.kymoLegendWidget.move(10, 10)  # 10px from top-left of roundedContainer
+
+        # 3) give it a simple horizontal layout
+        self.kymoLegendLayout = QHBoxLayout(self.kymoLegendWidget)
+        self.kymoLegendLayout.setSizeConstraint(QLayout.SetFixedSize)
+        self.kymoLegendLayout.setContentsMargins(5,5,5,5)
+        self.kymoLegendLayout.setSpacing(5)
+
         # overlayLayout = QHBoxLayout()
         # overlayLayout.setSpacing(10)
         # overlayLayout.setContentsMargins(0, 10, 0, 0)
@@ -489,7 +566,7 @@ class KymographNavigator(QMainWindow):
         shadow.setColor(QColor(0, 0, 0, 120))
         shadow.setOffset(0)
         self.movieDisplayContainer.setGraphicsEffect(shadow)
-        self.movieDisplayContainer.setMinimumSize(400, 400)
+        self.movieDisplayContainer.setMinimumSize(100, 100)
         self.movieDisplayContainer.setFrameStyle(QFrame.Box)
         self.movieDisplayContainer.setLineWidth(2)
         self.movieDisplayContainer.setStyleSheet("QFrame { border: 6px solid transparent; }")
@@ -497,25 +574,24 @@ class KymographNavigator(QMainWindow):
         movieDisplayLayout.setContentsMargins(6, 5, 6, 5)
 
         # Create the channel control container as a rounded frame with shadow
-        self.channelControlContainer = RoundedFrame(self.movieDisplayContainer, radius=10, bg_color = self.settings['widget-bg'])
-        # Apply drop shadow effect
-        shadow = QGraphicsDropShadowEffect(self.channelControlContainer)
-        shadow.setBlurRadius(10)
-        shadow.setColor(QColor(0, 0, 0, 120))
-        shadow.setOffset(0, 0)
-        self.channelControlContainer.setGraphicsEffect(shadow)
-        # Semi-transparent white background
-        self.channelControlContainer.setStyleSheet("background: transparent;")
+        # # Apply drop shadow effect
+        # shadow = QGraphicsDropShadowEffect(self.channelControlContainer)
+        # shadow.setBlurRadius(10)
+        # shadow.setColor(QColor(0, 0, 0, 120))
+        # shadow.setOffset(0, 0)
+        # self.channelControlContainer.setGraphicsEffect(shadow)
+        # # Semi-transparent white background
+        # self.channelControlContainer.setStyleSheet("background: transparent;")
 
-        # Create and install a horizontal layout
-        channelLayout = QHBoxLayout()
-        channelLayout.setContentsMargins(0, 0, 0, 0)
-        channelLayout.setSpacing(4)
-        self.channelControlContainer.setLayout(channelLayout)
+        # # Create and install a horizontal layout
+        # channelLayout = QHBoxLayout()
+        # channelLayout.setContentsMargins(0, 0, 0, 0)
+        # channelLayout.setSpacing(4)
+        # self.channelControlContainer.setLayout(channelLayout)
 
-        # Create the "Channel:" label and combo box
-        self.channelLabel = QLabel("Channel")
-        self.channelLabel.setStyleSheet("""QLabel {background-color: transparent; color: #444444}""")
+        # # Create the "Channel:" label and combo box
+        # self.channelLabel = QLabel("Channel")
+        # self.channelLabel.setStyleSheet("""QLabel {background-color: transparent; color: #444444}""")
         self.movieChannelCombo = QComboBox()
         self.movieChannelCombo.setView(QListView())
         self.movieChannelCombo.setFixedWidth(40)
@@ -525,16 +601,21 @@ class KymographNavigator(QMainWindow):
         self.movieChannelCombo.setEnabled(False)
         self.movieChannelCombo.currentIndexChanged.connect(self.on_channel_changed)
 
-        # Add both to the channel layout
-        channelLayout.addWidget(self.channelLabel)
-        channelLayout.addWidget(self.movieChannelCombo)
+        # # Add both to the channel layout
+        # channelLayout.addWidget(self.channelLabel)
+        # channelLayout.addWidget(self.movieChannelCombo)
 
-        # Size and position the container
-        self.channelControlContainer.adjustSize()
-        self.channelControlContainer.move(10, 10)
-        self.channelControlContainer.raise_()
+        # # Size and position the container
+        # self.channelControlContainer.adjustSize()
+        # self.channelControlContainer.move(10, 10)
+        # self.channelControlContainer.raise_()
 
         # Initially hide the container until a movie is loaded
+        self.channelControlContainer = RoundedFrame(self.movieDisplayContainer, radius=10, bg_color = self.settings['widget-bg'])
+        self.channelControlContainer.setParent(self.movieDisplayContainer)
+        self.channelControlContainer.setStyleSheet("background: transparent;")
+        self.channelControlContainer.move(10, 10)   # tweak x/y offsets as you
+        self.channelControlContainer.raise_()
         self.channelControlContainer.setVisible(False)
 
         self.movieCanvas = MovieCanvas(self, navigator=self)
@@ -548,29 +629,46 @@ class KymographNavigator(QMainWindow):
         self.movieDisplayContainer.setLayout(movieDisplayLayout)
         movieLayout.addWidget(self.movieDisplayContainer, stretch=1)
 
-        self.channelControlContainer.setParent(self.movieDisplayContainer)
-        self.channelControlContainer.setStyleSheet("background: rgba(255,255,255,0);")
-        self.channelControlContainer.move(10, 10)   # tweak x/y offsets as you
-        self.channelControlContainer.raise_()
-
         # in create_ui, replace the overlay QLabel with:
         self._ch_overlay = ClickableLabel("", parent=self.movieDisplayContainer)
+        channellabelfilter = BubbleTipFilter("Change channel (shortcut: 1, 2...)", self)
+        self._ch_overlay.installEventFilter(channellabelfilter)
+        self._ch_overlay._bubble_filter = channellabelfilter
         self._ch_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, False)
         self._ch_overlay.setStyleSheet("""
-            background: transparent;
-            color: #999999;
-            font-size: 40pt;
+            background: rgba(255,255,255,200);
+            border-radius: 12px;
+            color: black;
+            font-size: 26px;
             font-weight: bold;
         """)
-        self._ch_overlay.hide()
-
         # shadow = QGraphicsDropShadowEffect(self._ch_overlay)
-        # shadow.setBlurRadius(5)
-        # shadow.setColor(QColor(250, 250, 250, 200))
+        # shadow.setBlurRadius(40)
+        # shadow.setColor(QColor(255, 255, 255, 250))
         # shadow.setOffset(0, 0)
         # self._ch_overlay.setGraphicsEffect(shadow)
-
+        self._ch_overlay.hide()
         self._ch_overlay.clicked.connect(self._on_overlay_clicked)
+
+        # 1) make a legend container as a child of the rounded frame
+        self.movieLegendWidget = QWidget(parent=self.movieDisplayContainer)
+        self.movieLegendWidget.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
+        self.movieLegendWidget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.movieLegendWidget.hide()  # start hidden
+
+        # 2) style / position it absolutely
+        self.movieLegendWidget.setStyleSheet("background: rgba(255,255,255,200);  border-radius: 8px; ")
+        self.movieLegendWidget.move(0, 0)  # 10px from top-left of roundedContainer
+
+        # 3) give it a simple horizontal layout
+        self.movieLegendLayout = QHBoxLayout(self.movieLegendWidget)
+        self.movieLegendLayout.setSizeConstraint(QLayout.SetFixedSize)
+        self.movieLegendLayout.setContentsMargins(5,0,5,0)
+        self.movieLegendLayout.setSpacing(8)
+
+        self.movieLegendWidget.stackUnder(self._ch_overlay)
+        self._ch_overlay.installEventFilter(self)
+        self.movieDisplayContainer.installEventFilter(self)
 
         movieLayout.addSpacing(10)
         
@@ -599,53 +697,79 @@ class KymographNavigator(QMainWindow):
         contrastLayout.setContentsMargins(0, 0, 0, 0)
         contrastLayout.setSpacing(10)
         self.contrastControlsWidget = ContrastControlsWidget(self.movieCanvas)
+        contrastsliderfilter = BubbleTipFilter("Adjust contrast range", self, placement="left")
+        self.contrastControlsWidget.installEventFilter(contrastsliderfilter)
+        self.contrastControlsWidget._bubble_filter = contrastsliderfilter
         self.contrastControlsWidget.setMinimumWidth(150)
         contrastLayout.addWidget(self.contrastControlsWidget)
-        resetBtn = QPushButton("")
-        resetBtn.setIcon(QIcon(resetcontrastpath))
-        resetBtn.setIconSize(QSize(16, 16))
-        resetBtn.setToolTip("Reset contrast")
-        resetBtn.clicked.connect(self.reset_contrast)
-        resetBtn.setObjectName("Passive")
-        resetBtn.setFixedWidth(40)
-        contrastLayout.addWidget(resetBtn)
-        self.sumBtn = QPushButton("", self)
+        self.resetBtn = AnimatedIconButton("")
+        self.resetBtn.setIcon(QIcon(resetcontrastpath))
+        self.resetBtn.setIconSize(QSize(16, 16))
+        # self.resetBtn.setToolTip("Reset contrast")
+        contrastresetfilter = BubbleTipFilter("Reset contrast", self, placement="left")
+        self.resetBtn.installEventFilter(contrastresetfilter)
+        self.resetBtn._bubble_filter = contrastresetfilter
+        self.resetBtn.clicked.connect(self.reset_contrast)
+        self.resetBtn.setObjectName("Passive")
+        self.resetBtn.setFixedWidth(40)
+        contrastLayout.addWidget(self.resetBtn)
+        self.sumBtn = AnimatedIconButton("", self)
         self.sumBtn.setIcon(QIcon(maxiconpath))
         self.sumBtn.setIconSize(QSize(16, 16))
         self.sumBtn.setCheckable(True)
         self.sumBtn.setFixedWidth(40)
-        self.sumBtn.setToolTip("Show the maximum projection (shortcut: m)")
+        # self.sumBtn.setToolTip("Show the maximum projection (shortcut: m)")
+        sumfilter = BubbleTipFilter("Maximum projection (shortcut: m)", self)
+        self.sumBtn.installEventFilter(sumfilter)
+        self.sumBtn._bubble_filter = sumfilter
         self.sumBtn.toggled.connect(self.on_sum_toggled)
+        self.sumBtn.setObjectName("Toggle")
         contrastLayout.addWidget(self.sumBtn)
-        self.refBtn = QPushButton("")
+
+        self.refBtn = AnimatedIconButton("")
         self.refBtn.setIcon(QIcon(referenceiconpath))
         self.refBtn.setIconSize(QSize(16, 16))
-        self.refBtn.setToolTip("Show the reference image")
+        # self.refBtn.setToolTip("Show the reference image")
+        reffilter = BubbleTipFilter("Reference image", self)
+        self.refBtn.installEventFilter(reffilter)
+        self.refBtn._bubble_filter = reffilter
         self.refBtn.setCheckable(True)
         self.refBtn.setFixedWidth(40)
         self.refBtn.setVisible(False)
         self.refBtn.toggled.connect(self.on_ref_toggled)
+        self.refBtn.setObjectName("Toggle")
         contrastLayout.addWidget(self.refBtn)
 
-        self.traj_overlay_button = QPushButton("")
-        self.traj_overlay_button.setToolTip("Overlay trajectories (shortcut: o)")
+        self.traj_overlay_button = AnimatedIconButton("")
+        # self.traj_overlay_button.setToolTip("Overlay trajectories (shortcut: o)")
+        traj_filter = BubbleTipFilter("Overlay trajectories (shortcut: o)", self)
+        self.traj_overlay_button.installEventFilter(traj_filter)
+        self.traj_overlay_button._bubble_filter = traj_filter
         self.traj_overlay_button.setIcon(QIcon(trajoverlayiconpath))
         self.traj_overlay_button.setIconSize(QSize(16, 16))
         self.traj_overlay_button.setFixedWidth(40)
         self.traj_overlay_button.setCheckable(True)
         self.traj_overlay_button.setChecked(True)
-        self.update_overlay_button_style(self.traj_overlay_button.isChecked())
-        self.traj_overlay_button.toggled.connect(self.update_overlay_button_style)
+        self.traj_overlay_button.setObjectName("Toggle")
+        # self.update_overlay_button_style(self.traj_overlay_button.isChecked())
+        # self.traj_overlay_button.toggled.connect(self.update_overlay_button_style)
         contrastLayout.addWidget(self.traj_overlay_button)
 
         self.modeSwitch = ToggleSwitch()
         self.modeSwitch.toggled.connect(lambda state: self.onModeChanged("roi" if state else "spot"))
         contrastLayout.addWidget(self.modeSwitch)
+        switch_filter = BubbleTipFilter("Switch between finding spots and drawing kymographs (shortcut: n)", self)
+        self.modeSwitch.installEventFilter(switch_filter)
+        # keep a ref so Python doesn’t garbage‐collect it
+        self.modeSwitch._bubble_filter = switch_filter
 
-        self.roi_overlay_button = QPushButton("")
+        self.roi_overlay_button = AnimatedIconButton("")
         self.roi_overlay_button.setIcon(QIcon(roioverlayiconpath))
         self.roi_overlay_button.setIconSize(QSize(16, 16))
-        self.roi_overlay_button.setToolTip("Overlay ROI onto the movie")
+        # self.roi_overlay_button.setToolTip("Overlay ROI onto the movie")
+        overlayroi_filter = BubbleTipFilter("Overlay the kymograph ROIs onto the movie", self)
+        self.roi_overlay_button.installEventFilter(overlayroi_filter)
+        self.roi_overlay_button._bubble_filter = overlayroi_filter
         self.roi_overlay_button.setCheckable(True)
         self.roi_overlay_button.setFixedWidth(40)
         self.roi_overlay_button.setStyleSheet("""
@@ -663,16 +787,22 @@ class KymographNavigator(QMainWindow):
         # self.roi_overlay_button.toggled.connect(self.update_roi_overlay_button_style)
         contrastLayout.addWidget(self.roi_overlay_button)
 
-        self.delete_button = QPushButton("")
-        self.delete_button.setToolTip("Delete selected trajectory")
+        self.delete_button = AnimatedIconButton("")
+        # self.delete_button.setToolTip("Delete selected trajectory")
+        deletetraj_filter = BubbleTipFilter("Delete selected trajectory", self)
+        self.delete_button.installEventFilter(deletetraj_filter)
+        self.delete_button._bubble_filter = deletetraj_filter
         self.delete_button.setIcon(QIcon(crossiconpath))
         self.delete_button.setIconSize(QSize(16, 16))
         self.delete_button.setFixedWidth(40)
         self.delete_button.setObjectName("Passive")
         contrastLayout.addWidget(self.delete_button)
 
-        self.clear_button = QPushButton("")
-        self.clear_button.setToolTip("Delete all trajectories")
+        self.clear_button = AnimatedIconButton("")
+        # self.clear_button.setToolTip("Delete all trajectories")
+        deletealltraj_filter = BubbleTipFilter("Delete all trajectories", self)
+        self.clear_button.installEventFilter(deletealltraj_filter)
+        self.clear_button._bubble_filter = deletealltraj_filter
         self.clear_button.setIcon(QIcon(crossdoticonpath))
         self.clear_button.setIconSize(QSize(16, 16))
         self.clear_button.setFixedWidth(40)
@@ -685,7 +815,7 @@ class KymographNavigator(QMainWindow):
 
         # Column 3: Right Panel with additional canvases.
         rightPanel = QWidget()
-        rightPanel.setMinimumWidth(350)
+        rightPanel.setFixedWidth(400)
         rightPanelLayout = QVBoxLayout(rightPanel)
         rightPanelLayout.setContentsMargins(6, 6, 6, 6)
         rightPanelLayout.setSpacing(10)
@@ -708,6 +838,14 @@ class KymographNavigator(QMainWindow):
         roundedHistFrame.setLayout(histLayout)
         rightPanelLayout.addWidget(roundedHistFrame, stretch=1)
 
+        self.histogramCanvas.setMouseTracking(True)
+        CenteredBubbleFilter(
+            text="Pixel intensities within the search range",
+            parent=self,
+            delay_ms=1000,
+            visible_ms=3000
+        ).attachTo(self.histogramCanvas)
+
         # --- Intensity/Plot Canvas in a rounded frame ---
         self.intensityCanvas = IntensityCanvas(parent=self, navigator=self)
         self.intensityCanvas.setStyleSheet(f"background-color: {self.settings['widget-bg']}")
@@ -724,6 +862,14 @@ class KymographNavigator(QMainWindow):
         plotLayout.addWidget(self.intensityCanvas)
         roundedPlotFrame.setLayout(plotLayout)
         rightPanelLayout.addWidget(roundedPlotFrame, stretch=1)
+
+        self.intensityCanvas.setMouseTracking(True)
+        CenteredBubbleFilter(
+            text="Spot intensities for the trajectory",
+            parent=self,
+            delay_ms=1000,
+            visible_ms=3000
+        ).attachTo(self.intensityCanvas)
 
         # --- Velocity Canvas in a rounded frame ---
         self.velocityCanvas = VelocityCanvas(self, navigator=self)
@@ -742,8 +888,19 @@ class KymographNavigator(QMainWindow):
         roundedVelFrame.setLayout(velLayout)
         rightPanelLayout.addWidget(roundedVelFrame, stretch=1)
 
+        self.velocityCanvas.setMouseTracking(True)
+        CenteredBubbleFilter(
+            text="Frame-to-frame speeds",
+            parent=self,
+            delay_ms=1000,
+            visible_ms=3000
+        ).attachTo(self.velocityCanvas)
+
         # --- Analysis Slider (optional; you can also wrap it similarly if desired)
         self.analysisSlider = QSlider(Qt.Horizontal)
+        analysissliderfilter = BubbleTipFilter("Slide through trajectory points", self, placement="left")
+        self.analysisSlider.installEventFilter(analysissliderfilter)
+        self.analysisSlider._bubble_filter = analysissliderfilter
         self.analysisSlider.setMinimum(0)
         self.analysisSlider.setMaximum(0)  # Will be updated later when analysis data is computed
         self.analysisSlider.setValue(0)
@@ -761,6 +918,8 @@ class KymographNavigator(QMainWindow):
         # Optional: adjust stretch factors for the topRightSplitter:
         self.topRightSplitter.setStretchFactor(0, 3)  # movie widget
         self.topRightSplitter.setStretchFactor(1, 2)  # right panel
+        self.topRightSplitter.setCollapsible(1, True)
+        self.topRightSplitter.setCollapsible(0, True)
 
         # Add the top row (movie + right panel) as the upper widget in the vertical splitter.
         self.rightVerticalSplitter.addWidget(self.topRightSplitter)
@@ -808,6 +967,7 @@ class KymographNavigator(QMainWindow):
         )
         self.zoomInsetFrame.setStyleSheet("""
             QFrame {
+                background: white;
                 border: 2px solid transparent;
                 border-radius: 10px;
             }
@@ -829,7 +989,7 @@ class KymographNavigator(QMainWindow):
         self.zoomInsetLabel.setStyleSheet("""
             QLabel {
                 background-color: transparent;
-                color: #444444;
+                color: #666666;
                 border-radius: 5px;
             }
         """)
@@ -861,7 +1021,7 @@ class KymographNavigator(QMainWindow):
         self.zoomInsetIntensityLabel.setStyleSheet("""
             QLabel {
                 background-color: transparent;
-                color: rgba(255, 0, 255, 180);
+                color: rgba(255, 0, 255, 130);
                 border-radius: 5px;
             }
         """)
@@ -905,6 +1065,35 @@ class KymographNavigator(QMainWindow):
                 if im:
                     im.set_cmap("gray_r" if checked else "gray")
             canv.draw_idle()
+
+        # if self.inverted_cmap:
+        #     self._ch_overlay.setStyleSheet("""
+        #         background: rgba(255,255,255,180);
+        #         border-radius: 8px;
+        #         color: black;
+        #         font-size: 26px;
+        #         font-weight: bold;
+        #     """)
+
+        #     shadow = QGraphicsDropShadowEffect(self._ch_overlay)
+        #     shadow.setBlurRadius(40)
+        #     shadow.setColor(QColor(255, 255, 255, 250))
+        #     shadow.setOffset(0, 0)
+        #     self._ch_overlay.setGraphicsEffect(shadow)
+        # else:
+        #     self._ch_overlay.setStyleSheet("""
+        #         background: rgba(50,50,50,180);
+        #         border-radius: 8px;
+        #         color: white;
+        #         font-size: 26px;
+        #         font-weight: bold;
+        #     """)
+
+        #     shadow = QGraphicsDropShadowEffect(self._ch_overlay)
+        #     shadow.setBlurRadius(40)
+        #     shadow.setColor(QColor(0, 0, 0, 250))
+        #     shadow.setOffset(0, 0)
+        #     self._ch_overlay.setGraphicsEffect(shadow)
 
     def update_roilist_visibility(self):
         # Look through all of your kymo→ROI entries for any imported ROIs
@@ -1017,7 +1206,7 @@ class KymographNavigator(QMainWindow):
         frame.setObjectName("flashFrame")
         frame.setStyleSheet("""
             QFrame#flashFrame {
-                background-color: #F1F5FF;
+                background-color: white;
                 border-radius: 12px;
             }
         """)
@@ -1044,7 +1233,7 @@ class KymographNavigator(QMainWindow):
         # 5) center it over the parent
         pw, ph = parent.width(), parent.height()
         lw, lh = popup.width(), popup.height()
-        pos = parent.mapToGlobal(QPoint((pw-lw)//2, (ph-lh)//35))
+        pos = parent.mapToGlobal(QPoint((pw-lw)//2, (ph-lh)//62))
         popup.move(pos)
 
         popup.show()
@@ -1072,22 +1261,6 @@ class KymographNavigator(QMainWindow):
             popup._anim = anim  # keep reference alive
 
         QTimer.singleShot(total_ms - fade_ms, start_fade)
-
-    def eventFilter(self, obj, event):
-        # intercept wheel events when our radius dialog is up
-        if (self._radiusDialog is not None 
-                and self._radiusDialog.isVisible() 
-                and event.type() == QEvent.Wheel):
-            # up/down?
-            delta = event.angleDelta().y()
-            step  = self.searchWindowSpin.singleStep()
-            cur   = self.searchWindowSpin.value()
-            if delta > 0:
-                self.searchWindowSpin.setValue(cur + step)
-            else:
-                self.searchWindowSpin.setValue(cur - step)
-            return True    # eat it
-        return super().eventFilter(obj, event)
 
     def delete_current_roi(self):
         current = self.roiCombo.currentText()
@@ -1185,7 +1358,7 @@ class KymographNavigator(QMainWindow):
         pw, ph = self.width(), self.height()
         lw, lh = dlg.width(), dlg.height()
         x = (pw - lw) // 2
-        y = (ph - lh) // 35
+        y = (ph - lh) // 90
         dlg.move(self.mapToGlobal(QPoint(x, y)))
         dlg.show()
 
@@ -1211,10 +1384,14 @@ class KymographNavigator(QMainWindow):
         if self.looping:
             self.stoploop()
 
+        # print("handleglobalx analysis_channel", self.analysis_channel)
+
+        if self.analysis_channel is not None:
+            if getattr(self.movieCanvas, 'current_channel', None) != self.analysis_channel:
+                self._select_channel(self.analysis_channel)
+
         idx = self.intensityCanvas.current_index
-        fitted_center = self.analysis_fit_params[idx][0]
-        sigma = self.analysis_fit_params[idx][0]
-        peak = self.analysis_fit_params[idx][0]
+        fitted_center, sigma, peak = self.analysis_fit_params[idx]
         bkgr = self.analysis_background[idx]
         intensity = self.analysis_intensities[idx]
         search_center = self.analysis_search_centers[idx]
@@ -1223,33 +1400,99 @@ class KymographNavigator(QMainWindow):
         crop_size = int(2 * self.searchWindowSpin.value())
 
         frame_image = self.get_movie_frame(frame)
+        row = self.trajectoryCanvas.table_widget.selectionModel().selectedRows()[0].row()
+        traj = self.trajectoryCanvas.trajectories[row]
+
         if frame_image is not None:
             if self.analysis_intensities[idx] is None:
-                # Re-analysis branch: re-run Gaussian fit at original fit center
-                fitted_center, sigma, intensity, peak, bkgr = perform_gaussian_fit(frame_image, search_center, crop_size, pixelsize = self.pixel_size)
-                self.movieCanvas.overlay_rectangle(search_center[0], search_center[1], crop_size, frame_number=frame)
-                self.flash_message("Reattempt")
-            else:
-                self.flash_message("Remove")
-                # if getattr(self.kymoCanvas, "_marker", None) is not None:
-                #     try:
-                #         self.kymoCanvas._marker.remove()
-                #     except Exception:
-                #         pass
-                # # force a fresh background snapshot next time (so it won’t blit the old grey)
-                # self.kymoCanvas._bg = None
-                # # draw the new marker at the search center
-                # x, y = self.analysis_search_centers[idx]
-                # self.kymoCanvas.overlay_spot_center(x, y, size=12, color="grey")
+                # Re-analysis branch: re-run Gaussian fit
+                fitted_center, sigma, intensity, peak, bkgr = perform_gaussian_fit(
+                    frame_image, search_center, crop_size, pixelsize=self.pixel_size, bg_fixed=bkgr
+                )
+                self.movieCanvas.overlay_rectangle(
+                    search_center[0], search_center[1], crop_size
+                )
 
+                if fitted_center is not None:
+
+                    if getattr(self, 'check_colocalization', False) and self.movie.ndim == 4:
+                        # Clear existing colocalization for this frame
+                        traj["colocalization_any"][idx] = None
+                        for ch in traj["colocalization_by_ch"]:
+                            traj["colocalization_by_ch"][ch][idx] = None
+
+                        # Recompute colocalization just for this one point
+                        self.analysis_frames     = traj["frames"]
+                        self.analysis_fit_params = list(zip(
+                            traj["spot_centers"], traj["sigmas"], traj["peaks"]
+                        ))
+
+                        # overall-any
+                        self.analysis_channel = traj["channel"]
+                        self._compute_colocalization_single_frame(idx)
+                        traj["colocalization_any"][idx] = (
+                            "Yes" if self.analysis_colocalized[idx] else "No"
+                        )
+
+                        # per-channel
+                        oldchannel = self.analysis_channel
+                        for tgt_ch in traj["colocalization_by_ch"].keys():
+                            self.analysis_channel = tgt_ch
+                            self._compute_colocalization_single_frame(idx)
+                            traj["colocalization_by_ch"][tgt_ch][idx] = (
+                                "Yes" if self.analysis_colocalized[idx] else "No"
+                            )
+                        self.analysis_channel = oldchannel
+
+                self.flash_message("Reattempt")
+
+            else:
+                if getattr(self, 'check_colocalization', False) and self.movie.ndim == 4:
+                    # Invalidation branch: clear this point's colocalization
+                    traj["colocalization_any"][idx] = None
+                    for ch in traj["colocalization_by_ch"]:
+                        traj["colocalization_by_ch"][ch][idx] = None
+
+                self.flash_message("Remove")
+
+        # now update everything else (velocities, intensities, table, etc.)
         self.trajectoryCanvas.update_trajectory(idx, fitted_center, sigma, peak, intensity)
 
         if self.analysis_intensities[idx] is None:
             self.movieCanvas.remove_gaussian_circle()
             self.movieCanvas.remove_inset_circle()
+            self.kymoCanvas.remove_gaussian_circle()
             self.kymoCanvas.clear_kymo_trajectory_markers()
+            sx, sy = search_center
+            kymo_name = self.kymoCombo.currentText()
+            if kymo_name and kymo_name in self.kymographs and self.rois:
+                roi = self.rois[self.roiCombo.currentText()]
+                xk = self.compute_kymo_x_from_roi(
+                    roi, sx, sy,
+                    self.kymographs[kymo_name].shape[1]
+                )
+                if xk is not None:
+                    disp_frame = (self.movie.shape[0] - 1) - frame
+                    self.kymoCanvas.add_gaussian_circle(
+                        xk, disp_frame,
+                        color='grey'
+                    )
         else:
             self.movieCanvas.add_gaussian_circle(fitted_center, sigma)
+            fx, fy = fitted_center
+            kymo_name = self.kymoCombo.currentText()
+            if kymo_name and kymo_name in self.kymographs and self.rois:
+                roi = self.rois[self.roiCombo.currentText()]
+                xk = self.compute_kymo_x_from_roi(
+                    roi, fx, fy,
+                    self.kymographs[kymo_name].shape[1]
+                )
+                if xk is not None:
+                    disp_frame = (self.movie.shape[0] - 1) - frame
+                    self.kymoCanvas.add_gaussian_circle(
+                        xk, disp_frame,
+                        color='magenta'
+                    )
             center_for_zoom = fitted_center if fitted_center is not None else search_center
             self.movieCanvas.update_inset(
                 frame_image, center_for_zoom, int(self.insetViewSize.value()), 2,
@@ -1269,7 +1512,7 @@ class KymographNavigator(QMainWindow):
         self.intensityCanvas.plot_intensity(self.analysis_frames, self.analysis_intensities,
                             avg_intensity=self.analysis_avg,
                             median_intensity=self.analysis_median,
-                            colors=self.analysis_colors)
+                            colors=self._get_traj_colors(traj)[0])
         self.intensityCanvas.highlight_current_point()
 
         self.velocityCanvas.plot_velocity_histogram(self.analysis_velocities)
@@ -1284,6 +1527,11 @@ class KymographNavigator(QMainWindow):
 
         # Create File-related menus
         loadMenu = menubar.addMenu("Load")
+
+        loadMovieAction = QAction("Movie", self)
+        loadMovieAction.triggered.connect(self.handle_movie_load)
+        loadMenu.addAction(loadMovieAction)
+
         loadKymosAction = QAction("Kymographs", self)
         loadKymosAction.triggered.connect(self.load_kymographs)
         loadMenu.addAction(loadKymosAction)
@@ -1338,15 +1586,21 @@ class KymographNavigator(QMainWindow):
         channelAxisAction.triggered.connect(self.show_channel_axis_dialog)
         movieMenu.addAction(channelAxisAction)
 
-        spotMenu = menubar.addMenu("Spot")
+        self.spotMenu = menubar.addMenu("Spot")
         searchRadiusAction = QAction("Search Radius", self)
         searchRadiusAction.triggered.connect(self.set_search_radius)
-        spotMenu.addAction(searchRadiusAction)
+        self.spotMenu.addAction(searchRadiusAction)
 
         # Create a QComboBox for Tracking Mode and wrap it in a QWidgetAction.
         trackingModeAction = QAction("Tracking Mode", self)
         trackingModeAction.triggered.connect(self.set_tracking_mode)
-        spotMenu.addAction(trackingModeAction)
+        self.spotMenu.addAction(trackingModeAction)
+
+        avoidOldSpotsAction = QAction("Avoid previous spots", self, checkable=True)
+        avoidOldSpotsAction.setChecked(False)
+        avoidOldSpotsAction.setStatusTip("Skip any spot centers that were already analysed")
+        avoidOldSpotsAction.toggled.connect(lambda checked: setattr(self, "avoid_previous_spot", checked))
+        self.spotMenu.addAction(avoidOldSpotsAction)
 
         kymoMenu = menubar.addMenu("Kymograph")
         kymopreferencesAction = QAction("Line options", self)
@@ -1357,9 +1611,10 @@ class KymographNavigator(QMainWindow):
         kymoGenerateFromTrajAction.triggered.connect(self.generate_rois_from_trajectories)
         kymoMenu.addAction(kymoGenerateFromTrajAction)
 
-        self._colorBySeparator = kymoMenu.addSeparator()
-        self._colorByActions   = []
-        self.kymoMenu          = kymoMenu
+        connectgapsAction = QAction("Connect spot gaps", self, checkable=True)
+        connectgapsAction.setChecked(False)
+        connectgapsAction.toggled.connect(self.on_connect_spot_gaps_toggled)
+        kymoMenu.addAction(connectgapsAction)
 
         trajMenu = menubar.addMenu("Trajectories")
 
@@ -1370,6 +1625,10 @@ class KymographNavigator(QMainWindow):
         recalcAction = QAction("Recalculate all", self)
         recalcAction.triggered.connect(self.trajectoryCanvas.recalculate_all_trajectories)
         trajMenu.addAction(recalcAction)
+
+        self._colorBySeparator = trajMenu.addSeparator()
+        self._colorByActions   = []
+        self.trajMenu          = trajMenu
 
         viewMenu = menubar.addMenu("View")
 
@@ -1383,39 +1642,76 @@ class KymographNavigator(QMainWindow):
         viewMenu.addAction(zoomAction)
 
     def _rebuild_color_by_actions(self):
-        # 1) Remove *only* the old color-by actions
+        # 1) clear old
         for act in self._colorByActions:
-            self.kymoMenu.removeAction(act)
+            self.trajMenu.removeAction(act)
         self._colorByActions.clear()
 
-        # 2) Insert one fresh QAction per binary custom column
+        # 2) add custom columns (binary/value)
         for col in self.trajectoryCanvas.custom_columns:
-            if self.trajectoryCanvas._column_types.get(col) == "binary":
+            ctype = self.trajectoryCanvas._column_types[col]
+            if ctype in ("binary", "value"):
                 act = QAction(f"Color by {col}", self, checkable=True)
-                act.toggled.connect(lambda checked, c=col, a=act:
-                                    self._on_color_by_toggled(c, a, checked))
-                self.kymoMenu.insertAction(self._colorBySeparator, act)
+                act.setData(col)   # ← store the real key
+                act.toggled.connect(lambda on, a=act: 
+                    self._on_color_by_toggled(a.data(), a, on)
+                )
+                # if already selected, show its checkmark
+                if self.color_by_column == col:
+                    act.setChecked(True)
+
+                self.trajMenu.insertAction(self._colorBySeparator, act)
                 self._colorByActions.append(act)
 
-        # 3) If the previously-selected column was removed, reset to defaults
-        if (self.kymoCanvas.color_by_column
-            and self.kymoCanvas.color_by_column
-                not in self.trajectoryCanvas.custom_columns):
-            self.kymoCanvas.set_color_by(None)
-            # also uncheck all actions just in case
-            for act in self._colorByActions:
-                act.setChecked(False)
+        # 3) count channels
+        if self.movie.ndim == 4 and self._channel_axis is not None:
+            n_chan = self.movie.shape[self._channel_axis]
+        else:
+            n_chan = 1
+
+        # 4) add colocalization actions
+        if n_chan == 2:
+            key = "colocalization"
+            act = QAction("Color by colocalization", self, checkable=True)
+            act.setData(key)
+            act.toggled.connect(lambda on, a=act: 
+                self._on_color_by_toggled(a.data(), a, on)
+            )
+            if self.color_by_column == key:
+                act.setChecked(True)
+            self.trajMenu.insertAction(self._colorBySeparator, act)
+            self._colorByActions.append(act)
+
+        elif n_chan > 2:
+            for tgt in range(1, n_chan+1):
+                key  = f"coloc_ch{tgt}"
+                text = f"Color by Ch. {tgt} coloc"
+                act = QAction(text, self, checkable=True)
+                act.setData(key)
+                act.toggled.connect(lambda on, a=act: 
+                    self._on_color_by_toggled(a.data(), a, on)
+                )
+                if self.color_by_column == key:
+                    act.setChecked(True)
+                self.trajMenu.insertAction(self._colorBySeparator, act)
+                self._colorByActions.append(act)
 
     def _on_color_by_toggled(self, column_name, action, checked):
+        if checked and (column_name == "colocalization" or column_name.startswith("coloc_ch")):
+            # colocalizationAction is the QAction you created earlier:
+            if not self.colocalizationAction.isChecked():
+                # this will both check its box and fire your on_colocalization_toggled handler
+                self.colocalizationAction.setChecked(True)
+
         if checked:
-            # uncheck the others
+            # uncheck the other color‐by actions
             for act in self._colorByActions:
                 if act is not action:
                     act.setChecked(False)
-            self.kymoCanvas.set_color_by(column_name)
+            self.set_color_by(column_name)
         else:
-            # user untoggled it → go back to defaults
-            self.kymoCanvas.set_color_by(None)
+            # if you untoggle a color‐by, clear it
+            self.set_color_by(None)
 
     def open_kymopreferences_dialog(self):
         """
@@ -1574,198 +1870,291 @@ class KymographNavigator(QMainWindow):
             reply = QMessageBox.question(
                 self,
                 "Clear existing data?",
-                "Clear existing data?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
+                "Clear existing data before loading a new movie?",
+                QMessageBox.Yes | QMessageBox.Cancel,
+                QMessageBox.Yes
             )
-            if reply == QMessageBox.Yes:
-                self.clear_flag = True
+            if reply == QMessageBox.Cancel:
+                # user chose cancel → abort load_movie entirely
+                return
+            # user chose Yes → clear all existing data
+            self.clear_flag = True
 
         if fname:
             self._last_dir = os.path.dirname(fname)
-            try:
-                with tifffile.TiffFile(fname) as tif:
-                    temp_movie = tif.asarray()
-                    self.movie_metadata = tif.imagej_metadata or {}
-                    page = tif.pages[0]
+            # try:
+            with tifffile.TiffFile(fname) as tif:
+                temp_movie = tif.asarray()
+                self.movie_metadata = tif.imagej_metadata or {}
+                page = tif.pages[0]
 
-                tags = page.tags
-                description = page.description
+            tags = page.tags
+            description = page.description
 
-                if pixelsize is not None and frameinterval is not None:
-                    self.pixel_size = pixelsize
-                    self.frame_interval = frameinterval
+            if pixelsize is not None and frameinterval is not None:
+                self.pixel_size = pixelsize
+                self.frame_interval = frameinterval
 
-                else:
-                    
-                    y_size = None
-                    self.pixel_size = None
-                    self.frame_interval = None
+            else:
+                
+                y_size = None
+                self.pixel_size = None
+                self.frame_interval = None
 
-                    import re
-                    
-                    if description:
-                        # Look for a pattern like "Voxel size: 0.1100x0.1100x1"
-                        m = re.search(r'Voxel size:\s*([\d\.]+)[xX]([\d\.]+)[xX]([\d\.]+)', description)
-                        if m:
+                import re
+                
+                if description:
+                    # Look for a pattern like "Voxel size: 0.1100x0.1100x1"
+                    m = re.search(r'Voxel size:\s*([\d\.]+)[xX]([\d\.]+)[xX]([\d\.]+)', description)
+                    if m:
+                        try:
+                            # Convert the strings to floats.
+                            # The typical order in ImageJ is "x_size x y_size x z_size".
+                            #x_size = float(m.group(1))
+                            y_size = float(m.group(2))
+                            #z_size = float(m.group(3))
+                            # Return as [z, y, x]
+                            self.pixel_size = y_size*1000
+                        except Exception as e:
+                            print("Error parsing voxel size from ImageDescription:", e)
+
+                if self.pixel_size is None:
+                    if 'YResolution' in tags:
+                        value = tags['YResolution'].value
+                        try:
+                            # If value is a tuple, compute pixels per micron:
+                            num, denom = value
+                            # pixels per micron = num/denom; thus pixel size in microns is 1/(num/denom)
+                            self.pixel_size = float(denom)*1000 / float(num)
+                        except Exception:
                             try:
-                                # Convert the strings to floats.
-                                # The typical order in ImageJ is "x_size x y_size x z_size".
-                                #x_size = float(m.group(1))
-                                y_size = float(m.group(2))
-                                #z_size = float(m.group(3))
-                                # Return as [z, y, x]
-                                self.pixel_size = y_size*1000
-                            except Exception as e:
-                                print("Error parsing voxel size from ImageDescription:", e)
-
-                    if self.pixel_size is None:
-                        if 'YResolution' in tags:
-                            value = tags['YResolution'].value
-                            try:
-                                # If value is a tuple, compute pixels per micron:
-                                num, denom = value
-                                # pixels per micron = num/denom; thus pixel size in microns is 1/(num/denom)
-                                self.pixel_size = float(denom)*1000 / float(num)
+                                # Otherwise try to convert directly to a float.
+                                self.pixel_size = float(value)*1000
                             except Exception:
-                                try:
-                                    # Otherwise try to convert directly to a float.
-                                    self.pixel_size = float(value)*1000
-                                except Exception:
-                                    pass
+                                pass
 
-                    desc = tif.pages[0].tags["ImageDescription"].value
-                    try:
-                        match = re.search(r'finterval=([\d\.]+)', desc)
-                        if match:
-                            self.frame_interval = float(match.group(1))*1000
-                    except Exception:
-                        pass
-
-                    if self.pixel_size is not None:
-                        if self.pixel_size < 0.1:
-                            self.pixel_size = None
-                    if self.frame_interval is not None:
-                        if self.frame_interval < 0.1:
-                            self.frame_interval = None
-
+                desc = tif.pages[0].tags["ImageDescription"].value
                 try:
-                    shape = temp_movie.shape
-                except Exception as e:
-                    QMessageBox.critical(self, "Error", f"Invalid movie : {e}")
-                    return
+                    match = re.search(r'finterval=([\d\.]+)', desc)
+                    if match:
+                        self.frame_interval = float(match.group(1))*1000
+                except Exception:
+                    pass
 
-                if temp_movie.ndim not in (3, 4):
-                    QMessageBox.critical(self, "Error", f"Invalid movie shape: {temp_movie.shape}")
-                    return
+                if self.pixel_size is not None:
+                    if self.pixel_size < 0.1:
+                        self.pixel_size = None
+                if self.frame_interval is not None:
+                    if self.frame_interval < 0.1:
+                        self.frame_interval = None
 
-                self.referenceImage = None
-                self.refBtn.setVisible(False)
-                self.refBtn.setChecked(False)
-                self.sumBtn.setChecked(False)
-                self.zoomInsetFrame.setVisible(False)
-                self.movieCanvas._last_inset_params = None
-                self.movieCanvas._inset_update_pending = False
-
-                # Initialize (or reset) contrast settings for multi‑channel movies.
-                self.channel_contrast_settings = {}      # for “normal” mode
-                self.channel_sum_contrast_settings = {}   # for sum‐mode
-                self.reference_contrast_settings = {}
-
-                self.movieNameLabel.setText(os.path.basename(fname))
-
-                # ── blank out the histogram canvas entirely ────────────────────────────────
-                if hasattr(self, 'histogramCanvas'):
-                    self.histogramCanvas.ax.cla()
-                    self.histogramCanvas.ax.axis("off")
-                    self.histogramCanvas.draw_idle()
-                # ── blank out the intensity/plot canvas (two sub‐axes) ────────────────────
-                if hasattr(self, 'intensityCanvas'):
-                    # top subplot
-                    self.intensityCanvas.ax_top.cla()
-                    self.intensityCanvas.ax_top.axis("off")
-                    # bottom subplot
-                    self.intensityCanvas.ax_bottom.cla()
-                    self.intensityCanvas.ax_bottom.axis("off")
-                    self.intensityCanvas.draw_idle()
-                # ── blank out the velocity histogram canvas ───────────────────────────────
-                if hasattr(self, 'velocityCanvas'):
-                    self.velocityCanvas.ax_vel.cla()
-                    self.velocityCanvas.ax_vel.axis("off")
-                    self.velocityCanvas.draw_idle()
-
-                # ── blank out the zoom‐inset widget ─────────────────────────────────────────
-                if hasattr(self, "zoomInsetFrame"):
-                    # hide the whole frame
-                    self.zoomInsetFrame.setVisible(False)
-
-                if hasattr(self, "zoomInsetWidget"):
-                    # clear its axes
-                    self.zoomInsetWidget.ax.clear()
-                    self.zoomInsetWidget.ax.axis("off")
-                    self.zoomInsetWidget.draw_idle()
-
-                self.movieCanvas.clear_canvas()
-                self.movie = temp_movie
-                self.original_movie = self.movie.copy()
-
-                # Reset the frame cache whenever a new movie is loaded.
-                self.frame_cache = {}
-
-                if self.movie.ndim == 4:
-                    # 4D movie (multi‑channel)
-                    if self.movie_metadata and "axes" in self.movie_metadata:
-                        axes_str = self.movie_metadata["axes"]  # e.g., "TXYC" or "TCYX"
-                        # For example, if the letter "C" is found, use that index:
-                        self._channel_axis = axes_str.find("C")
-                    else:
-                        self.update_channel_axis_options()
-                    self.update_movie_channel_combo()
-                    first_frame = self.get_movie_frame(0)
-                else:
-                    # 3D movie (single channel)
-                    self._channel_axis = None
-                    self.movieChannelCombo.blockSignals(True)
-                    self.movieChannelCombo.clear()
-                    self.movieChannelCombo.addItem("1")
-                    self.movieChannelCombo.blockSignals(False)
-                    # Now call update_movie_channel_combo even for 3D movies:
-                    self.update_movie_channel_combo()
-                    first_frame = self.movie[0]
-
-                max_frame = self.movie.shape[0]
-                self.frameSlider.setMinimum(0)
-                self.frameSlider.setMaximum(max_frame - 1)
-                self.frameSlider.setValue(0)
-                self.frameNumberLabel.setText("1")
-
-                margin = 0
-                full_width = self.movieCanvas.image.shape[1]
-                full_height = self.movieCanvas.image.shape[0]
-                self.movieCanvas.zoom_center = (full_width/2, full_height/2)
-                self.movieCanvas.display_image(first_frame)
-
-                self.movieCanvas.draw_idle()
-                self.movieCanvas.clear_sum_cache()
-
-                if self.clear_flag:
-                    self.clear_rois()
-                    self.clear_kymographs()
-                    self.trajectoryCanvas.clear_trajectories(prompt=False)
-                    self.clear_flag = False
-
-                self.update_scale_label()
-
-                if self.pixel_size is None or self.frame_interval is None:
-                    self.set_scale()
-
-                self.last_kymo_by_channel = {}
-
-                self.flash_message("Loaded movie")
-
+            try:
+                shape = temp_movie.shape
             except Exception as e:
+                QMessageBox.critical(self, "Error", f"Invalid movie : {e}")
+                return
 
-                QMessageBox.critical(self, "Error", f"Could not load movie:\n{str(e)}")
+            if temp_movie.ndim not in (3, 4):
+                QMessageBox.critical(self, "Error", f"Invalid movie shape: {temp_movie.shape}")
+                return
+
+            self.referenceImage = None
+            self.refBtn.setVisible(False)
+            self.refBtn.setChecked(False)
+            self.sumBtn.setChecked(False)
+            self.zoomInsetFrame.setVisible(False)
+            self.movieCanvas._last_inset_params = None
+            self.movieCanvas._inset_update_pending = False
+
+            # Initialize (or reset) contrast settings for multi‑channel movies.
+            self.channel_contrast_settings = {}      # for “normal” mode
+            self.channel_sum_contrast_settings = {}   # for sum‐mode
+            self.reference_contrast_settings = {}
+
+            self.movieNameLabel.setText("")
+            self.movieNameLabel.setStyleSheet("background: transparent; font-size: 16px; font-weight: bold")
+            self.movieNameLabel.setText(os.path.basename(fname))
+            self.movieNameLabel.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            
+
+            # ── blank out the histogram canvas entirely ────────────────────────────────
+            if hasattr(self, 'histogramCanvas'):
+                self.histogramCanvas.ax.cla()
+                self.histogramCanvas.ax.axis("off")
+                self.histogramCanvas.draw_idle()
+            # ── blank out the intensity/plot canvas (two sub‐axes) ────────────────────
+            if hasattr(self, 'intensityCanvas'):
+                ic = self.intensityCanvas
+
+                # 1) clear any old highlights & scatter
+                ic.clear_highlight()
+                ic.scatter_obj_top = None
+                ic.scatter_obj_bottom = None
+                ic.point_highlighted = False
+                ic._last_plot_args   = None
+
+                # 2) completely wipe both axes
+                ic.ax_top.cla()
+                ic.ax_bottom.cla()
+                ic.ax_top.axis('off')
+                ic.ax_bottom.axis('off')
+
+                # 3) redraw & grab a fresh background
+                ic.draw()
+                ic._background = ic.copy_from_bbox(ic.fig.bbox)
+            # ── blank out the velocity histogram canvas ───────────────────────────────
+            if hasattr(self, 'velocityCanvas'):
+                self.velocityCanvas.ax_vel.cla()
+                self.velocityCanvas.ax_vel.axis("off")
+                self.velocityCanvas.draw_idle()
+
+            # ── blank out the zoom‐inset widget ─────────────────────────────────────────
+            if hasattr(self, "zoomInsetFrame"):
+                # hide the whole frame
+                self.zoomInsetFrame.setVisible(False)
+
+            if hasattr(self, "zoomInsetWidget"):
+                # clear its axes
+                self.zoomInsetWidget.ax.clear()
+                self.zoomInsetWidget.ax.axis("off")
+                self.zoomInsetWidget.draw_idle()
+
+            self.movieCanvas.clear_canvas()
+            self.movie = temp_movie
+            self.original_movie = self.movie.copy()
+
+            # Reset the frame cache whenever a new movie is loaded.
+            self.frame_cache = {}
+
+            if self.movie.ndim == 4:
+                # 4D movie (multi‑channel)
+                if self.movie_metadata and "axes" in self.movie_metadata:
+                    axes_str = self.movie_metadata["axes"]  # e.g., "TXYC" or "TCYX"
+                    # For example, if the letter "C" is found, use that index:
+                    self._channel_axis = axes_str.find("C")
+                else:
+                    self.update_channel_axis_options()
+                self.update_movie_channel_combo()
+                first_frame = self.get_movie_frame(0)
+            else:
+                # 3D movie (single channel)
+                self._channel_axis = None
+                self.movieChannelCombo.blockSignals(True)
+                self.movieChannelCombo.clear()
+                self.movieChannelCombo.addItem("1")
+                self.movieChannelCombo.blockSignals(False)
+                # Now call update_movie_channel_combo even for 3D movies:
+                self.update_movie_channel_combo()
+                first_frame = self.movie[0]
+
+            max_frame = self.movie.shape[0]
+            self.frameSlider.setMinimum(0)
+            self.frameSlider.setMaximum(max_frame - 1)
+            self.frameSlider.setValue(0)
+            self.frameNumberLabel.setText("1")
+
+            margin = 0
+            full_width = self.movieCanvas.image.shape[1]
+            full_height = self.movieCanvas.image.shape[0]
+            self.movieCanvas.zoom_center = (full_width/2, full_height/2)
+            self.movieCanvas.display_image(first_frame)
+
+            self.movieCanvas.draw_idle()
+            self.movieCanvas.clear_sum_cache()
+
+            if self.clear_flag:
+                self.clear_rois()
+                self.clear_kymographs()
+                self.trajectoryCanvas.clear_trajectories(prompt=False)
+                self.clear_flag = False
+
+            self.update_scale_label()
+
+            if self.pixel_size is None or self.frame_interval is None:
+                self.set_scale()
+
+            self.last_kymo_by_channel = {}
+
+            # If there are any existing custom columns, ask whether to clear them now
+            # only ask if there are any custom‐columns other than the auto‐added colocalization % ones
+            non_coloc = [
+                name for name in self.trajectoryCanvas.custom_columns
+                if self.trajectoryCanvas._column_types.get(name) != "coloc"
+            ]
+            if non_coloc:
+                reply = QMessageBox.question(
+                    self,
+                    "Clear custom columns?",
+                    "Do you want to clear all user-defined custom columns?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                if reply == QMessageBox.Yes:
+                    # remove only those non-coloc columns
+                    for name in non_coloc:
+                        idx = self.trajectoryCanvas._col_index.get(name)
+                        if idx is not None:
+                            self.trajectoryCanvas._remove_custom_column(idx, name)
+                    # rebuild the menu so it no longer shows those entries
+            
+            coloc_cols = [
+                name for name in self.trajectoryCanvas.custom_columns
+                if self.trajectoryCanvas._column_types.get(name) == "coloc"
+            ]
+            for name in coloc_cols:
+                idx = self.trajectoryCanvas._col_index.get(name)
+                if idx is not None:
+                    self.trajectoryCanvas._remove_custom_column(idx, name)
+            self._rebuild_color_by_actions()
+
+            if self.movie.ndim == 4:
+                # — multi-channel: build co-localization columns —
+                # first, clear any old co. % columns if reloading
+                old = [c for c in self.trajectoryCanvas.custom_columns if c.endswith(" co. %")]
+                for name in old:
+                    idx = self.trajectoryCanvas._col_index.get(name)
+                    if idx is not None:
+                        self.trajectoryCanvas._remove_custom_column(idx, name)
+
+                # now add fresh ones
+                self.trajectoryCanvas.custom_columns = [c for c in self.trajectoryCanvas.custom_columns if not c.endswith(" co. %")]
+                n_chan = self.movie.shape[self._channel_axis]
+                for ch in range(1, n_chan+1):
+                    col_name = f"Ch. {ch} co. %"
+                    self.trajectoryCanvas._add_custom_column(col_name, col_type="coloc")
+
+                print("load_movie custom_columns, after add_custom_column", self.trajectoryCanvas.custom_columns)
+
+                if not hasattr(self, 'colocalizationAction'):
+                    self.colocalizationAction = QAction("Check colocalization", self, checkable=True)
+                    self.colocalizationAction.setChecked(False)
+                    self.colocalizationAction.toggled.connect(self.on_colocalization_toggled)
+                    # spotMenu must be the same QMenu you created originally
+                    self.spotMenu.addAction(self.colocalizationAction)
+
+            else:
+                # single-channel: ensure no stray co. % columns remain
+                for name in [c for c in self.trajectoryCanvas.custom_columns if c.endswith(" co. %")]:
+                    idx = self.trajectoryCanvas._col_index.get(name)
+                    if idx is not None:
+                        self.trajectoryCanvas._remove_custom_column(idx, name)
+
+                if hasattr(self, 'colocalizationAction'):
+                    self.spotMenu.removeAction(self.colocalizationAction)
+                    del self.colocalizationAction
+
+            # Always untoggle any active “Color by …” before we potentially reload columns
+            self.set_color_by(None)
+
+            self.flash_message("Loaded movie")
+
+            if self.movie.ndim == 4:
+                filt = self._ch_overlay._bubble_filter
+                filt._wobj = self._ch_overlay
+                QTimer.singleShot(2000, lambda: filt._showBubble(force=True))
+
+            # except Exception as e:
+            #     QMessageBox.critical(self, "Error", f"Could not load movie:\n{str(e)}")
 
     def get_movie_frame(self, frame_idx, channel_override=None):
         if self.movie is None:
@@ -1778,7 +2167,7 @@ class KymographNavigator(QMainWindow):
                 selected_chan = int(self.movieChannelCombo.currentText()) - 1
             else:
                 # Use the override value.
-                selected_chan = channel_override
+                selected_chan = channel_override-1
             channel_axis = self._channel_axis
             cache_key = (frame_idx, selected_chan, channel_axis)
         else:
@@ -1856,6 +2245,9 @@ class KymographNavigator(QMainWindow):
         if self.movie is None or self.movie.ndim != 4:
             return
 
+        if self.looping:
+            self.stoploop()
+
         self.cancel_left_click_sequence()
 
         # 1) figure out which channel we’re on
@@ -1923,7 +2315,6 @@ class KymographNavigator(QMainWindow):
         self._ch_overlay.adjustSize()
         self._reposition_channel_overlay()
         self._ch_overlay.show()
-
 
     def _on_overlay_clicked(self):
         # build a stand-alone QMenu
@@ -2108,7 +2499,7 @@ class KymographNavigator(QMainWindow):
                     if channels > 1:
                         channel_str, ok = QtWidgets.QInputDialog.getItem(
                             self, "Select Channel", prompt,
-                            [f"Channel {i+1}" for i in range(channels)], 0, False
+                            [f"Ch. {i+1}" for i in range(channels)], 0, False
                         )
                         if not ok:
                             return
@@ -2153,7 +2544,6 @@ class KymographNavigator(QMainWindow):
 
     def on_ref_toggled(self, checked):
         if checked:
-            self.refBtn.setStyleSheet("background-color: #375bb5;")
             # Turn off sum mode if active.
             if self.sumBtn.isChecked():
                 self.sumBtn.setChecked(False)
@@ -2378,11 +2768,11 @@ class KymographNavigator(QMainWindow):
         # 5) For each ROI, loop over ALL channels
         for roi_name, roi in rois.items():
             for ch in range(n_chan):
-                kymo_name = f"C{ch+1}-{roi_name}"
+                kymo_name = f"ch{ch+1}-{roi_name}"
                 if resp == QMessageBox.Yes:
                     # Generate kymograph for this channel
                     kymo = self.movieCanvas.generate_kymograph(
-                        roi, channel_override=ch
+                        roi, channel_override=ch+1
                     )
                     self.kymographs[kymo_name] = kymo
                     self.kymo_roi_map[kymo_name] = {
@@ -2890,7 +3280,7 @@ class KymographNavigator(QMainWindow):
 
         # Update the MovieCanvas overlay for visual feedback.
         frame_number = frame_idx+1
-        self.movieCanvas.overlay_rectangle(x_orig, y_orig, search_crop_size, frame_number=frame_number)
+        self.movieCanvas.overlay_rectangle(x_orig, y_orig, search_crop_size)
 
         self.zoomInsetFrame.setVisible(True)
         self.movieCanvas.update_inset(frame_image, (x_orig, y_orig), zoom_crop_size, zoom_factor=2)
@@ -2928,7 +3318,7 @@ class KymographNavigator(QMainWindow):
         # Cache the clean background for blitting
         self.kymoCanvas.update_view()
         # Now blit the new marker
-        self.kymoCanvas.overlay_spot_center(event.xdata, event.ydata, size=6, color='#7da1ff')
+        self.kymoCanvas.add_gaussian_circle(event.xdata, event.ydata, color='#7da1ff')
 
     def on_kymo_right_release(self, event):
         # Check for valid event data.
@@ -2942,8 +3332,8 @@ class KymographNavigator(QMainWindow):
         # self.histogramCanvas.draw_idle()
 
         # On release: fully redraw kymo static overlays to clear blitted marker
-        self.kymoCanvas.draw_trajectories_on_kymo()
-        self.kymoCanvas.draw_idle()
+        # self.kymoCanvas.draw_trajectories_on_kymo()
+        # self.kymoCanvas.draw_idle()
 
         # Now perform the analysis (which will recompute the histogram based on the current spot analysis)
         self.analyze_spot_at_event(event)
@@ -3012,24 +3402,33 @@ class KymographNavigator(QMainWindow):
         self.pixelValueLabel.setText(display_text)
         self.pixelValueLabel.update()
 
-
     def _prompt_and_add_kymo_value(self, col_name, row):
         # 1) get the existing value (may be "")
-        existing = self.trajectoryCanvas.trajectories[row].get("custom_fields", {}).get(col_name, "")
+        existing = self.trajectoryCanvas.trajectories[row]\
+                    .get("custom_fields", {}).get(col_name, "")
 
-        # 2) open the dialog, pre‐filled with `existing`
-        val, ok = QInputDialog.getText(
-            self,
-            f"Edit {col_name} value",    # window title
-            f"{col_name}:",               # label
-            QLineEdit.Normal,             # echo mode
-            existing                      # <— initial text
-        )
-        if not ok:
+        # 2) build & configure a styled QInputDialog
+        dlg = QInputDialog(self)
+        dlg.setWindowTitle(f"Edit {col_name} value")
+        dlg.setLabelText(f"{col_name}:")
+        dlg.setInputMode(QInputDialog.TextInput)
+        dlg.setOkButtonText("OK")
+        dlg.setCancelButtonText("Cancel")
+        dlg.setTextValue(existing)
+
+        # 3) find its QLineEdit and make it white
+        line = dlg.findChild(QLineEdit)
+        if line:
+            line.setStyleSheet("background-color: white;")
+
+        # 4) exec and grab the result
+        if dlg.exec_() != QDialog.Accepted:
             return
+        val = dlg.textValue()
 
-        # 3) update model & UI
-        self.trajectoryCanvas.trajectories[row].setdefault("custom_fields", {})[col_name] = val
+        # 5) update model & UI
+        self.trajectoryCanvas.trajectories[row]\
+            .setdefault("custom_fields", {})[col_name] = val
         self.trajectoryCanvas.writeToTable(row, col_name, val)
 
     def update_analysis_line(self):
@@ -3185,9 +3584,7 @@ class KymographNavigator(QMainWindow):
         self.movieCanvas.ax.set_ylim(current_ylim)
         self.movieCanvas.draw_idle()
 
-    def jump_to_analysis_point(self, index, pan_only=True, animate="ramp"):
-
-        t0 = time.perf_counter()  # Stop timing
+    def jump_to_analysis_point(self, index, animate="ramp", zoom=False):
 
         # ——— Early exits & locals ———
         if not self.analysis_frames or not self.analysis_search_centers:
@@ -3221,22 +3618,30 @@ class KymographNavigator(QMainWindow):
             cur_ylim = mc.ax.get_ylim()
             w, h = cur_xlim[1] - cur_xlim[0], cur_ylim[1] - cur_ylim[0]
 
-            if not mc.manual_zoom:
-                if pan_only:
-                    new_xlim = (cx - w/2, cx + w/2)
-                    new_ylim = (cy - h/2, cy + h/2)
-                else:
-                    xs, ys = centers[:,0], centers[:,1]
-                    M = 20
-                    xmin, xmax = xs.min() - M, xs.max() + M
-                    ymin, ymax = ys.min() - M, ys.max() + M
-                    L = max(xmax - xmin, ymax - ymin, 100)
-                    cx0 = (xmin + xmax)/2
-                    cy0 = (ymin + ymax)/2
-                    new_xlim = (cx0 - L/2, cx0 + L/2)
-                    new_ylim = (cy0 - L/2, cy0 + L/2)
+            if zoom:
+                r     = self.searchWindowSpin.value()
+                fov   = 10 * r
+                half  = fov / 2.0
+                new_xlim = (cx - half, cx + half)
+                new_ylim = (cy - half, cy + half)
 
-                # ——— 2) Pan/zoom once ———
+                # mark that we’ve manually zoomed
+                mc.manual_zoom = True
+
+                # animate or discrete
+                if animate == "ramp":
+                    self.animate_axes_transition(new_xlim, new_ylim, duration=300)
+                elif animate == "linear":
+                    self.animate_view_transition(new_xlim, new_ylim, duration=15)
+                else:
+                    mc.ax.set_xlim(new_xlim)
+                    mc.ax.set_ylim(new_ylim)
+                    mc.zoom_center = ((new_xlim[0]+new_xlim[1])/2,
+                                     (new_ylim[0]+new_ylim[1])/2)
+
+            elif not mc.manual_zoom:
+                new_xlim = (cx - w/2, cx + w/2)
+                new_ylim = (cy - h/2, cy + h/2)
                 if animate == "ramp":
                     self.animate_axes_transition(new_xlim, new_ylim, duration=300)
                 elif animate == "linear":
@@ -3248,6 +3653,12 @@ class KymographNavigator(QMainWindow):
                                     (new_ylim[0]+new_ylim[1])/2)
 
             # ——— 3) Update the image frame ———
+            # print("jump_to_analysis_point analysis_channel", self.analysis_channel)
+
+            if self.analysis_channel is not None:
+                if getattr(self.movieCanvas, 'current_channel', None) != self.analysis_channel:
+                    self._select_channel(self.analysis_channel)
+
             if mc.sum_mode:
                 mc.display_sum_frame()
                 frame_img = mc.image
@@ -3258,12 +3669,12 @@ class KymographNavigator(QMainWindow):
                 mc.update_image_data(frame_img)
 
             # ——— 4) Restore manual zoom limits if needed ———
-            if animate != "discrete" and mc.manual_zoom:
+            if animate != "discrete" and mc.manual_zoom and not zoom:
                 mc.ax.set_xlim(cur_xlim)
                 mc.ax.set_ylim(cur_ylim)
 
             # ——— 5) Overlays ———
-            mc.overlay_rectangle(cx, cy, int(2*self.searchWindowSpin.value()), frame_number=frame+1)
+            mc.overlay_rectangle(cx, cy, int(2*self.searchWindowSpin.value()))
             mc.remove_gaussian_circle()
 
             # draw fit circle & intensity highlight
@@ -3313,8 +3724,8 @@ class KymographNavigator(QMainWindow):
                         )
                     if xk is not None:
                         disp_frame = (self.movie.shape[0] - 1) - frame
-                        kc.overlay_spot_center(
-                            xk, disp_frame, size=6,
+                        kc.add_gaussian_circle(
+                            xk, disp_frame,
                             color='magenta' if fc is not None else 'grey'
                         )
 
@@ -3358,22 +3769,33 @@ class KymographNavigator(QMainWindow):
                 self._stop_animation = True  # signal to stop further steps
                 return
 
+            mc = self.movieCanvas
+            
             if i > steps:
-                self.movieCanvas.ax.set_xlim(new_xlim)
-                self.movieCanvas.ax.set_ylim(new_ylim)
+                mc.ax.set_xlim(new_xlim)
+                mc.ax.set_ylim(new_ylim)
                 cx_new = (new_xlim[0] + new_xlim[1]) / 2.0
                 cy_new = (new_ylim[0] + new_ylim[1]) / 2.0
-                self.movieCanvas.zoom_center = (cx_new, cy_new)
-                self.movieCanvas.draw_idle()
+                # set the logical center & draw
+                
+                mc.zoom_center = (cx_new, cy_new)
+                mc.draw_idle()
+                # grab clean background
+                canvas = mc.figure.canvas
+                mc._bg     = canvas.copy_from_bbox(mc.ax.bbox)
+                mc._roi_bg = canvas.copy_from_bbox(mc.ax.bbox)
+                # recompute scale so future scrolls/pans start here
+                w = mc.width() or 1
+                mc.scale = (new_xlim[1] - new_xlim[0]) / w
             else:
                 t = i / steps
                 interp_xlim = (initial_xlim[0]*(1-t) + new_xlim[0]*t,
                             initial_xlim[1]*(1-t) + new_xlim[1]*t)
                 interp_ylim = (initial_ylim[0]*(1-t) + new_ylim[0]*t,
                             initial_ylim[1]*(1-t) + new_ylim[1]*t)
-                self.movieCanvas.ax.set_xlim(interp_xlim)
-                self.movieCanvas.ax.set_ylim(interp_ylim)
-                self.movieCanvas.draw_idle()
+                mc.ax.set_xlim(interp_xlim)
+                mc.ax.set_ylim(interp_ylim)
+                mc.draw_idle()
                 QTimer.singleShot(delay, lambda: step(i + 1))
         step(0)
 
@@ -3394,20 +3816,31 @@ class KymographNavigator(QMainWindow):
         anim.setStartValue(animator.getAxesRect())
         anim.setEndValue(new_rect)
         anim.setEasingCurve(QEasingCurve.InOutQuad) #anim.setEasingCurve(QEasingCurve.Linear)
-        
-        # Start the animation.
+
+        anim.finished.connect(self._capture_movie_bg)
+
         anim.start()
         
         # Keep a reference to avoid garbage collection.
         self._axes_anim = anim
 
+    def _capture_movie_bg(self):
+        """Called when axes‐transition animation completes."""
+        mc     = self.movieCanvas
+        canvas = mc.figure.canvas
+        # grab the clean background for blitting
+        mc._bg     = canvas.copy_from_bbox(mc.ax.bbox)
+        mc._roi_bg = canvas.copy_from_bbox(mc.ax.bbox)
+
+        # **recompute** zoom_center & scale from the *actual* new xlim/ylim**
+        x0, x1 = mc.ax.get_xlim()
+        y0, y1 = mc.ax.get_ylim()
+        mc.zoom_center = ((x0 + x1) * 0.5, (y0 + y1) * 0.5)
+        w = mc.width() or 1
+        # horizontal data‐span divided by widget width gives new scale
+        mc.scale = (x1 - x0) / w
+
     def compute_trajectory_background(self, get_frame, points, crop_size):
-        """
-        get_frame: function(frame_index) → 2D numpy array
-        points:   list of (frame, cx, cy) tuples
-        crop_size: size of the square patch
-        returns:  median of the border pixels (outer 10%) of all patch pixels
-        """
         half = crop_size // 2
         all_values = []
 
@@ -3417,21 +3850,41 @@ class KymographNavigator(QMainWindow):
                 continue
             H, W = img.shape
             x0, y0 = int(round(cx)), int(round(cy))
+
+            # Compute the slice indices and also flags for truncation
+            x_start = x0 - half
+            x_end   = x0 + half
+            y_start = y0 - half
+            y_end   = y0 + half
+
+            left_trunc   = x_start < 0
+            right_trunc  = x_end   > W
+            top_trunc    = y_start < 0
+            bottom_trunc = y_end   > H
+
             sub = img[
-                max(0, y0-half):min(H, y0+half),
-                max(0, x0-half):min(W, x0+half)
+                max(0, y_start):min(H, y_end),
+                max(0, x_start):min(W, x_end)
             ]
-            if sub.size:
-                # collect border pixels (outer 10% of this subimage)
-                h_sub, w_sub = sub.shape
-                border = max(1, int(min(h_sub, w_sub) * 0.1))
-                edges = np.concatenate([
-                    sub[:border, :].ravel(),
-                    sub[-border:, :].ravel(),
-                    sub[:, :border].ravel(),
-                    sub[:, -border:].ravel()
-                ])
-                all_values.append(edges)
+            if sub.size == 0:
+                continue
+
+            # collect border pixels only from the *un*-truncated sides
+            h_sub, w_sub = sub.shape
+            border = max(1, int(min(h_sub, w_sub) * 0.1))
+
+            edges = []
+            if not top_trunc:
+                edges.append(sub[:border, :].ravel())
+            if not bottom_trunc:
+                edges.append(sub[-border:, :].ravel())
+            if not left_trunc:
+                edges.append(sub[:, :border].ravel())
+            if not right_trunc:
+                edges.append(sub[:, -border:].ravel())
+
+            if edges:
+                all_values.append(np.concatenate(edges))
 
         if not all_values:
             return None
@@ -3481,6 +3934,19 @@ class KymographNavigator(QMainWindow):
         valid_velocities = [v for v in self.analysis_velocities if v is not None]
         self.analysis_average_velocity = float(np.mean(valid_velocities)) if valid_velocities else None
 
+        if getattr(self, 'check_colocalization', False) and self.movie.ndim == 4:
+            self._compute_colocalization()
+        else:
+            # fill with Nones if turned off or single‐channel
+            N = len(self.analysis_frames)
+            self.analysis_colocalized = [None] * N
+            # *also* define per-channel dict of None‐lists
+            ref_ch    = self.analysis_channel
+            n_chan    = self.movie.shape[self._channel_axis] if self._channel_axis is not None else 1
+            self.analysis_colocalized_by_ch = {
+                ch: [None]*N for ch in range(1, n_chan+1) if ch != ref_ch
+            }
+
         # slider
         if hasattr(self, 'analysisSlider'):
             s = self.analysisSlider
@@ -3488,6 +3954,8 @@ class KymographNavigator(QMainWindow):
             s.setRange(0, len(frames)-1)
             s.setValue(0)
             s.blockSignals(False)
+
+        self.trajectoryCanvas.hide_empty_columns()
 
     def _compute_analysis(self, points, bg=None, showprogress=True):
         mode = self.tracking_mode
@@ -3613,13 +4081,21 @@ class KymographNavigator(QMainWindow):
                 cx = x1 + t*(x2-x1)
                 cy = y1 + t*(y2-y1)
                 all_coords.append((cx, cy))
-                t0 = time.perf_counter()
                 img = frame_cache[f]
                 if img is not None:
                     fc, sigma, intensity, peak, bkgr = perform_gaussian_fit(
                         img, (cx, cy), int(2 * self.searchWindowSpin.value()), pixelsize = self.pixel_size, bg_fixed=bg
                     )
-                    if fc:
+                if fc is not None:
+                    is_retrack = (
+                        self.avoid_previous_spot
+                        and any(
+                            pf == f and
+                            np.hypot(fc[0] - px, fc[1] - py) < self.same_spot_threshold
+                            for pf, px, py in self.past_centers
+                        )
+                    )
+                    if not is_retrack:
                         colors[idx]                = "magenta"
                         fit_params[idx]            = (fc, sigma, peak)
                         background[idx]            = max(0, bkgr)
@@ -3705,6 +4181,7 @@ class KymographNavigator(QMainWindow):
                 # — do the fit & blend
                 new_center, fc, sigma, intensity, peak, bkgr, color = \
                     self._track_frame(
+                        f,
                         frame_cache[f],
                         icx, icy,
                         current_center,
@@ -3755,10 +4232,12 @@ class KymographNavigator(QMainWindow):
         # 7) return frames, independent centers, blended centers, and fit results
         return all_frames, independent_centers, new_centers, integrated_intensities, fit_params, background, colors
 
-    def _track_frame(self, img, icx, icy, current, radius, pixel_size, bg=None):
+    def _track_frame(self, framenum, img, icx, icy, current, radius, pixel_size, bg=None):
+        
+        nc = ((current[0]+icx)/2, (current[1]+icy)/2)
+
         if img is None:
             # fallback to midpoint
-            nc = ((current[0]+icx)/2, (current[1]+icy)/2)
             return nc, None, None, None, None, "grey"
 
         fc, sigma, intensity, peak, bkgr = perform_gaussian_fit(
@@ -3767,13 +4246,18 @@ class KymographNavigator(QMainWindow):
             bg_fixed=bg
         )
         if fc is None:
-            nc = ((current[0]+icx)/2, (current[1]+icy)/2)
             return nc, None, None, None, None, None, "grey"
+
+        if self.avoid_previous_spot and fc is not None:
+            for pf, px, py in self.past_centers:
+                if pf == framenum and np.hypot(fc[0] - px, fc[1] - py) < self.same_spot_threshold:
+                    return (nc, None, None, None, None, None, "grey")
 
         dx, dy = fc[0]-icx, fc[1]-icy
         d       = np.hypot(dx, dy)
         w       = np.exp(-0.5*(d/radius))
         nc      = (w*fc[0] + (1-w)*icx, w*fc[1] + (1-w)*icy)
+
         return nc, fc, sigma, intensity, peak, bkgr, "magenta"
 
     def _postprocess_smooth(self, all_frames, all_coords, ints, fit_params, background, colors, bg_fixed=None):
@@ -3857,6 +4341,163 @@ class KymographNavigator(QMainWindow):
 
         return all_frames, all_coords, all_coords, ints, fit_params, background, colors
 
+    def _compute_colocalization(self, showprogress=True):
+
+        print("compute_colocalization analysis_channel, before", self.analysis_channel)
+
+        frames      = self.analysis_frames
+        fit_centers = [fp[0] for fp in self.analysis_fit_params]
+        ref_ch      = self.analysis_channel
+        n_chan      = self.movie.shape[self._channel_axis]
+        N           = len(frames)
+
+        # prepare storage: one list per other channel, plus an “any” list
+        results_by_ch = { ch: [None]*N for ch in range(1, n_chan+1) if ch != ref_ch }
+        any_list      = [None]*N
+
+        progress = None
+        if showprogress and N > 20:
+            progress = QProgressDialog("Checking colocalization…", "Cancel", 0, N, self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.show()
+
+        for i in range(N):
+            if progress:
+                progress.setValue(i)
+                QApplication.processEvents()
+                if progress.wasCanceled(): break
+
+            fc0 = fit_centers[i]
+            if fc0 is None:
+                for ch in results_by_ch: results_by_ch[ch][i] = None
+                any_list[i] = None
+                continue
+
+            x0,y0 = fc0
+            # per-channel flags
+            flags = {}
+            for tgt_ch, out in results_by_ch.items():
+                img = self.get_movie_frame(frames[i], channel_override=tgt_ch)
+                ok = False
+                if img is not None:
+                    fc2, *_ = perform_gaussian_fit(
+                        img, (x0,y0),
+                        crop_size=int(2*self.searchWindowSpin.value()),
+                        pixelsize=self.pixel_size,
+                        bg_fixed=None
+                    )
+                    if fc2 is not None and np.hypot(fc2[0]-x0,fc2[1]-y0) <= self.colocalization_threshold:
+                        ok = True
+                out[i] = "Yes" if ok else "No"
+                flags[tgt_ch] = ok
+
+            # overall “any other channel”:
+            any_list[i] = "Yes" if any(flags.values()) else "No"
+
+        if progress:
+            progress.setValue(N)
+            progress.close()
+
+        self.analysis_colocalized       = any_list
+        self.analysis_colocalized_by_ch = results_by_ch
+
+        self.analysis_channel = ref_ch
+
+        print("compute_colocalization analysis_channel, after", self.analysis_channel)
+
+    def _compute_colocalization_single_frame(self, idx: int):
+        """
+        Compute colocalization flags for just one analysis frame at index `idx`.
+        Populates:
+        - self.analysis_colocalized[idx]
+        - self.analysis_colocalized_by_ch[ch][idx]  for each non-reference channel
+        """
+
+        N = len(self.analysis_frames)
+        # one list for “any”
+        self.analysis_colocalized = [None] * N
+        # one list per non-ref channel
+        n_chan = self.movie.shape[self._channel_axis]
+        ref_ch = self.analysis_channel
+        self.analysis_colocalized_by_ch = {
+            ch: [None] * N
+            for ch in range(1, n_chan+1)
+            if ch != ref_ch
+        }
+
+        print("compute_colocalization_single_frame analysis_channel", self.analysis_channel)
+        # 1) grab the fitted center for this point
+        fc0, *_ = self.analysis_fit_params[idx]
+        # if there was no valid fit, clear all flags
+        if fc0 is None:
+            self.analysis_colocalized[idx] = None
+            for ch, flags in self.analysis_colocalized_by_ch.items():
+                flags[idx] = None
+            return
+
+        x0, y0 = fc0
+        frame = self.analysis_frames[idx]
+        # 2) per‐channel
+        flags = {}
+        for tgt_ch, ch_flags in self.analysis_colocalized_by_ch.items():
+            # grab just that frame & channel
+            img = self.get_movie_frame(frame, channel_override=tgt_ch)
+            ok = False
+            if img is not None:
+                # re‐fit at the same spot
+                result = perform_gaussian_fit(
+                    img,
+                    (x0, y0),
+                    crop_size=int(2 * self.searchWindowSpin.value()),
+                    pixelsize=self.pixel_size,
+                    bg_fixed=None
+                )
+                fc2 = result[0] if result is not None else None
+                # within threshold?
+                if (
+                    fc2 is not None and
+                    np.hypot(fc2[0] - x0, fc2[1] - y0) <= self.colocalization_threshold
+                ):
+                    ok = True
+            ch_flags[idx] = "Yes" if ok else "No"
+            flags[tgt_ch] = ok
+
+        # 3) overall “any” flag
+        self.analysis_colocalized[idx] = "Yes" if any(flags.values()) else "No"
+
+    def _remove_past_centers(self, centers_to_remove):
+        """
+        Remove any (pf,px,py) in self.past_centers that lies within
+        self.same_spot_threshold of any (cf,cx,cy) in centers_to_remove *and* pf==cf.
+        """
+        if not centers_to_remove:
+            return
+
+        # 1) Build valid (frame,x,y) list
+        valid = [
+            (f, x, y)
+            for f, x, y in centers_to_remove
+            if isinstance(f, (int,float))
+            and isinstance(x, (int,float))
+            and isinstance(y, (int,float))
+        ]
+        if not valid:
+            return
+
+        # 2) Keep only those past-centers that are either a different frame
+        #    or are farther than threshold on the same frame.
+        kept = []
+        for pf, px, py in self.past_centers:
+            drop = False
+            for cf, cx, cy in valid:
+                if pf == cf and np.hypot(px - cx, py - cy) < self.same_spot_threshold:
+                    drop = True
+                    break
+            if not drop:
+                kept.append((pf, px, py))
+        self.past_centers = kept
+
     # @pyqtSlot(list, list, list)
     # def debug_plot_track_smoothing(self, spot_centers, smooth_centers, new_centers):
     #     """
@@ -3918,7 +4559,7 @@ class KymographNavigator(QMainWindow):
                 self.loop_index = int(self.intensityCanvas.current_index)
             else: 
                 self.loop_index = 0
-            self.jump_to_analysis_point(self.loop_index-1, animate="discrete")
+            self.jump_to_analysis_point(self.loop_index, animate="discrete")
             self.loopTimer.start()
             self.looping = True
             self.flash_message("Playback started")
@@ -3985,8 +4626,10 @@ class KymographNavigator(QMainWindow):
         # )
         # # build absolute times array
         # times = np.array(self.analysis_frames) * (self.frame_interval / 1000.0)
-        # # now plot
+        # # now plotmn
         # self.debug_plot_hmm_segmentation(times, vel_full, disp_full, segments, posteriors)
+
+        #########ADD PERCENT COLOCALISED TO CUSTOM COLUMNS, ONE PER OTHER CHANNEL
 
         self.trajectory_finalized = True
         self.new_sequence_start   = True
@@ -4000,6 +4643,11 @@ class KymographNavigator(QMainWindow):
         self.movieCanvas.clear_manual_marker()
         # self.movieCanvas.clear_manual_marker()
         self.movieCanvas._manual_marker_active = False
+
+        is_roi = self.modeSwitch.isChecked()
+        if is_roi:
+            self.set_roi_mode(False)
+
 
     # def compute_step_features(self, spot_centers, frame_interval_ms, pixel_size_nm):
     #     """
@@ -4562,7 +5210,7 @@ class KymographNavigator(QMainWindow):
             zoom_crop_size = int(self.insetViewSize.value())
             # Draw blue rectangle for the search area.
             frame_number = self.frameSlider.value()+1
-            self.movieCanvas.overlay_rectangle(x_click, y_click, search_crop_size, frame_number=frame_number)
+            self.movieCanvas.overlay_rectangle(x_click, y_click, search_crop_size)
 
             bg_guess = None
             # Define crop boundaries around current center guess
@@ -4790,7 +5438,7 @@ class KymographNavigator(QMainWindow):
                 except Exception:
                     pass
                 self.movieCanvas.tempRoiLine = None
-            # Clear any x-markers (drawn with overlay_spot_center)
+            # Clear any x-markers (drawn with add_gaussian_circle)
             self.movieCanvas.clear_temporary_roi_markers()
             # Reset the list of ROI points so the user can start fresh.
             self.movieCanvas.roiPoints = []
@@ -4892,6 +5540,10 @@ class KymographNavigator(QMainWindow):
                 if self.sumBtn.isChecked():
                     self.movieCanvas.display_sum_frame()
 
+        self.movieCanvas.clear_movie_trajectory_markers()
+        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw()
+
     def _move_manual_marker(self, dx, dy):
         if self.movie is None or self.movieCanvas.roiAddMode:
             return
@@ -4988,32 +5640,82 @@ class KymographNavigator(QMainWindow):
 
     def update_table_visibility(self, adjust_splitter=True):
         has_rows = (self.trajectoryCanvas.table_widget.rowCount() > 0)
-        if adjust_splitter:
+
+        # initialize the “last” flag on first call
+        if not hasattr(self, "_last_table_has_rows"):
+            self._last_table_has_rows = not has_rows  # force an update on first run
+
+        if adjust_splitter and has_rows != self._last_table_has_rows:
+            total_height = self.rightVerticalSplitter.height()
             if not has_rows:
-                total_height = self.rightVerticalSplitter.height()
+                # hide table
                 self.rightVerticalSplitter.setSizes([total_height, 0])
                 self.mainSplitter.handle_y_offset_pct = 0.4955
             else:
-                total_height = self.rightVerticalSplitter.height()
-                self.rightVerticalSplitter.setSizes([int(0.85 * total_height), int(0.15 * total_height)])
+                # show table
+                self.rightVerticalSplitter.setSizes(
+                    [int(0.75 * total_height), int(0.25 * total_height)]
+                )
                 self.mainSplitter.handle_y_offset_pct = 0.1
-        # Determine whether there are any trajectories in the table.
+
+        # store for next call
+        self._last_table_has_rows = has_rows
+
+        # now update the buttons & columns as before
         self.traj_overlay_button.setVisible(has_rows)
         self.delete_button.setVisible(has_rows)
         self.clear_button.setVisible(has_rows)
         self.trajectoryCanvas.hide_empty_columns()
 
+    # def eventFilter(self, obj, event):
+    #     # intercept wheel events when our radius dialog is up
+    #     if (self._radiusDialog is not None 
+    #             and self._radiusDialog.isVisible() 
+    #             and event.type() == QEvent.Wheel):
+    #         # up/down?
+    #         delta = event.angleDelta().y()
+    #         step  = self.searchWindowSpin.singleStep()
+    #         cur   = self.searchWindowSpin.value()
+    #         if delta > 0:
+    #             self.searchWindowSpin.setValue(cur + step)
+    #         else:
+    #             self.searchWindowSpin.setValue(cur - step)
+    #         return True    # eat it
+    #     return super().eventFilter(obj, event)
 
-    def eventFilter(self, obj, event):
-        # optional: intercept wheel here instead of grabbing
-        # if you’d rather do it manually
-        if (self._radiusPopup and event.type()==QEvent.Wheel):
-            delta = event.angleDelta().y()
-            step  = self._radiusSpinLive.singleStep()
-            cur   = self._radiusSpinLive.value()
-            self._radiusSpinLive.setValue(cur + (step if delta>0 else -step))
-            return True
-        return super().eventFilter(obj, event)
+    def eventFilter(self, obj, ev):
+        # wheel on the radius popup?
+        # radius_popup = getattr(self, "_radiusPopup", None)
+        # if (
+        #     radius_popup
+        #     and ev.type() == QEvent.Wheel
+        #     and obj is radius_popup
+        # ):
+        #     delta = ev.angleDelta().y()
+        #     step  = self._radiusSpinLive.singleStep()
+        #     cur   = self._radiusSpinLive.value()
+        #     self._radiusSpinLive.setValue(cur + (step if delta > 0 else -step))
+        #     return True
+
+        # You can now drop the Enter/Leave branches entirely,
+        # unless you still want to start on Enter:
+        # if ev.type() == QEvent.Enter and obj is self.target:
+        #     self.showTimer.start()
+        #     return False
+
+        # if ev.type() == QEvent.Leave and obj is self.target:
+        #     # optional redundant safety
+        #     self.showTimer.stop()
+        #     self.hideTimer.stop()
+        #     self._hide()
+        #     return False
+
+        if obj is self._ch_overlay and ev.type() == ev.Show:  
+            self._reposition_legend()
+        if obj is self.movieDisplayContainer and ev.type() in (ev.Resize, ev.Move):
+            self._reposition_legend()
+
+        return super().eventFilter(obj, ev)
 
     def _on_kymo_label_pick(self, event):
         # whenever any label is picked—left *or* right
@@ -5068,19 +5770,19 @@ class KymographNavigator(QMainWindow):
         
         try:
             # Use the navigator's movieChannelCombo to obtain the correct current channel.
-            current_channel = int(self.movieCanvas.navigator.movieChannelCombo.currentText())
+            current_channel = int(self.movieChannelCombo.currentText())
         except Exception:
             current_channel = 1
 
         if self.movieCanvas.sum_mode:
-            self.movieCanvas.navigator.channel_sum_contrast_settings[current_channel] = {
+            self.channel_sum_contrast_settings[current_channel] = {
                 'vmin': new_vmin,
                 'vmax': new_vmax,
                 'extended_min': new_extended_min,
                 'extended_max': new_extended_max
             }
         else:
-            self.movieCanvas.navigator.channel_contrast_settings[current_channel] = {
+            self.channel_contrast_settings[current_channel] = {
                 'vmin': new_vmin,
                 'vmax': new_vmax,
                 'extended_min': new_extended_min,
@@ -5330,7 +6032,7 @@ class KymographNavigator(QMainWindow):
                 xy=(cx, cy),    # anchor at first ROI coordinate
                 xytext=(10, -10),            
                 textcoords="offset points",
-                color="white", fontsize=10,
+                color="white", fontsize=10, fontweight='bold',
                 ha="center", va="center",
                 bbox=dict(
                     boxstyle="round,pad=0.2",
@@ -5484,7 +6186,6 @@ class KymographNavigator(QMainWindow):
         self._blit_kymo_marker(value)
 
     def _blit_kymo_marker(self, index):
-        """Same blit logic you have in on_analysis_slider_changed."""
         # 1) redraw static trajectories & cache background
         self.kymoCanvas.draw_trajectories_on_kymo()
         # remove any existing marker
@@ -5522,7 +6223,7 @@ class KymographNavigator(QMainWindow):
                 if xk is not None:
                     disp_frame = (self.movie.shape[0] - 1) - frame
                     color = "magenta" if fc is not None else "grey"
-                    self.kymoCanvas.overlay_spot_center(xk, disp_frame, size=6, color=color)
+                    self.kymoCanvas.add_gaussian_circle(xk, disp_frame, color=color)
 
     def save_rois(self):
         # Ask user where to save the ZIP file.
@@ -5571,9 +6272,28 @@ class KymographNavigator(QMainWindow):
         custom    = opts.get("custom", False)
         cname     = opts.get("custom_name", "")
 
-        # 3) Save each kymo
+        # 3) Progress dialog
+        total = len(sel_names)
+        prog = QProgressDialog("Saving kymographs…", "Cancel", 0, total, self)
+        prog.setWindowModality(Qt.WindowModal)
+        prog.setMinimumDuration(0)
+        prog.show()
+
+        kfig = self.kymoCanvas.fig
+        orig_size = kfig.get_size_inches().copy()
+        # orig_dpi  = kfig.get_dpi()
+
+        old_roi         = self.roiCombo.currentText()
+        old_channel_idx = self.movieChannelCombo.currentIndex()
+        old_sel         = self.trajectoryCanvas.table_widget.selectedIndexes()
+
+        # 4) Save each kymo
         try:
-            for name in sel_names:
+            for i, name in enumerate(sel_names):
+                if prog.wasCanceled():
+                    break
+                prog.setValue(i)
+
                 # decide filename
                 if custom:
                     fname = cname or name
@@ -5588,11 +6308,6 @@ class KymographNavigator(QMainWindow):
                 out_path = os.path.join(directory, f"{fname}.{ft}")
 
                 if do_overlay:
-                    # old_vmin, old_vmax = self.movieCanvas._vmin, self.movieCanvas._vmax
-                    old_roi         = self.roiCombo.currentText()
-                    old_channel_idx = self.movieChannelCombo.currentIndex()
-                    old_sel         = self.trajectoryCanvas.table_widget.selectedIndexes()
-                    old_hover       = getattr(self, 'hovered_trajectory', None)
 
                     # ——— Overlay path: draw with Matplotlib and snapshot ———
                     kymo = np.flipud(self.kymographs[name])
@@ -5608,7 +6323,6 @@ class KymographNavigator(QMainWindow):
                             self.movieCanvas.display_sum_frame()
 
                     # clear any selection/highlight
-                    self.hovered_trajectory = None
                     tw = self.trajectoryCanvas.table_widget
                     tw.clearSelection()
                     tw.setCurrentCell(-1, -1)
@@ -5617,17 +6331,20 @@ class KymographNavigator(QMainWindow):
                     fig, ax = self.kymoCanvas.fig, self.kymoCanvas.ax
                     fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
 
-                    # draw your trajectories on top
-                    self.kymoCanvas.draw_trajectories_on_kymo()
-
-                    # snapshot
+                    # draw overlays
+                    self.kymoCanvas.draw_trajectories_on_kymo(showsearchline=False)
                     fig.canvas.draw()
+
+                    target_dpi = 300
+                    # restore to original inches
+                    fig.set_size_inches(orig_size)
+                    # now save at high dpi
                     fig.savefig(out_path,
-                                format=ft,
-                                dpi=300,
+                                dpi=target_dpi,
                                 facecolor=fig.get_facecolor(),
                                 edgecolor='none',
-                                pad_inches=0)
+                                bbox_inches='tight')
+
                 else:
                     # ——— Plain path: pixel export ———
                     kymo = self.kymographs[name]
@@ -5644,15 +6361,22 @@ class KymographNavigator(QMainWindow):
 
             # QMessageBox.information(self, "Saved", f"Kymographs written to:\n{directory}")
 
+            prog.setValue(total)
         finally:
+            prog.close()
             if do_overlay:
                 if old_roi:
                     self.roiCombo.setCurrentText(old_roi)
                 self.movieChannelCombo.setCurrentIndex(old_channel_idx)
                 self.update_movie_channel_combo()
-                self.hovered_trajectory = old_hover
                 for idx in old_sel:
                     self.trajectoryCanvas.table_widget.selectRow(idx.row())
+
+            current = self.kymoCombo.currentText()
+            if current in self.kymographs:
+                img = np.flipud(self.kymographs[current])
+                self.kymoCanvas.display_image(img)
+                self.kymoCanvas.draw_trajectories_on_kymo()
 
     #UNUSED
     def save_kymograph_with_rois(self):
@@ -5822,7 +6546,6 @@ class KymographNavigator(QMainWindow):
                 tc.writeToTable(row, "distance", distance_um_txt)
                 tc.writeToTable(row, "time", time_s_txt)                
                 tc.writeToTable(row, "netspeed", overall_vel_um_s_txt)
-                tc.writeToTable(row, "avgspeed", avg_vel_um_s_txt)
             
             # Update the displayed velocity plot (for the currently selected trajectory)
             selected_rows = tc.table_widget.selectionModel().selectedRows()
@@ -6199,14 +6922,20 @@ class KymographNavigator(QMainWindow):
         self.tracking_mode = mode
         print(f"Tracking mode set to: {self.tracking_mode}")
 
-    def update_overlay_button_style(self, checked):
-        if checked:
-            self.traj_overlay_button.setStyleSheet("background-color: #497ce2;")
-        else:
-            self.traj_overlay_button.setStyleSheet("")
+    # def update_overlay_button_style(self, checked):
+    #     if checked:
+    #         self.traj_overlay_button.setStyleSheet("background-color: #497ce2;")
+    #     else:
+    #         self.traj_overlay_button.setStyleSheet("")
 
     def _show_kymo_context_menu(self, global_pos: QPoint):
-        cols = self.trajectoryCanvas.custom_columns
+
+        if not self.trajectoryCanvas.custom_columns:
+            self._last_kymo_artist = None
+            return
+
+        cols = [c for c in self.trajectoryCanvas.custom_columns
+                if self.trajectoryCanvas._column_types.get(c) in ("binary","value")]
         if not cols:
             self._last_kymo_artist = None
             return
@@ -6267,5 +6996,307 @@ class KymographNavigator(QMainWindow):
         menu.exec_(global_pos)
         self._last_kymo_artist = None
 
-        if col_type == "binary":
-            self.kymoCanvas.draw_trajectories_on_kymo()
+        self.kymoCanvas.draw_trajectories_on_kymo()
+
+    def on_connect_spot_gaps_toggled(self, checked: bool):
+        # store it on the navigator (that's what your kymo‐drawing code reads)
+        self.connect_all_spots = checked
+        # then force a redraw
+        self.kymoCanvas.draw_trajectories_on_kymo()
+
+    def on_colocalization_toggled(self, checked: bool):
+        if self.movie.ndim != 4:
+            return
+
+        self.check_colocalization = checked
+        if not checked:
+            return
+        
+        orig_channel = getattr(self, "analysis_channel", None)
+
+        # Figure out how many channels and the custom‐field names
+        n_chan    = self.movie.shape[self._channel_axis]
+        coloc_cols = [f"Ch. {ch} co. %" for ch in range(1, n_chan+1)]
+        missing   = []
+
+        # Find all trajectories that have at least one missing co‐% field
+        for r, traj in enumerate(self.trajectoryCanvas.trajectories):
+            ch_ref = traj["channel"]
+            cf     = traj.get("custom_fields", {})
+            for col in coloc_cols:
+                # skip the reference‐channel column entirely
+                if col.endswith(f"{ch_ref} co. %"):
+                    continue
+                if not cf.get(col, "").strip():
+                    missing.append(r)
+                    break
+
+        if not missing:
+            return
+
+        # Ask user
+        cnt = len(missing)
+        msg = f"{cnt} trajector{'ies are' if cnt>1 else 'y is'} missing colocalization data, calculate {'them' if cnt>1 else 'it'}?"
+        yn  = QMessageBox.question(self, "Compute Colocalization", msg,
+                                QMessageBox.Yes|QMessageBox.No,
+                                QMessageBox.Yes)
+        if yn != QMessageBox.Yes:
+            return
+
+        progress = QProgressDialog("Computing colocalization…", "Cancel", 0, len(missing), self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+
+        for idx, r in enumerate(missing):
+            progress.setValue(idx)
+            QApplication.processEvents()
+            if progress.wasCanceled():
+                break
+
+            traj = self.trajectoryCanvas.trajectories[r]
+            ch_ref = traj["channel"]
+            n_chan = self.movie.shape[self._channel_axis]
+
+            # 1) set up frames & fit params as before
+            self.analysis_frames     = traj["frames"]
+            self.analysis_fit_params = list(zip(
+                traj["spot_centers"],
+                traj["sigmas"],
+                traj["peaks"]
+            ))
+
+            # 2) run exactly one colocalization pass in the ref channel
+            ch_ref = traj["channel"]
+            self.analysis_channel = ch_ref
+            self._compute_colocalization(showprogress=False)
+
+            # 3) grab the “any” list and the per‐channel dict
+            any_flags = list(self.analysis_colocalized)
+            by_ch     = {
+                tgt: list(flags)
+                for tgt, flags in self.analysis_colocalized_by_ch.items()
+            }
+
+            traj["colocalization_any"]    = any_flags
+            traj["colocalization_by_ch"]  = by_ch
+
+            # 4) write them into custom_fields exactly as you already do
+            cf = traj.setdefault("custom_fields", {})
+            # overall‐any (only meaningful for two-channel movies)
+            valid_any = [s for s in any_flags if s is not None]
+            pct_any   = (f"{100*sum(1 for s in valid_any if s=='Yes')/len(valid_any):.1f}"
+                        if valid_any else "")
+
+            for ch in range(1, n_chan+1):
+                col_name = f"Ch. {ch} co. %"
+                if ch == ch_ref:
+                    cf[col_name] = ""
+                elif n_chan == 2:
+                    cf[col_name] = pct_any
+                else:
+                    flags = by_ch.get(ch, [])
+                    valid = [s for s in flags if s is not None]
+                    cf[col_name] = (
+                        f"{100*sum(1 for s in valid if s=='Yes')/len(valid):.1f}"
+                        if valid else ""
+                    )
+
+            # now write them back into the table
+            for ch in range(1, n_chan+1):
+                self.trajectoryCanvas._mark_custom(r, f"Ch. {ch} co. %", cf[f"Ch. {ch} co. %"])
+
+        progress.setValue(len(missing))
+        progress.close()
+
+        if orig_channel is not None:
+            self.analysis_channel = orig_channel
+
+        # finally redraw
+        self.kymoCanvas.draw_trajectories_on_kymo()
+        self.kymoCanvas.draw()
+        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw()
+
+        self.trajectoryCanvas.hide_empty_columns()
+
+    def set_color_by(self, column_name):
+        for act in self._colorByActions:
+            # look at the `data()`, not `text()`
+            act.setChecked(act.data() == column_name)
+        self.color_by_column = column_name
+
+        # redraw the trajectories
+        self.kymoCanvas.draw_trajectories_on_kymo()
+        self.kymoCanvas.draw()
+        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw()
+
+        # update the legends on both canvases
+        self._update_legends()
+
+        if self.intensityCanvas._last_plot_args:
+            # find the current trajectory
+            idx = self.trajectoryCanvas.table_widget.currentRow()
+            if idx >= 0:
+                traj = self.trajectoryCanvas.trajectories[idx]
+                scatter_kwargs, _ = self._get_traj_colors(traj)
+
+                # patch in the new kwargs
+                args = self.intensityCanvas._last_plot_args
+                args['colors'] = scatter_kwargs
+
+                # re-draw
+                self.intensityCanvas.plot_intensity(**args)
+
+    def _get_traj_colors(self, traj):
+        """
+        Decide how to color one trajectory.  
+        Returns a dict of kwargs for scatter() and a single line_color.
+        If no color_by is set, uses traj['colors'] as the scatter 'c' argument.
+        """
+        col = self.color_by_column
+        all_trajs = self.trajectoryCanvas.trajectories
+
+        # fallback to analysis_colors if no column selected:
+        if not col:
+            # assume traj['colors'] is a list of per-point colors OR a single color
+            return {"c": traj.get("colors", "magenta"), "zorder": 4}, "magenta"
+
+        # determine mode & target channel
+        movie = self.movie
+        ch_ax = self._channel_axis
+        n_chan = movie.shape[ch_ax] if movie.ndim == 4 and ch_ax is not None else 1
+
+        if n_chan == 2 and col == "colocalization":
+            mode, tgt = "coloc", None
+        elif n_chan > 2 and col.startswith("coloc_ch"):
+            mode, tgt = "coloc_multi", int(col.split("coloc_ch",1)[1])
+        else:
+            mode, tgt = self.trajectoryCanvas._column_types.get(col), None
+
+        # binary / value modes need a global map for "value"
+        if mode == "value":
+            # collect unique vals
+            seen = []
+            for t in all_trajs:
+                v = t.get("custom_fields", {}).get(col)
+                if v and v not in seen:
+                    seen.append(v)
+            # build large color list
+            def cmap_hex(name):
+                cmap = cm.get_cmap(name)
+                return [mcolors.to_hex(cmap(i)) for i in range(cmap.N)]
+            palette = cmap_hex("Accent") + cmap_hex("tab10") + cmap_hex("tab20")
+            color_map = {v: palette[i % len(palette)] for i,v in enumerate(seen)}
+        else:
+            color_map = {}
+
+        # now pick main_color/point-colors
+        if mode == "binary":
+            flag = traj["custom_fields"].get(col, False)
+            main = "#FFC107" if flag else "#97b4ff"
+            scatter_kwargs = {"color": main, "zorder": 4}
+        elif mode == "value":
+            val = traj["custom_fields"].get(col)
+            c = color_map.get(val, "magenta")
+            scatter_kwargs = {"color": c, "zorder": 4}
+            main = c
+        elif mode == "coloc":
+            flags = traj.get("colocalization_any", [])
+            pts = [ "#FFA500" if f=="Yes" else "#AA80FF" if f=="No" else "grey"
+                    for f in flags ]
+            scatter_kwargs = {"c": pts, "zorder": 4}
+            main = "#AA80FF"
+        elif mode == "coloc_multi":
+            by_ch = traj.get("colocalization_by_ch", {})
+            flags = by_ch.get(tgt, [None]*len(traj["frames"]))
+            pts = [ "#FFA500" if f=="Yes" else "#AA80FF" if f=="No" else "grey"
+                    for f in flags ]
+            scatter_kwargs = {"c": pts, "zorder": 4}
+            main = "#AA80FF"
+        else:
+            # no special mode → uniform magenta
+            scatter_kwargs = {"color": "magenta", "zorder": 4}
+            main = "magenta"
+
+        return scatter_kwargs, main
+
+    def _reposition_legend(self, margin=2):
+        """Place legend just below the overlay, with a bit of breathing room."""
+        o = self._ch_overlay.geometry()
+        legend_x = o.x() + 3
+        legend_y = o.y() + o.height() + margin
+        self.movieLegendWidget.move(legend_x, legend_y)
+
+    def _update_legends(self):
+        # clear both layouts
+        for layout in (self.kymoLegendLayout,
+                       self.movieLegendLayout):
+            for i in reversed(range(layout.count())):
+                w = layout.itemAt(i).widget()
+                if w: w.setParent(None)
+
+        # detect channel count & color_mode/target
+        n_chan = (self.movie.shape[self._channel_axis]
+                  if (self.movie.ndim == 4 and
+                      self._channel_axis is not None)
+                  else 1)
+        col = self.color_by_column
+        if n_chan == 2 and col == "colocalization":
+            mode, tgt = "coloc", None
+        elif n_chan > 2 and col and col.startswith("coloc_ch"):
+            mode, tgt = "coloc_multi", int(col.split("coloc_ch",1)[1])
+        else:
+            mode, tgt = (self.trajectoryCanvas._column_types.get(col), None)
+
+        # build a small list of (color, label) entries for this mode
+        if mode == "coloc":
+            entries = [("#FFA500", "Colocalized")]
+        elif mode == "coloc_multi":
+            entries = [("#FFA500", f"Ch. {tgt} coloc.")]
+        elif mode == "value":
+            # collect unique vals & map them
+            seen = []
+            for t in self.trajectoryCanvas.trajectories:
+                v = t.get("custom_fields", {}).get(col)
+                if v and v not in seen:
+                    seen.append(v)
+            # build palette
+            def cmap_hex(name):
+                cmap = cm.get_cmap(name)
+                return [mcolors.to_hex(cmap(i)) for i in range(cmap.N)]
+            palette = cmap_hex("Accent") + cmap_hex("tab10") + cmap_hex("tab20")
+            color_map = {v: palette[i % len(palette)] for i, v in enumerate(seen)}
+            entries = [(color_map[v], v) for v in seen]
+        elif mode == "binary":
+            entries = [("#FFC107", col)]
+        else:
+            entries = []
+
+        # populate both legend widgets
+        if entries:
+            for (sw_color, label) in entries:
+                for widget, layout in (
+                    (self.kymoLegendWidget,  self.kymoLegendLayout),
+                    (self.movieLegendWidget, self.movieLegendLayout)
+                ):
+                    sw = QLabel(widget)
+                    sw.setFixedSize(12,12)
+                    sw.setStyleSheet(f"background-color:{sw_color};"
+                                     "border:1px solid #333;"
+                                     "border-radius:2px")
+                    lbl = QLabel(label, widget)
+                    lbl.setStyleSheet("color:#222;font-size:14px;"
+                                      "background: transparent;")
+                    layout.addWidget(sw, 0, Qt.AlignVCenter)
+                    layout.addWidget(lbl,0, Qt.AlignVCenter)
+
+            # show & adjust both
+            for widget in (self.kymoLegendWidget,
+                           self.movieLegendWidget):
+                widget.show()
+                widget.adjustSize()
+        else:
+            self.movieLegendWidget.hide()
+            self.kymoLegendWidget.hide()

@@ -134,7 +134,7 @@ def perform_gaussian_fit(frame_image,
                          center,
                          crop_size,
                          pixelsize=None,
-                         max_nfev=500,
+                         max_nfev=200,
                          iterations=2,
                          bg_fixed=None):
     """
