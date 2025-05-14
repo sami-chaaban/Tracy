@@ -12,6 +12,8 @@
     * [Track using kymograph reference](#kymoclick)
     * [Modify individual points](#modify)
     * [Browse trajectories](#browsetrajectories)
+    * [Load trajectories](#loadtrajectories)
+    * [Load TrackMate data](#loadtrackmate)
 3. [License](#license)
 
 ## Install<a name="install"></a>
@@ -90,6 +92,21 @@
 
 * Adding trajectories will append the data to the **trajectory table**
 * Right click a trajectory in the table to show some helpful options, like **Go to kymograph ch1-001**
+
+### Save trajectories<a name="savetrajectories"></a>
+
+* Save trajectories in the **Save** menu, which saves an excel file with three sheets
+    * **Data points**: All spots and their corresponding data
+    * **Per-trajectory**: Data corresponding to individual trajectories
+    * **Per-ROI**: Analysis of points belonging to the same kymograph (ROI)
+
+### Load trajectories<a name="loadtrajectories"></a>
+
+* Trajectories can be loaded back as they were saved by Tracy (.xlsx file) or any similar file with a Data Points sheet with at least Trajectory, Channel, Frame, Search Center X, and Search Center Y (it will recalculate trajecotires when spot centers are missing in this case)
+
+### Load TrackMate data<a name="loadtrackmate"></a>
+
+* TrackMate data (.csv) can be loaded, which will trigger a calculation using the trackate centers as search centers to generate a trajectory for each TrackMate track
 
 ## License<a name="license"></a>
 
