@@ -65,13 +65,13 @@
 
 1. To generate a kymograph, enter **`Line`** mode using the switch under the movie (shortcut: **`N`**)
 2. Optionally, look at the maximum-projection (shortcut **`M`**) to better see where you should draw lines
-3. Draw the segmented line by placing green anchors on the movie
+3. Draw the segmented line by placing green anchors on the movie (**`Escape`** cancels a sequence)
 4. Double-click to complete the sequence and store a **kymograph**
 5. If your movie has multiple channels, a kymograph will be generated for each, which will show when you toggle between channels (number keys)
 
 ### Track using kymograph reference<a name="kymoclick"></a>
 
-1. To track a spot in the movie using the kymograph as a reference, draw a segmented line by placing blue anchors on the kymograph
+1. To track a spot in the movie using the kymograph as a reference, draw a segmented line by placing blue anchors on the kymograph (**`Escape`** cancels a sequence)
 2. Double-click to complete the sequence to generate a **trajectory**, where spot centers are searched in the movie from the linear interpolation between clicks
 3. Press the **space bar** to play a movie of the trajectory
 4. Assess the plots
@@ -85,6 +85,8 @@
     * **Smooth**: equivalent to *Independent* mode but goes through a filtering at the end to remove spots that are far off the main track
 7. Click any point in the kymograph or in the *intensity plot* to jump to that point
 
+    **!!** Trajectories do not belong to kymographs, and their presence within one is determined on-the-fly for visualisation
+
 ### Modify individual points<a name="modify"></a>
 
 * When a point is highlighted, use the **`X`** key to either invalidate the spot or re-attempt a fit if it is already invalid
@@ -93,17 +95,21 @@
 
 * Adding trajectories will append the data to the **trajectory table**
 * Right click a trajectory in the table to show some helpful options, like **Go to kymograph ch1-001**
+* The **backspace** key removes the selected trajectory(ies)
 
 ### Save trajectories<a name="savetrajectories"></a>
 
 * Save trajectories in the **Save** menu, which saves an excel file with three sheets
     * **Data points**: All spots and their corresponding data
     * **Per-trajectory**: Data corresponding to individual trajectories
-    * **Per-ROI**: Analysis of points belonging to the same kymograph (ROI)
+    * **Per-kymograph**: Analysis of points belonging to the same kymograph
+
+    **!!** Make sure two kymographs do not contain the same trajectory or the Per-kymograph statistics will be wrong
 
 ### Load trajectories<a name="loadtrajectories"></a>
 
 * Trajectories can be loaded back as they were saved by Tracy (.xlsx file) or any similar file with a Data Points sheet with at least Trajectory, Channel, Frame, Search Center X, and Search Center Y (it will recalculate trajecotires when spot centers are missing in this case)
+* You do not need to save kymographs since the clicks you used to build them are embedded in the trajectories. Use **Draw from trajectories** in the *Kymograph* menu to redraw them after loading trajectories.
 
 ### Load TrackMate data<a name="loadtrackmate"></a>
 
