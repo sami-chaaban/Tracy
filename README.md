@@ -37,9 +37,10 @@
 1. Click **`Load Movie`** (also in the **Load** menu)
 2. Choose any single- or multi-channel movie (.tif format)
 3. If the pixel size and frame interval could not be loaded from the metadata, you will be prompted to enter them
-4. Once loaded, toggle between channels with the number keys
-5. Use the **`M`** shortcut to show/hide the maximum projection
-6. Adjust the contrast using the contrast slider
+4. Click and drag using the middle button to pan (or Ctrl + left click / Cmd + left click) and middle wheel scroll to zoom
+5. Once loaded, toggle between channels with the number keys
+6. Use the **`M`** shortcut to show/hide the maximum projection
+7. Adjust the contrast using the contrast slider
 
 ### Browse spots<a name="browsespots"></a>
 
@@ -60,7 +61,7 @@
 ### Kymographs<a name="kymographs"></a>
 
 1. To generate a kymograph, enter **`Line`** mode using the switch under the movie (shortcut: **`N`**)
-2. Optionally, enter maximum-projection mode to better see where you should draw lines
+2. Optionally, look at the maximum-projection (shortcut **`M`**) to better see where you should draw lines
 3. Draw the segmented line by placing green anchors on the movie
 4. Double-click to complete the sequence and store a **kymograph**
 5. If your movie has multiple channels, a kymograph will be generated for each, which will show when you toggle between channels (number keys)
