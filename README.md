@@ -1,5 +1,7 @@
 # Tracy
 
+***Note: Tracy is still in beta***
+
 1. [Install](#install)
 2. [Getting started](#start)
     * [Start Tracy](#starttracy)
