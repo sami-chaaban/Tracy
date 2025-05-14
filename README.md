@@ -12,6 +12,7 @@
     * [Track using kymograph reference](#kymoclick)
     * [Modify individual points](#modify)
     * [Browse trajectories](#browsetrajectories)
+    * [Save trajectories](#savetrajectories)
     * [Load trajectories](#loadtrajectories)
     * [Load TrackMate data](#loadtrackmate)
 3. [License](#license)
