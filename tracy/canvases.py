@@ -429,7 +429,7 @@ class KymoCanvas(ImageCanvas):
         self.draw()
         return [circ]
 
-    def draw_trajectories_on_kymo(self, showsearchline=True):
+    def draw_trajectories_on_kymo(self, showsearchline=True, skinny=False):
 
         ax = self.ax
 
@@ -499,6 +499,13 @@ class KymoCanvas(ImageCanvas):
             frames = traj["frames"]
             orig = traj["original_coords"]
 
+            scattersize = 9
+            linesize = 1.5
+            if skinny:
+                scattersize = 0.25
+                linesize = 0.2
+
+
             if showsearchline:
                 disp = [
                     (compute_x_roi(roi, x, y, kymo_w), num_frames_m1 - f)
@@ -531,32 +538,64 @@ class KymoCanvas(ImageCanvas):
             scatter_kwargs, line_color = self.navigator._get_traj_colors(traj)
 
             line, = ax.plot(xs_pts, ys_pts, linestyle='-', color=line_color,
-                            linewidth=1.1, alpha=0.8, zorder=3)
+                            linewidth=linesize, alpha=0.8, zorder=3)
 
             markers.append(line)
 
             sx0, sy0 = x0, y0
             sx1, sy1 = x1, y1
 
-            # 5b.5) optionally connect non‐adjacent valid spots with a dimmer line
             if getattr(self.navigator, "connect_all_spots", False):
-                # find the indices of all actually‐fitted spots
+                # find the indices of all actually-fitted spots
                 valid_idxs = [i for i,(x,y) in enumerate(pts) if not np.isnan(x)]
-                for a, b in zip(valid_idxs, valid_idxs[1:]):
-                    # whenever they’re not immediate neighbors…
-                    if b != a + 1:
-                        gx0, gy0 = pts[a]
-                        gx1, gy1 = pts[b]
-                        # draw a fainter connector
+
+                if valid_idxs:
+                    # ––– connect from VERY FIRST search-center to first valid spot –––
+                    first_valid = valid_idxs[0]
+                    if first_valid != 0:
+                        # get display coord of orig[0]
+                        x0_orig, y0_orig = orig[0]
+                        xx0 = compute_x_roi(roi, x0_orig, y0_orig, kymo_w)
+                        yy0 = num_frames_m1 - frames[0]
+                        # get display coord of the first valid spot
+                        gx1, gy1 = pts[first_valid]
                         gap_line, = ax.plot(
-                            [gx0, gx1], [gy0, gy1],
+                            [xx0, gx1], [yy0, gy1],
+                            linestyle='-', color=line_color,
+                            linewidth=linesize, alpha=0.4, zorder=2
+                        )
+                        markers.append(gap_line)
+
+                    # ––– gaps BETWEEN valid spots (as before) –––
+                    for a, b in zip(valid_idxs, valid_idxs[1:]):
+                        if b != a + 1:
+                            gx0, gy0 = pts[a]
+                            gx1, gy1 = pts[b]
+                            gap_line, = ax.plot(
+                                [gx0, gx1], [gy0, gy1],
+                                linestyle='-', color=line_color,
+                                linewidth=1.1, alpha=0.4, zorder=2
+                            )
+                            markers.append(gap_line)
+
+                    # ––– connect from last valid spot to VERY LAST search-center –––
+                    last_valid = valid_idxs[-1]
+                    if last_valid != len(pts) - 1:
+                        # get display coord of orig[-1]
+                        xN_orig, yN_orig = orig[-1]
+                        xxN = compute_x_roi(roi, xN_orig, yN_orig, kymo_w)
+                        yyN = num_frames_m1 - frames[-1]
+                        # get display coord of the last valid spot
+                        gx0, gy0 = pts[last_valid]
+                        gap_line, = ax.plot(
+                            [gx0, xxN], [gy0, yyN],
                             linestyle='-', color=line_color,
                             linewidth=1.1, alpha=0.4, zorder=2
                         )
                         markers.append(gap_line)
-
+                
             # per-point coloring
-            scatter = ax.scatter(xs_pts, ys_pts, s=11, picker=True, **scatter_kwargs)
+            scatter = ax.scatter(xs_pts, ys_pts, s=scattersize, picker=True, **scatter_kwargs)
             
             scatter.traj_idx = idx
             markers.append(scatter)
@@ -579,7 +618,7 @@ class KymoCanvas(ImageCanvas):
             v = dispB - dispA
             norm = np.hypot(*v)
             u = v / norm if norm else np.array([1.0, 0.0])
-            offset = 10
+            offset = 15
             for (cx, cy, suf), sign in [((x0, y0, 'A'), -1), ((x1, y1, 'B'), +1)]:
                 dx, dy = u * (offset * sign)
                 lbl = ax.annotate(
@@ -2529,10 +2568,10 @@ class TrajectoryCanvas(QWidget):
                         n_chan = self.navigator.movie.shape[self.navigator._channel_axis]
 
                         # build the coloc dict with *all* channel columns
-                        coloc = {"coloc_any": traj["colocalization_any"][i] or ""}
+                        coloc = {"Colocalized w/any channel": traj["colocalization_any"][i] or ""}
 
                         for ch in range(1, n_chan+1):
-                            key = f"coloc_ch{ch}"
+                            key = f"Colocalized w/ch{ch}"
                             # for the reference channel this will just be blank
                             flags = traj["colocalization_by_ch"].get(ch, [None]*num_points)
                             coloc[key] = flags[i] or ""
@@ -2585,7 +2624,7 @@ class TrajectoryCanvas(QWidget):
             with pd.ExcelWriter(filename) as writer:
                 df_data.to_excel(writer, sheet_name="Data Points", index=False)
                 df_summary.to_excel(writer, sheet_name="Per-trajectory", index=False)
-                df_per_roi.to_excel(writer, sheet_name="Per-ROI", index=False)
+                df_per_roi.to_excel(writer, sheet_name="Per-kymographI", index=False)
 
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save trajectories: {str(e)}")
@@ -2970,7 +3009,7 @@ class TrajectoryCanvas(QWidget):
             full_extra = [c for c in summary_df.columns if c not in known]
 
 
-            coloc_rx = re.compile(r"^(?:coloc_any|Ch\.\s*\d+\s*co\.\s*%)$")
+            coloc_rx = re.compile(r"^(?:Colocalized w/any channel|Ch\.\s*\d+\s*co\.\s*%)$")
             full_extra = [
                 c for c in summary_df.columns
                 if c not in known and not coloc_rx.match(c)
@@ -3066,7 +3105,7 @@ class TrajectoryCanvas(QWidget):
             for name in parsed:
                 self._add_custom_column(name, col_type=self._column_types[name])
 
-            print("load_trajectories", "custom_columns after adding parsed", self.custom_columns)
+            # print("load_trajectories", "custom_columns after adding parsed", self.custom_columns)
 
             # now make sure every “Ch. N co. %” column is registered
             if self.navigator.movie is not None and self.navigator._channel_axis is not None:
@@ -3078,7 +3117,7 @@ class TrajectoryCanvas(QWidget):
             else:
                 n_chan = 1
 
-            print("load_trajectories", "custom_columns after adding coloc", self.custom_columns)
+            # print("load_trajectories", "custom_columns after adding coloc", self.custom_columns)
 
             self.navigator._rebuild_color_by_actions()
 
@@ -3230,8 +3269,8 @@ class TrajectoryCanvas(QWidget):
             self._custom_load_map = {}
 
         # --- handle legacy per-point coloc columns ---
-        expected_any = {"coloc_any"}
-        expected_by_ch = {f"coloc_ch{ch}" for ch in range(1, n_chan+1)}
+        expected_any = {"Colocalized w/any channel"}
+        expected_by_ch = {f"Colocalized w/ch{ch}" for ch in range(1, n_chan+1)}
         expected_cols = expected_any | expected_by_ch
         present = set(df.columns) & expected_cols
         if present and present != expected_cols:
@@ -3330,8 +3369,8 @@ class TrajectoryCanvas(QWidget):
                 channel = selected_channel
 
             # build the names we expect
-            expected_any   = {"coloc_any"}
-            expected_by_ch = {f"coloc_ch{ch}" for ch in range(1, n_chan+1)}
+            expected_any   = {"Colocalized w/any channel"}
+            expected_by_ch = {f"Colocalized w/ch{ch}" for ch in range(1, n_chan+1)}
             # (we'll ignore the one for the reference‐channel itself later)
             expected_cols = expected_any | expected_by_ch
 
@@ -3556,10 +3595,10 @@ class TrajectoryCanvas(QWidget):
             # --- load per-point colocalization flags if present ---
             n_pts = len(frames_used)
             # overall-any flags
-            if "coloc_any" in group.columns:
+            if "Colocalized w/any channel" in group.columns:
                 traj["colocalization_any"] = [
                     v if v in ("Yes", "No") else None
-                    for v in group["coloc_any"].fillna("").tolist()
+                    for v in group["Colocalized w/any channel"].fillna("").tolist()
                 ]
             else:
                 traj["colocalization_any"] = [None] * n_pts
@@ -3569,7 +3608,7 @@ class TrajectoryCanvas(QWidget):
             for ch in range(1, n_chan+1):
                 if ch == channel:
                     continue
-                col = f"coloc_ch{ch}"
+                col = f"Colocalized w/ch{ch}"
                 if col in group.columns:
                     flags = group[col].fillna("").tolist()
                     by_ch[ch] = [v if v in ("Yes", "No") else None for v in flags]
@@ -4321,44 +4360,53 @@ class TrajectoryCanvas(QWidget):
         self.kymoCanvas.draw()
 
     def delete_selected_trajectory(self):
-        selected_rows = self.table_widget.selectionModel().selectedRows()
+        # 1) Get all selected rows
+        selected_rows = [idx.row() for idx in self.table_widget.selectionModel().selectedRows()]
         if not selected_rows:
-            # print("❌ No trajectory selected to delete!")
+            # nothing selected
             return
-        row = selected_rows[0].row()
-        deleted_number = self.trajectories[row]["trajectory_number"]
-        deleted = self.trajectories.pop(row)
-        self.table_widget.removeRow(row)
-        centers_to_remove = [
-            (f, cx, cy)
-            for f, c in zip(deleted["frames"], deleted["spot_centers"])
-            # only keep real (x,y) points
-            if isinstance(c, (tuple, list)) and len(c) == 2 and c[0] is not None and c[1] is not None
-            for cx, cy in [c]
-        ]
-        self.navigator._remove_past_centers(centers_to_remove)
 
+        # 2) Sort in reverse so removing rows doesn't shift indices of earlier ones
+        selected_rows.sort(reverse=True)
+
+        # 3) Prepare to collect all spot-centers to remove
+        centers_to_remove = []
+
+        # 4) Remove each selected trajectory
+        for row in selected_rows:
+            deleted = self.trajectories.pop(row)
+            # remove from table
+            self.table_widget.removeRow(row)
+            # gather valid (x,y) centers
+            for frame, center in zip(deleted["frames"], deleted["spot_centers"]):
+                if isinstance(center, (tuple, list)) and len(center) == 2 and center[0] is not None and center[1] is not None:
+                    centers_to_remove.append((frame, center[0], center[1]))
+
+        # 5) Tell navigator to drop all those centers
+        if centers_to_remove and self.navigator is not None:
+            self.navigator._remove_past_centers(centers_to_remove)
+
+        # 6) Re-select a sensible row in the table
         row_count = self.table_widget.rowCount()
         if row_count > 0:
-            # if we deleted a later row, move up one; otherwise stay at 0
-            new_row = row - 1 if row > 0 else 0
-            # clamp to the last row if we deleted the last row
-            new_row = min(new_row, row_count - 1)
-            # select that row
+            # pick the smallest index of those we deleted, clamped to [0, row_count-1]
+            new_row = min(selected_rows)  
+            new_row = max(0, min(new_row, row_count - 1))
             self.table_widget.selectRow(new_row)
 
-        self.movieCanvas.draw_trajectories_on_movie()
-
-        if row_count == 0:
+        # 7) Recompute trajectory counter:
+        #    if none left, reset to 1; otherwise max+1
+        if not self.trajectories:
             self._trajectory_counter = 1
         else:
-            if deleted_number == self._trajectory_counter - 1:
-                self._trajectory_counter -= 1
-            
+            max_num = max(t["trajectory_number"] for t in self.trajectories)
+            self._trajectory_counter = max_num + 1
+
+        # 8) Redraw everything
+        self.movieCanvas.draw_trajectories_on_movie()
         if self.navigator is not None:
             self.kymoCanvas.draw_trajectories_on_kymo()
-
-        self.navigator.update_table_visibility()
+            self.navigator.update_table_visibility()
 
         self.movieCanvas.draw()
         self.kymoCanvas.draw()

@@ -2611,8 +2611,7 @@ class KymographNavigator(QMainWindow):
                         QMessageBox.warning(
                             self, "Invalid Kymograph",
                             f"File '{os.path.basename(fname)}' has an invalid shape {kymo.shape}.\n"
-                            "It must be a 2D image or a 3D image with 1, 3, or 4 channels.\n"
-                            "This file will be skipped."
+                            "It must be a 2D image or a 3D image with 1, 3, or 4 channels."
                         )
                         continue  # Skip this file.
                         
@@ -5582,6 +5581,8 @@ class KymographNavigator(QMainWindow):
                 self.movieChannelCombo.setCurrentIndex(requested_channel - 1)
                 if self.sumBtn.isChecked():
                     self.movieCanvas.display_sum_frame()
+                if self.refBtn.isChecked():
+                    self.refBtn.setChecked(False)
 
         self.movieCanvas.clear_movie_trajectory_markers()
         self.movieCanvas.draw_trajectories_on_movie()
@@ -6205,6 +6206,9 @@ class KymographNavigator(QMainWindow):
             QMessageBox.information(self, "No Kymographs", "Nothing to save.")
             return
 
+        self.movieCanvas.setUpdatesEnabled(False)
+        self.kymoCanvas.setUpdatesEnabled(False)
+
         # 2) Show dialog and get options
         all_items = list(self.kymographs.items())
         base_name = os.path.splitext(self.movieNameLabel.text())[0]
@@ -6281,7 +6285,7 @@ class KymographNavigator(QMainWindow):
                     fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
 
                     # draw overlays
-                    self.kymoCanvas.draw_trajectories_on_kymo(showsearchline=False)
+                    self.kymoCanvas.draw_trajectories_on_kymo(showsearchline=False, skinny=True)
                     fig.canvas.draw()
 
                     target_dpi = 300
@@ -6327,6 +6331,9 @@ class KymographNavigator(QMainWindow):
                 self.kymoCanvas.display_image(img)
                 self.kymoCanvas.draw_trajectories_on_kymo()
                 self.kymoCanvas.draw_idle()
+
+        self.movieCanvas.setUpdatesEnabled(True)
+        self.kymoCanvas.setUpdatesEnabled(True)
 
     #UNUSED
     def save_kymograph_with_rois(self):
@@ -6967,6 +6974,7 @@ class KymographNavigator(QMainWindow):
         self.connect_all_spots = checked
         # then force a redraw
         self.kymoCanvas.draw_trajectories_on_kymo()
+        self.kymoCanvas.draw_idle()
 
     def on_colocalization_toggled(self, checked: bool):
         if self.movie.ndim != 4:
