@@ -49,8 +49,6 @@ def main():
         app.setFont(default_font)
         # print(f"✨ App default font set to: '{default_font.family()}', weight={default_font.weight()}")
 
-
-
     # 1. point to your bundled font folder
     font_dir = resource_path("fonts")
     font_files = [os.path.join(font_dir, fname)

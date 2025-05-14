@@ -9,6 +9,7 @@
     * [Kymographs](#kymographs)
     * [Track using kymograph reference](#kymoclick)
     * [Modify individual points](#modify)
+    * [Browse trajectories](#browsetrajectories)
 3. [License](#license)
 
 ## Install<a name="install"></a>
@@ -65,25 +66,27 @@
 ### Track using kymograph reference<a name="kymoclick"></a>
 
 1. To track a spot in the movie using the kymograph as a reference, draw a segmented line by placing blue anchors on the kymograph
-2. Double-click to complete the sequence
-3. A **trajectory** will automatically be generated using the interpolated line as the search centers
+2. Double-click to complete the sequence to generate a **trajectory**, where spot centers are searched in the movie from the linear interpolation between clicks
+3. Press the **space bar** to play a movie of the trajectory
+4. Assess the plots
     * The **spot histogram** shows the pixel intensities in the search range around the spot center and highlights the intensities within the spot
     * The **intensity plot** shows each spot's integrated intensity
     * The **speed histogram** shows the frame-to-frame speeds of the spots and overlay sthe net speed (only considering the start and end point)
-4. You can modify the search radius (hold down **`R`** and scroll) and re-attempt the trajectory (**`Enter`** key)
-5. Toggle tracking modes with the **`T`** key and re-attempt the trajectory
+5. If necessary, modify the search radius (hold down **`R`** and scroll) and re-attempt (**`Enter`** key)
+6. If necessary, toggle tracking modes with the **`T`** key and re-attempt (**`Enter`** key)
     * **Independent**: each frame is treated independently using the interpolated search centers
     * **Tracked**: each frame's search center is based on the previous frame's spot center
     * **Smooth**: equivalent to *Independent* mode but goes through a filtering at the end to remove spots that are far off the main track
-6. Click any point in the kymograph or in the *intensity plot* to jump to that point
+7. Click any point in the kymograph or in the *intensity plot* to jump to that point
 
 ### Modify individual points<a name="modify"></a>
 
-* When a point is highlighted, use the **`X`** key to either invalidate the spot or re-attempt a fit
+* When a point is highlighted, use the **`X`** key to either invalidate the spot or re-attempt a fit if it is already invalid
 
-### Browse trajectories
+### Browse trajectories<a name="browsetrajectories"></a>
 
-* Adding trajectories will compile the data in the **trajectory table**
+* Adding trajectories will append the data to the **trajectory table**
+* Right click a trajectory in the table to show some helpful options, like **Go to kymograph ch1-001**
 
 ## License<a name="license"></a>
 

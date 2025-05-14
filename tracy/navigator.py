@@ -263,43 +263,10 @@ class KymographNavigator(QMainWindow):
 
         # --- Top Controls Section ---
         topWidget = QWidget()
-        # topWidget.setStyleSheet("""
-        #     background: qlineargradient(
-        #         x1: 0, y1: 0, x2: 0, y2: 1,
-        #         stop: 0 #DCE6FF,
-        #         stop: 1 rgba(220, 230, 255, 0)
-        #     );
-        #     padding: 8px;
-        #     border-radius: 8px;
-        # """)
         topLayout = QHBoxLayout(topWidget)
         topLayout.setSpacing(5)
         topLayout.setContentsMargins(20, 6, 0, 0)
         topLayout.setAlignment(Qt.AlignLeft)
-        
-        # self.btnLoadMovie = QPushButton("")
-        # self.btnLoadMovie.setFixedWidth(50)
-        # self.btnLoadMovie.setFixedHeight(30)
-        # self.btnLoadMovie.setIcon(QIcon(videoiconpath))
-        # self.btnLoadMovie.setStyleSheet("""
-        #     QPushButton {
-        #         border: 2px solid transparent;
-        #         border-radius: 8px;
-        #         background: transparent;
-        #     }
-        #     QPushButton:hover {
-        #         background-color: rgba(255, 255, 255, 0.5);
-        #     }
-        #     QPushButton:pressed {
-        #         border: 2px solid #ffffff;
-        #         background-color: #ffffff;
-        #     }
-        # """)
-        # self.btnLoadMovie.setIconSize(QSize(16, 16))
-        # self.btnLoadMovie.setObjectName("Passive")
-        # self.btnLoadMovie.clicked.connect(self.handle_movie_load)
-        # self.btnLoadMovie.setMinimumWidth(50)
-        # topLayout.addWidget(self.btnLoadMovie)
 
         self.movieNameLabel = ClickableLabel("Load movie")
         self.movieNameLabel.setObjectName("movieNameLabel")
@@ -540,13 +507,6 @@ class KymographNavigator(QMainWindow):
         self.kymoLegendLayout.setSizeConstraint(QLayout.SetFixedSize)
         self.kymoLegendLayout.setContentsMargins(5,5,5,5)
         self.kymoLegendLayout.setSpacing(5)
-
-        # overlayLayout = QHBoxLayout()
-        # overlayLayout.setSpacing(10)
-        # overlayLayout.setContentsMargins(0, 10, 0, 0)
-        # overlayLayout.setAlignment(Qt.AlignCenter)
-        # overlayLayout.addWidget(self.roi_overlay_button)
-        # leftLayout.addLayout(overlayLayout)
 
         self.leftWidget.setLayout(leftLayout)
         self.mainSplitter.addWidget(self.leftWidget)
@@ -929,12 +889,6 @@ class KymographNavigator(QMainWindow):
         self.traj_overlay_button.clicked.connect(self.trajectoryCanvas.toggle_trajectory_markers)
         self.delete_button.clicked.connect(self.trajectoryCanvas.delete_selected_trajectory)
         
-        # self.trajectoryControlButtons.toggleOverlayRequested.connect(
-        #     self.trajectoryCanvas.toggle_trajectory_markers)
-        # self.trajectoryControlButtons.deleteRequested.connect(
-        #     self.trajectoryCanvas.delete_selected_trajectory)
-        # self.trajectoryControlButtons.clearRequested.connect(
-        #     self.trajectoryCanvas.clear_trajectories)
         
         # Connect additional signals (e.g. for mouse motion over the movie canvas).
         self.movieCanvas.mpl_connect("motion_notify_event", self.on_movie_hover)
@@ -1302,11 +1256,6 @@ class KymographNavigator(QMainWindow):
             new_row = (current - 1) % row_count
 
         table.selectRow(new_row)
-        # self.jump_to_analysis_point(0, animate="ramp")
-
-    # def highlight_current_point(self, idx):
-    #     self.intensityCanvas.current_index = idx
-    #     self.intensityCanvas.highlight_current_point()
 
     def _showRadiusDialog(self):
         # don’t open if it’s already up
@@ -1538,173 +1487,6 @@ class KymographNavigator(QMainWindow):
 
     def get_point_color(self):
         return self.intensityCanvas.get_current_point_color()
-
-    # def handleGlobalX(self):
-    #     """Global handler for the X key.
-    #     If the current analysis point is valid, mark it invalid (and remove the magenta circle);
-    #     if it is already invalid, re-run the analysis (undo the invalidation) and update all overlays.
-    #     Also update the trajectory metadata, table, and (if overlay is toggled on) redraw the overlay lines.
-    #     """
-
-    #     if not hasattr(self, "intensityCanvas") or self.intensityCanvas is None:
-    #         print("No intensity canvas available; ignoring X key.")
-    #         return
-    #     if not self.analysis_frames or not self.analysis_original_coords:
-    #         print("No analysis data available; ignoring X key.")
-    #         return
-    #     if not self.intensityCanvas.point_highlighted:
-    #         return
-
-    #     if self.looping:
-    #         self.stoploop()
-
-    #     # print("handleglobalx analysis_channel", self.analysis_channel)
-
-    #     if self.analysis_channel is not None:
-    #         if getattr(self.movieCanvas, 'current_channel', None) != self.analysis_channel:
-    #             self._select_channel(self.analysis_channel)
-
-    #     idx = self.intensityCanvas.current_index
-    #     fitted_center, sigma, peak = self.analysis_fit_params[idx]
-    #     bkgr = self.analysis_background[idx]
-    #     intensity = self.analysis_intensities[idx]
-    #     search_center = self.analysis_search_centers[idx]
-    #     # Get frame and coordinate for this analysis point.
-    #     frame = self.analysis_frames[idx]
-    #     crop_size = int(2 * self.searchWindowSpin.value())
-
-    #     frame_image = self.get_movie_frame(frame)
-    #     row = self.trajectoryCanvas.table_widget.selectionModel().selectedRows()[0].row()
-    #     traj = self.trajectoryCanvas.trajectories[row]
-
-    #     if frame_image is not None:
-
-    #         was_valid = (self.analysis_intensities[idx] is not None)
-
-    #         if self.analysis_intensities[idx] is None:
-    #             # Re-analysis branch: re-run Gaussian fit
-    #             fitted_center, sigma, intensity, peak, bkgr = perform_gaussian_fit(
-    #                 frame_image, search_center, crop_size, pixelsize=self.pixel_size, bg_fixed=bkgr
-    #             )
-    #             self.movieCanvas.overlay_rectangle(
-    #                 search_center[0], search_center[1], crop_size
-    #             )
-
-    #             if fitted_center is not None:
-
-    #                 if getattr(self, 'check_colocalization', False) and self.movie.ndim == 4:
-    #                     # Clear existing colocalization for this frame
-    #                     traj["colocalization_any"][idx] = None
-    #                     for ch in traj["colocalization_by_ch"]:
-    #                         traj["colocalization_by_ch"][ch][idx] = None
-
-    #                     # Recompute colocalization just for this one point
-    #                     self.analysis_frames     = traj["frames"]
-    #                     self.analysis_fit_params = list(zip(
-    #                         traj["spot_centers"], traj["sigmas"], traj["peaks"]
-    #                     ))
-
-    #                     # overall-any
-    #                     self.analysis_channel = traj["channel"]
-    #                     self._compute_colocalization_single_frame(idx)
-    #                     traj["colocalization_any"][idx] = (
-    #                         "Yes" if self.analysis_colocalized[idx] else "No"
-    #                     )
-
-    #                     # per-channel
-    #                     oldchannel = self.analysis_channel
-    #                     for tgt_ch in traj["colocalization_by_ch"].keys():
-    #                         self.analysis_channel = tgt_ch
-    #                         self._compute_colocalization_single_frame(idx)
-    #                         traj["colocalization_by_ch"][tgt_ch][idx] = (
-    #                             "Yes" if self.analysis_colocalized[idx] else "No"
-    #                         )
-    #                     self.analysis_channel = oldchannel
-
-    #             self.flash_message("Reattempt")
-
-    #         else:
-    #             if getattr(self, 'check_colocalization', False) and self.movie.ndim == 4:
-    #                 # 1) Clear the *trajectory* dict (you already have this)
-    #                 traj["colocalization_any"][idx] = None
-    #                 for ch in traj["colocalization_by_ch"]:
-    #                     traj["colocalization_by_ch"][ch][idx] = None
-
-    #                 # 2) ALSO clear the navigator’s *analysis* arrays:
-    #                 #    so that future colocalization‐percent calculations skip this point.
-    #                 self.analysis_colocalized[idx] = False
-    #                 for ch, lst in self.analysis_colocalized_by_ch.items():
-    #                     lst[idx] = False
-
-    #             self.flash_message("Remove")
-
-    #     # now update everything else (velocities, intensities, table, etc.)
-    #     self.trajectoryCanvas.update_trajectory(idx, fitted_center, sigma, peak, intensity)
-
-    #     self.kymoCanvas.update_view()
-
-    #     if self.analysis_intensities[idx] is None:
-    #         self.movieCanvas.remove_gaussian_circle()
-    #         self.movieCanvas.remove_inset_circle()
-    #         self.kymoCanvas.remove_circle()
-    #         self.kymoCanvas.clear_kymo_trajectory_markers()
-    #         sx, sy = search_center
-    #         kymo_name = self.kymoCombo.currentText()
-    #         if kymo_name and kymo_name in self.kymographs and self.rois:
-    #             roi = self.rois[self.roiCombo.currentText()]
-    #             xk = self.compute_kymo_x_from_roi(
-    #                 roi, sx, sy,
-    #                 self.kymographs[kymo_name].shape[1]
-    #             )
-    #             if xk is not None:
-    #                 disp_frame = (self.movie.shape[0] - 1) - frame
-    #                 self.kymoCanvas.add_circle(
-    #                     xk, disp_frame,
-    #                     color='grey'
-    #                 )
-    #     else:
-    #         self.movieCanvas.add_gaussian_circle(fitted_center, sigma)
-    #         fx, fy = fitted_center
-    #         kymo_name = self.kymoCombo.currentText()
-    #         if kymo_name and kymo_name in self.kymographs and self.rois:
-    #             roi = self.rois[self.roiCombo.currentText()]
-    #             xk = self.compute_kymo_x_from_roi(
-    #                 roi, fx, fy,
-    #                 self.kymographs[kymo_name].shape[1]
-    #             )
-    #             if xk is not None:
-    #                 disp_frame = (self.movie.shape[0] - 1) - frame
-    #                 self.kymoCanvas.add_circle(
-    #                     xk, disp_frame,
-    #                     color='magenta'
-    #                 )
-    #         center_for_zoom = fitted_center if fitted_center is not None else search_center
-    #         self.movieCanvas.update_inset(
-    #             frame_image, center_for_zoom, int(self.insetViewSize.value()), 2,
-    #             fitted_center=fitted_center,
-    #             fitted_sigma=sigma,
-    #             fitted_peak=peak,
-    #             intensity_value=intensity,
-    #             offset = bkgr
-    #         )
-
-    #     # If overlay is toggled on, redraw the overlay lines.
-    #     if self.traj_overlay_button.isChecked():
-    #         self.movieCanvas.draw_trajectories_on_movie()
-    #         self.kymoCanvas.draw_trajectories_on_kymo()
-        
-    #     # Update the intensity plot.
-    #     self.intensityCanvas.plot_intensity(self.analysis_frames, self.analysis_intensities,
-    #                         avg_intensity=self.analysis_avg,
-    #                         median_intensity=self.analysis_median,
-    #                         colors=self._get_traj_colors(traj)[0])
-    #     self.intensityCanvas.highlight_current_point()
-
-    #     self.velocityCanvas.plot_velocity_histogram(self.analysis_velocities)
-
-    #     self.zoomInsetWidget.draw_idle()
-    #     self.kymoCanvas.draw_idle()
-    #     self.movieCanvas.draw_idle()
 
     # In create_menu(), add a new menu action:
     def create_menu(self):
@@ -2747,6 +2529,11 @@ class KymographNavigator(QMainWindow):
             }
             # Make the Ref. button visible.
             self.refBtn.setVisible(True)
+
+            reffilt = self.refBtn._bubble_filter
+            reffilt._wobj = self.refBtn
+            QTimer.singleShot(1000, lambda: reffilt._showBubble(force=True))
+
         except Exception as e:
             QMessageBox.critical(self, "Load Error", f"Could not load reference image:\n{str(e)}")
 
@@ -3997,6 +3784,7 @@ class KymographNavigator(QMainWindow):
                                     peak=pk, pointcolor=pointcolor)
                 
             self.frameSlider.setValue(frame)
+            self.frameNumberLabel.setText(f"{frame+1}")
             if hasattr(self, 'analysisSlider'):
                 self.analysisSlider.setValue(index)
 
@@ -5579,12 +5367,6 @@ class KymographNavigator(QMainWindow):
             self.movieCanvas.ax.draw_artist(self.movieCanvas.tempRoiLine)        
         canvas.blit(self.movieCanvas._roi_bbox)
 
-    # def on_movie_scroll(self, event):
-    #     if event.inaxes == self.movieCanvas.ax:
-    #         # let the MovieCanvas scroll logic update scale & center…
-    #         # then ask it to redraw & recapture its clean background
-    #         self.movieCanvas._perform_throttled_update()  
-
     def on_movie_left_click(self, event):
         # Get the current frame index from the frame slider.
         frame_idx = self.frameSlider.value()
@@ -5953,31 +5735,6 @@ class KymographNavigator(QMainWindow):
     #     return super().eventFilter(obj, event)
 
     def eventFilter(self, obj, ev):
-        # wheel on the radius popup?
-        # radius_popup = getattr(self, "_radiusPopup", None)
-        # if (
-        #     radius_popup
-        #     and ev.type() == QEvent.Wheel
-        #     and obj is radius_popup
-        # ):
-        #     delta = ev.angleDelta().y()
-        #     step  = self._radiusSpinLive.singleStep()
-        #     cur   = self._radiusSpinLive.value()
-        #     self._radiusSpinLive.setValue(cur + (step if delta > 0 else -step))
-        #     return True
-
-        # You can now drop the Enter/Leave branches entirely,
-        # unless you still want to start on Enter:
-        # if ev.type() == QEvent.Enter and obj is self.target:
-        #     self.showTimer.start()
-        #     return False
-
-        # if ev.type() == QEvent.Leave and obj is self.target:
-        #     # optional redundant safety
-        #     self.showTimer.stop()
-        #     self.hideTimer.stop()
-        #     self._hide()
-        #     return False
 
         if obj is self._ch_overlay and ev.type() == ev.Show:  
             self._reposition_legend()
@@ -6084,16 +5841,8 @@ class KymographNavigator(QMainWindow):
             if self.movie is None:
                 return
 
-            # Force the sum image to be generated so that movieCanvas.image holds the sum projection.
-            # Instead of calling display_sum_frame() (which resets the zoom),
-            # save the current view limits, update the image data, then restore the view.
-            # current_xlim = self.movieCanvas.ax.get_xlim()
-            # current_ylim = self.movieCanvas.ax.get_ylim()
 
             self.movieCanvas.display_sum_frame()  # This method should be modified if necessary so that it doesn't call update_view()
-            # Alternatively, if display_sum_frame() resets the view, you might want to update only the data:
-            # sum_img = self.compute_sum_frame()    # a helper method that computes the sum frame without affecting zoom.
-            # self.movieCanvas.update_image_data(sum_img)
 
             # Compute sum-mode contrast settings if they don’t already exist.
             sum_image = self.movieCanvas.image
@@ -6181,64 +5930,6 @@ class KymographNavigator(QMainWindow):
             # self.movieCanvas.ax.set_xlim(current_xlim)
             # self.movieCanvas.ax.set_ylim(current_ylim)
             self.movieCanvas.draw_idle()
-
-        # try:
-        #     if self.zoomInsetFrame.isVisible():
-        #         frame = self.movieCanvas.image
-        #         old_image, center, crop, zoom_factor, fcenter, fsigma, fpeak, bkgr, ivalue = \
-        #             self.movieCanvas._last_inset_params
-
-        #         self.movieCanvas.update_inset(
-        #             frame, center, crop, zoom_factor,
-        #             fitted_center=fcenter,
-        #             fitted_sigma=fsigma,
-        #             fitted_peak=fpeak,
-        #             intensity_value=ivalue,
-        #             offset = bkgr
-        #         )
-
-        #         if hasattr(self, "histogramCanvas"):
-        #             self.histogramCanvas.update_histogram(frame, fcenter, crop, sigma=fsigma, intensity=ivalue, background=bkgr)
-        # except Exception as e:
-        #     print(f"could not update inset on sum toggle: {e}")
-        #     pass
-
-        # self.movieCanvas.draw_idle()
-
-    # def overlay_roi_line(self):
-    #     # Remove any existing ROI overlay line.
-    #     if hasattr(self.movieCanvas, "roi_line") and self.movieCanvas.roi_line is not None:
-    #         try:
-    #             self.movieCanvas.roi_line.remove()
-    #         except Exception as e:
-    #             print("Error removing ROI overlay line:", e)
-    #         self.movieCanvas.roi_line = None
-    #         self.movieCanvas.draw_idle()
-        
-    #     # If no ROI is available, do nothing.
-    #     if self.roiCombo.count() == 0:
-    #         return
-    #     roi_key = self.roiCombo.currentText()
-    #     if roi_key not in self.rois:
-    #         return
-    #     roi = self.rois[roi_key]
-    #     if "x" not in roi or "y" not in roi:
-    #         return
-
-    #     # Convert ROI points to numpy arrays.
-    #     roi_x = np.array(roi["x"], dtype=float)
-    #     roi_y = np.array(roi["y"], dtype=float)
-
-    #     # Draw a line connecting the ROI points on the movie canvas.
-    #     # Use a thicker line (linewidth=3), semi-transparent (alpha=0.8),
-    #     # rounded end caps, and a nice yellow color.
-    #     line, = self.movieCanvas.ax.plot(roi_x, roi_y,
-    #                                     color="#FFCC00",
-    #                                     linewidth=3,
-    #                                     alpha=0.8,
-    #                                     solid_capstyle="round")
-    #     self.movieCanvas.roi_line = line
-    #     self.movieCanvas.draw_idle()
 
     def overlay_all_rois(self):
         # 1) clear old overlays
@@ -6340,14 +6031,6 @@ class KymographNavigator(QMainWindow):
     def update_roi_overlay_if_active(self):
         if self.roi_overlay_active:
             self.overlay_all_rois()
-
-    # def update_roi_overlay_button_style(self, checked):
-    #     if checked:
-    #         # Change to a different color when the button is toggled on
-    #         self.roi_overlay_button.setStyleSheet("background-color: #81C784")
-    #     else:
-    #         # Revert back to default when toggled off
-    #         self.roi_overlay_button.setStyleSheet("")
 
 
     def generate_rois_from_trajectories(self):
@@ -6643,6 +6326,7 @@ class KymographNavigator(QMainWindow):
                 img = np.flipud(self.kymographs[current])
                 self.kymoCanvas.display_image(img)
                 self.kymoCanvas.draw_trajectories_on_kymo()
+                self.kymoCanvas.draw_idle()
 
     #UNUSED
     def save_kymograph_with_rois(self):

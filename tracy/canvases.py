@@ -636,24 +636,6 @@ class KymoCanvas(ImageCanvas):
                 pass
             self._marker = None
 
-    # def on_pick_event(self, event):
-    #     # ignore non-scatter picks, or middle-clicks
-    #     me = getattr(event, "mouseevent", None)
-    #     if me and me.button == 2:
-    #         return
-    #     if event.artist is not self.scatter_objs_traj:
-    #         return
-    #     if not event.ind:
-    #         return
-
-    #     # take the first index
-    #     idx = event.ind[0]
-    #     # tell the navigator to jump
-    #     self.navigator.jump_to_analysis_point(idx)
-    #     # un‐check summary mode if needed
-    #     if self.navigator.sumBtn.isChecked():
-    #         self.navigator.sumBtn.setChecked(False)
-
 # -----------------------------
 # MovieCanvas
 # -----------------------------
@@ -2909,127 +2891,6 @@ class TrajectoryCanvas(QWidget):
         self.intensity_canvas.current_index = new_row
         self.on_trajectory_selected_by_index(new_row, zoom=True)
 
-    # def update_trajectory(self, idx, fitted_center, sigma, peak, intensity):
-    #     # 1) Figure out which trajectory row is active
-    #     selected = self.table_widget.selectionModel().selectedRows()
-    #     if not selected:
-    #         return
-    #     row = selected[0].row()
-
-    #     # 2) Toggle: are we invalidating or re‐validating?
-    #     revalidating = (self.navigator.analysis_intensities[idx] is None)
-    #     if revalidating:
-    #         # re‐analysis: write the new fit back into the navigator
-    #         if fitted_center is not None:
-    #             self.navigator.analysis_fit_params[idx] = (fitted_center, sigma, peak)
-    #             self.navigator.analysis_intensities[idx] = intensity
-    #             self.navigator.analysis_colors[idx] = "magenta"
-    #     else:
-    #         # invalidation: clear that intensity+fit
-    #         self.navigator.analysis_fit_params[idx] = (None, None, None)
-    #         self.navigator.analysis_intensities[idx] = None
-    #         self.navigator.analysis_colors[idx] = "grey"
-
-    #     traj = self.trajectories[row]
-    #     N    = len(self.navigator.analysis_frames)
-
-    #     # 3) Unpack all fit params and rebuild velocity list
-    #     centers, sigmas, peaks = zip(*self.navigator.analysis_fit_params)
-    #     self.navigator.analysis_velocities = calculate_velocities(centers)
-    #     # compute average velocity (px/frame)
-    #     valid_vels = [v for v in self.navigator.analysis_velocities if v is not None]
-    #     avg_vpf = float(np.mean(valid_vels)) if valid_vels else None
-    #     self.navigator.average_velocity = avg_vpf
-
-    #     # 4) Recompute average & median intensity
-    #     ints = self.navigator.analysis_intensities
-    #     valid_ints = [v for v in ints if v is not None and v > 0]
-    #     new_avg    = float(np.mean(valid_ints))   if valid_ints else None
-    #     new_median = float(np.median(valid_ints)) if valid_ints else None
-    #     self.navigator.analysis_avg    = new_avg
-    #     self.navigator.analysis_median = new_median
-
-    #     # 5) Update “percent valid” for table
-    #     total_pts    = len(self.navigator.analysis_frames)
-    #     n_valid      = len(valid_ints)
-    #     pct_valid    = int(100 * n_valid / total_pts) if total_pts else 0
-
-    #     # 6) Prepare human‐readable speed (µm/s) if you have pixel_size & frame_interval
-    #     avg_um_s_txt = ""
-    #     if avg_vpf is not None and self.navigator.pixel_size and self.navigator.frame_interval:
-    #         nm_per_ms = (avg_vpf * self.navigator.pixel_size) / self.navigator.frame_interval
-    #         avg_um_s_txt = f"{nm_per_ms:.2f}"
-
-    #     # 7) Reflect everything back into your trajectory model
-    #     traj = self.trajectories[row]
-    #     traj["spot_centers"][idx]       = centers[idx]
-    #     traj["sigmas"][idx]             = sigmas[idx]
-    #     traj["peaks"][idx]              = peaks[idx]
-    #     traj["intensities"][idx]        = ints[idx]
-    #     traj["colors"][idx]             = self.navigator.analysis_colors[idx]
-    #     traj["velocities"]              = self.navigator.analysis_velocities
-    #     traj["average_velocity"]        = self.navigator.average_velocity
-    #     traj["average"]                 = new_avg
-    #     traj["median"]                  = new_median
-    #     traj["fixed_background"]        = self.navigator.analysis_trajectory_background
-    #     traj["background"]              = self.navigator.analysis_background
-
-    #     # 8) Update the table
-    #     self.writeToTable(row, "valid",        str(pct_valid))
-    #     self.writeToTable(row, "medintensity", "" if new_median is None else f"{new_median:.2f}")
-
-
-    #     if getattr(self, 'check_colocalization', False) and self.movie.ndim == 4:
-    #         if self.navigator.movie is not None and self.navigator._channel_axis is not None:
-    #             n_chan = self.navigator.movie.shape[self.navigator._channel_axis]
-    #         else:
-    #             n_chan = 1
-
-    #         # make sure every non-ref channel has a list in the *traj* dict
-    #         col_any = traj.setdefault("colocalization_any", [None]*N)
-    #         col_by  = traj.setdefault("colocalization_by_ch", {})
-
-    #         # ensure the per-channel lists exist
-    #         for ch in range(1, n_chan+1):
-    #             if ch == traj["channel"]:
-    #                 continue
-    #             col_by.setdefault(ch, [None]*N)
-
-    #         if revalidating:
-    #             # recompute only that frame
-    #             self.navigator._compute_colocalization_single_frame(idx)
-    #             col_any[idx] = self.navigator.analysis_colocalized[idx]
-    #             for ch, lst in col_by.items():
-    #                 # use the navigator’s freshly computed flag
-    #                 lst[idx] = (
-    #                     "Yes" if self.navigator.analysis_colocalized_by_ch[ch][idx]
-    #                         else "No"
-    #                 )
-    #         else:
-    #             # invalidation → clear only that frame
-    #             col_any[idx] = None
-    #             for lst in col_by.values():
-    #                 lst[idx] = None
-
-    #         # now write the *percent* columns back into the UI
-    #         valid_any = [s for s in col_any if s is not None]
-    #         pct_any   = f"{100*sum(1 for s in valid_any if s=='Yes')/len(valid_any):.1f}" if valid_any else ""
-
-    #         pct_by_ch = {}
-    #         for ch, lst in col_by.items():
-    #             vals = [s for s in lst if s is not None]
-    #             pct_by_ch[ch] = f"{100*sum(1 for s in vals if s=='Yes')/len(vals):.1f}" if vals else ""
-
-    #         for ch in range(1, n_chan+1):
-    #             hdr = f"Ch. {ch} co. %"
-    #             if ch == traj["channel"]:
-    #                 val = ""
-    #             elif n_chan == 2:
-    #                 val = pct_any
-    #             else:
-    #                 val = pct_by_ch.get(ch, "")
-    #             self._mark_custom(row, hdr, val)
-
     def load_trajectories(self):
         if self.navigator.movie is None:
             QMessageBox.warning(self, "", 
@@ -4542,7 +4403,7 @@ class TrajectoryCanvas(QWidget):
             # Give some proportion (e.g., 70% to main content, 30% to trajectory canvas)
             total_height = self.navigator.vertSplitter.height()
             self.navigator.vertSplitter.setSizes([int(0.7 * total_height), int(0.3 * total_height)])
-            
+
     def open_context_menu(self, pos):
         # 1) Figure out which row was clicked on
         index_under = self.table_widget.indexAt(pos)
