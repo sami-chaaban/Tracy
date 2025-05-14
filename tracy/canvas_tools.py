@@ -670,7 +670,7 @@ class RecalcWorker(QObject):
             single = (len(self._rows) == 1)
             pts    = self._build_pts_for(old)
 
-            frames, _, centers, ints, fit, colors = \
+            frames, _, centers, ints, fit = \
                 self._navigator._compute_analysis(
                     pts,
                     showprogress=single
@@ -703,7 +703,7 @@ class RecalcWorker(QObject):
         else:
             pts = [(f,x,y) for f,(x,y) in zip(old["frames"], old["original_coords"])]
 
-        frames, _, centers, ints, fit, colors = \
+        frames, _, centers, ints, fit = \
             self._navigator._compute_analysis(pts, showprogress=False)
 
         if getattr(self._navigator, "debug", False):
@@ -744,7 +744,6 @@ class RecalcWorker(QObject):
             "intensities": ints,
             "average":     avg,
             "median":      med,
-            "colors":      colors,
             "velocities":  vels,
             "average_velocity": avg_vpf
         }

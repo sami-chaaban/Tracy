@@ -277,6 +277,10 @@ def perform_gaussian_fit(frame_image,
         peak = A
 
         if it == iterations-1:
+
+            if A<4.0:
+                return (None, None, None, None, None)
+            
             return (fitted_center, avg_sig, float(intensity),
                     float(peak), float(off))
 

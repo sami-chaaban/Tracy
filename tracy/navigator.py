@@ -236,11 +236,14 @@ class KymographNavigator(QMainWindow):
         self.same_spot_threshold = 6
         self.past_centers = []
 
+        self.check_colocalization = False
         self.colocalization_threshold = 4
 
         self.connect_all_spots = False
 
         self.color_by_column = None
+
+        self.flashchannel = True
 
     def create_ui(self):
         # Create the central widget and overall layout.
@@ -526,10 +529,13 @@ class KymographNavigator(QMainWindow):
         self.kymoLegendWidget.hide()  # start hidden
 
         # 2) style / position it absolutely
-        self.kymoLegendWidget.setStyleSheet("background: rgba(255,255,255,200);  border-radius: 8px; ")
+        self.kymoLegendWidget.setStyleSheet("background: white;  border-radius: 8px; ")
         self.kymoLegendWidget.move(10, 10)  # 10px from top-left of roundedContainer
-
-        # 3) give it a simple horizontal layout
+        kymolegendshadow = QGraphicsDropShadowEffect(self.kymoLegendWidget)
+        kymolegendshadow.setBlurRadius(10)
+        kymolegendshadow.setColor(QColor(0, 0, 0, 120))
+        kymolegendshadow.setOffset(0, 0)
+        self.kymoLegendWidget.setGraphicsEffect(kymolegendshadow)
         self.kymoLegendLayout = QHBoxLayout(self.kymoLegendWidget)
         self.kymoLegendLayout.setSizeConstraint(QLayout.SetFixedSize)
         self.kymoLegendLayout.setContentsMargins(5,5,5,5)
@@ -573,25 +579,6 @@ class KymographNavigator(QMainWindow):
         movieDisplayLayout = QVBoxLayout(self.movieDisplayContainer)
         movieDisplayLayout.setContentsMargins(6, 5, 6, 5)
 
-        # Create the channel control container as a rounded frame with shadow
-        # # Apply drop shadow effect
-        # shadow = QGraphicsDropShadowEffect(self.channelControlContainer)
-        # shadow.setBlurRadius(10)
-        # shadow.setColor(QColor(0, 0, 0, 120))
-        # shadow.setOffset(0, 0)
-        # self.channelControlContainer.setGraphicsEffect(shadow)
-        # # Semi-transparent white background
-        # self.channelControlContainer.setStyleSheet("background: transparent;")
-
-        # # Create and install a horizontal layout
-        # channelLayout = QHBoxLayout()
-        # channelLayout.setContentsMargins(0, 0, 0, 0)
-        # channelLayout.setSpacing(4)
-        # self.channelControlContainer.setLayout(channelLayout)
-
-        # # Create the "Channel:" label and combo box
-        # self.channelLabel = QLabel("Channel")
-        # self.channelLabel.setStyleSheet("""QLabel {background-color: transparent; color: #444444}""")
         self.movieChannelCombo = QComboBox()
         self.movieChannelCombo.setView(QListView())
         self.movieChannelCombo.setFixedWidth(40)
@@ -601,14 +588,6 @@ class KymographNavigator(QMainWindow):
         self.movieChannelCombo.setEnabled(False)
         self.movieChannelCombo.currentIndexChanged.connect(self.on_channel_changed)
 
-        # # Add both to the channel layout
-        # channelLayout.addWidget(self.channelLabel)
-        # channelLayout.addWidget(self.movieChannelCombo)
-
-        # # Size and position the container
-        # self.channelControlContainer.adjustSize()
-        # self.channelControlContainer.move(10, 10)
-        # self.channelControlContainer.raise_()
 
         # Initially hide the container until a movie is loaded
         self.channelControlContainer = RoundedFrame(self.movieDisplayContainer, radius=10, bg_color = self.settings['widget-bg'])
@@ -621,7 +600,7 @@ class KymographNavigator(QMainWindow):
         self.movieCanvas = MovieCanvas(self, navigator=self)
         self.movieCanvas.setStyleSheet(f"background-color: {self.settings['widget-bg']}")
         self.movieCanvas.mpl_connect("scroll_event", self.movieCanvas.on_scroll)
-        self.movieCanvas.mpl_connect("scroll_event", self.on_movie_scroll)
+        # self.movieCanvas.mpl_connect("scroll_event", self.on_movie_scroll)
         self.movieCanvas.mpl_connect("button_press_event", self.on_movie_click)
         self.movieCanvas.mpl_connect("button_release_event", self.on_movie_release)
         self.movieCanvas.mpl_connect("motion_notify_event", self.on_movie_motion)
@@ -636,17 +615,19 @@ class KymographNavigator(QMainWindow):
         self._ch_overlay._bubble_filter = channellabelfilter
         self._ch_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, False)
         self._ch_overlay.setStyleSheet("""
-            background: rgba(255,255,255,200);
+            background: white;
             border-radius: 12px;
             color: black;
             font-size: 26px;
             font-weight: bold;
         """)
-        # shadow = QGraphicsDropShadowEffect(self._ch_overlay)
-        # shadow.setBlurRadius(40)
-        # shadow.setColor(QColor(255, 255, 255, 250))
-        # shadow.setOffset(0, 0)
-        # self._ch_overlay.setGraphicsEffect(shadow)
+        chshadow = QGraphicsDropShadowEffect(self._ch_overlay)
+        chshadow.setBlurRadius(10)
+        chshadow.setColor(QColor(0, 0, 0, 120))
+        chshadow.setOffset(0, 0)
+        self._ch_overlay.setGraphicsEffect(chshadow)
+        self._ch_overlay.setMinimumSize(0, 0)
+        self._ch_overlay.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self._ch_overlay.hide()
         self._ch_overlay.clicked.connect(self._on_overlay_clicked)
 
@@ -657,9 +638,13 @@ class KymographNavigator(QMainWindow):
         self.movieLegendWidget.hide()  # start hidden
 
         # 2) style / position it absolutely
-        self.movieLegendWidget.setStyleSheet("background: rgba(255,255,255,200);  border-radius: 8px; ")
+        self.movieLegendWidget.setStyleSheet("background: white;  border-radius: 8px; ")
         self.movieLegendWidget.move(0, 0)  # 10px from top-left of roundedContainer
-
+        movielegendshadow = QGraphicsDropShadowEffect(self.movieLegendWidget)
+        movielegendshadow.setBlurRadius(10)
+        movielegendshadow.setColor(QColor(0, 0, 0, 120))
+        movielegendshadow.setOffset(0, 0)
+        self.movieLegendWidget.setGraphicsEffect(movielegendshadow)
         # 3) give it a simple horizontal layout
         self.movieLegendLayout = QHBoxLayout(self.movieLegendWidget)
         self.movieLegendLayout.setSizeConstraint(QLayout.SetFixedSize)
@@ -1066,35 +1051,6 @@ class KymographNavigator(QMainWindow):
                     im.set_cmap("gray_r" if checked else "gray")
             canv.draw_idle()
 
-        # if self.inverted_cmap:
-        #     self._ch_overlay.setStyleSheet("""
-        #         background: rgba(255,255,255,180);
-        #         border-radius: 8px;
-        #         color: black;
-        #         font-size: 26px;
-        #         font-weight: bold;
-        #     """)
-
-        #     shadow = QGraphicsDropShadowEffect(self._ch_overlay)
-        #     shadow.setBlurRadius(40)
-        #     shadow.setColor(QColor(255, 255, 255, 250))
-        #     shadow.setOffset(0, 0)
-        #     self._ch_overlay.setGraphicsEffect(shadow)
-        # else:
-        #     self._ch_overlay.setStyleSheet("""
-        #         background: rgba(50,50,50,180);
-        #         border-radius: 8px;
-        #         color: white;
-        #         font-size: 26px;
-        #         font-weight: bold;
-        #     """)
-
-        #     shadow = QGraphicsDropShadowEffect(self._ch_overlay)
-        #     shadow.setBlurRadius(40)
-        #     shadow.setColor(QColor(0, 0, 0, 250))
-        #     shadow.setOffset(0, 0)
-        #     self._ch_overlay.setGraphicsEffect(shadow)
-
     def update_roilist_visibility(self):
         # Look through all of your kymo→ROI entries for any imported ROIs
         has_orphaned = any(
@@ -1348,6 +1304,10 @@ class KymographNavigator(QMainWindow):
         table.selectRow(new_row)
         # self.jump_to_analysis_point(0, animate="ramp")
 
+    # def highlight_current_point(self, idx):
+    #     self.intensityCanvas.current_index = idx
+    #     self.intensityCanvas.highlight_current_point()
+
     def _showRadiusDialog(self):
         # don’t open if it’s already up
         if self._radiusPopup:
@@ -1366,104 +1326,173 @@ class KymographNavigator(QMainWindow):
         self._radiusSpinLive = dlg._spin
 
     def handleGlobalX(self):
-        """Global handler for the X key.
-        If the current analysis point is valid, mark it invalid (and remove the magenta circle);
-        if it is already invalid, re-run the analysis (undo the invalidation) and update all overlays.
-        Also update the trajectory metadata, table, and (if overlay is toggled on) redraw the overlay lines.
         """
-
-        if not hasattr(self, "intensityCanvas") or self.intensityCanvas is None:
-            print("No intensity canvas available; ignoring X key.")
+        Global handler for the X key: invalidate or re-validate the current point,
+        update all analysis buffers, trajectory model, table UI, and redraw everything.
+        """
+        # ── 0) Basic guards ──
+        if not getattr(self, "intensityCanvas", None) or not self.intensityCanvas.point_highlighted:
             return
         if not self.analysis_frames or not self.analysis_original_coords:
-            print("No analysis data available; ignoring X key.")
             return
-        if not self.intensityCanvas.point_highlighted:
-            return
-
         if self.looping:
             self.stoploop()
 
-        # print("handleglobalx analysis_channel", self.analysis_channel)
-
-        if self.analysis_channel is not None:
-            if getattr(self.movieCanvas, 'current_channel', None) != self.analysis_channel:
-                self._select_channel(self.analysis_channel)
-
+        # ── 1) Figure out which point & trajectory row we’re on ──
         idx = self.intensityCanvas.current_index
-        fitted_center, sigma, peak = self.analysis_fit_params[idx]
-        bkgr = self.analysis_background[idx]
-        intensity = self.analysis_intensities[idx]
-        search_center = self.analysis_search_centers[idx]
-        # Get frame and coordinate for this analysis point.
-        frame = self.analysis_frames[idx]
-        crop_size = int(2 * self.searchWindowSpin.value())
-
-        frame_image = self.get_movie_frame(frame)
-        row = self.trajectoryCanvas.table_widget.selectionModel().selectedRows()[0].row()
+        row_sel = self.trajectoryCanvas.table_widget.selectionModel().selectedRows()
+        if not row_sel:
+            return
+        row = row_sel[0].row()
         traj = self.trajectoryCanvas.trajectories[row]
 
-        if frame_image is not None:
-            if self.analysis_intensities[idx] is None:
-                # Re-analysis branch: re-run Gaussian fit
-                fitted_center, sigma, intensity, peak, bkgr = perform_gaussian_fit(
-                    frame_image, search_center, crop_size, pixelsize=self.pixel_size, bg_fixed=bkgr
-                )
-                self.movieCanvas.overlay_rectangle(
-                    search_center[0], search_center[1], crop_size
-                )
+        # ── 2) Capture “was valid?” before we clobber it ──
+        was_valid = (self.analysis_intensities[idx] is not None)
 
-                if fitted_center is not None:
+        # ── 3) Prepare some locals ──
+        frame       = self.analysis_frames[idx]
+        search_ctr  = self.analysis_search_centers[idx]
+        crop_size   = int(2 * self.searchWindowSpin.value())
+        frame_image = self.get_movie_frame(frame)
 
-                    if getattr(self, 'check_colocalization', False) and self.movie.ndim == 4:
-                        # Clear existing colocalization for this frame
-                        traj["colocalization_any"][idx] = None
-                        for ch in traj["colocalization_by_ch"]:
-                            traj["colocalization_by_ch"][ch][idx] = None
+        # ── 4) Invalidate vs re-validate ──
+        if was_valid:
+            # ---- invalidation: clear fit & intensities ----
+            self.analysis_fit_params[idx] = (None, None, None)
+            self.analysis_intensities[idx]  = None
 
-                        # Recompute colocalization just for this one point
-                        self.analysis_frames     = traj["frames"]
-                        self.analysis_fit_params = list(zip(
-                            traj["spot_centers"], traj["sigmas"], traj["peaks"]
-                        ))
+            # clear any colocalization flags
+            if getattr(self, "check_colocalization", False) and self.movie.ndim == 4:
+                traj["colocalization_any"][idx] = None
+                for lst in traj["colocalization_by_ch"].values():
+                    lst[idx] = None
+                # also wipe navigator’s buffers so percentages recalc skip this point
+                self.analysis_colocalized[idx] = False
+                for lst in self.analysis_colocalized_by_ch.values():
+                    lst[idx] = False
 
-                        # overall-any
-                        self.analysis_channel = traj["channel"]
-                        self._compute_colocalization_single_frame(idx)
-                        traj["colocalization_any"][idx] = (
-                            "Yes" if self.analysis_colocalized[idx] else "No"
-                        )
-
-                        # per-channel
-                        oldchannel = self.analysis_channel
-                        for tgt_ch in traj["colocalization_by_ch"].keys():
-                            self.analysis_channel = tgt_ch
-                            self._compute_colocalization_single_frame(idx)
-                            traj["colocalization_by_ch"][tgt_ch][idx] = (
-                                "Yes" if self.analysis_colocalized[idx] else "No"
-                            )
-                        self.analysis_channel = oldchannel
-
-                self.flash_message("Reattempt")
-
-            else:
-                if getattr(self, 'check_colocalization', False) and self.movie.ndim == 4:
-                    # Invalidation branch: clear this point's colocalization
-                    traj["colocalization_any"][idx] = None
-                    for ch in traj["colocalization_by_ch"]:
-                        traj["colocalization_by_ch"][ch][idx] = None
-
-                self.flash_message("Remove")
-
-        # now update everything else (velocities, intensities, table, etc.)
-        self.trajectoryCanvas.update_trajectory(idx, fitted_center, sigma, peak, intensity)
-
-        if self.analysis_intensities[idx] is None:
             self.movieCanvas.remove_gaussian_circle()
             self.movieCanvas.remove_inset_circle()
-            self.kymoCanvas.remove_gaussian_circle()
-            self.kymoCanvas.clear_kymo_trajectory_markers()
-            sx, sy = search_center
+
+            self.flash_message("Remove")
+            # (marker drawing moved below)
+
+        else:
+            # ---- re-analysis: Gaussian fit + recalc colocalization ----
+            fitted, sigma, intensity, peak, bkgr = perform_gaussian_fit(
+                frame_image, search_ctr, crop_size,
+                pixelsize=self.pixel_size,
+                bg_fixed=self.analysis_background[idx]
+            )
+            self.analysis_fit_params[idx] = (fitted, sigma, peak)
+            self.analysis_intensities[idx] = intensity
+
+            # re-run colocalization for this frame if needed
+            if getattr(self, "check_colocalization", False) and self.movie.ndim == 4:
+                # pull back the trajectory’s dict
+                traj = self.trajectoryCanvas.trajectories[row]
+
+                # 1) compute flags for this single frame & its fitted center
+                any_flag, per_ch = self._coloc_flags_for_frame(frame, fitted)
+
+                # 2) store them in both the trajectory and your navigator buffers
+                traj["colocalization_any"][idx] = any_flag
+                self.analysis_colocalized[idx] = any_flag
+
+                for ch, flag in per_ch.items():
+                    traj["colocalization_by_ch"][ch][idx] = flag
+                    self.analysis_colocalized_by_ch[ch][idx] = flag
+
+            self.flash_message("Reattempt")
+            # (marker drawing moved below)
+
+        # ── 5) Recompute velocities, averages, etc. ──
+        centers = [p for p,_,_ in self.analysis_fit_params]
+        self.analysis_velocities = calculate_velocities(centers)
+        # avg velocity (px/frame)
+        vels = [v for v in self.analysis_velocities if v is not None]
+        self.average_velocity = float(np.mean(vels)) if vels else None
+        # avg & median intensity
+        ints = [v for v in self.analysis_intensities if v not in (None, 0)]
+        self.analysis_avg    = float(np.mean(ints))   if ints else None
+        self.analysis_median = float(np.median(ints)) if ints else None
+
+        # ── 6) Update trajectory dict with new arrays ──
+        traj["spot_centers"][idx] = self.analysis_fit_params[idx][0]
+        traj["sigmas"][idx]       = self.analysis_fit_params[idx][1]
+        traj["peaks"][idx]        = self.analysis_fit_params[idx][2]
+        traj["intensities"][idx]  = self.analysis_intensities[idx]
+        traj["velocities"]        = self.analysis_velocities
+        traj["average_velocity"]  = self.average_velocity
+        traj["average"]           = self.analysis_avg
+        traj["median"]            = self.analysis_median
+        traj["background"]        = self.analysis_background
+
+        # ── 7) Rewrite the entire row of the table ──
+        # valid %
+        pct_valid = int(
+            100 * len(ints) /
+            len(self.analysis_frames)
+        ) if self.analysis_frames else 0
+        self.trajectoryCanvas.writeToTable(row, "valid", str(pct_valid))
+        # median intensity
+        medtxt = "" if self.analysis_median is None else f"{self.analysis_median:.2f}"
+        self.trajectoryCanvas.writeToTable(row, "medintensity", medtxt)
+
+        # colocalization % columns
+        if getattr(self, "check_colocalization", False) and self.movie.ndim == 4:
+            n_chan = self.movie.shape[self._channel_axis]
+            # compute new percentages
+            any_flags = traj["colocalization_any"]
+            valid_any = [s for s in any_flags if s is not None]
+            pct_any   = (
+                f"{100*sum(1 for s in valid_any if s=='Yes')/len(valid_any):.1f}"
+                if valid_any else ""
+            )
+            by_ch = traj["colocalization_by_ch"]
+            pct_by_ch = {
+                ch: (
+                    f"{100*sum(1 for s in lst if s=='Yes')/len([s for s in lst if s is not None]):.1f}"
+                    if any(s is not None for s in lst) else ""
+                )
+                for ch, lst in by_ch.items()
+            }
+
+            for ch in range(1, n_chan+1):
+                hdr = f"Ch. {ch} co. %"
+                if ch == traj["channel"]:
+                    val = ""
+                elif n_chan == 2:
+                    val = pct_any
+                else:
+                    val = pct_by_ch.get(ch, "")
+                self.trajectoryCanvas._mark_custom(row, hdr, val)
+
+        # ── 8) Refresh all canvases ──
+        self.kymoCanvas.update_view()
+        self.kymoCanvas.clear_kymo_trajectory_markers()
+        self.kymoCanvas.remove_circle()
+
+        # re-draw overlays if toggled
+        if self.traj_overlay_button.isChecked():
+            self.movieCanvas.draw_trajectories_on_movie()
+            self.kymoCanvas.draw_trajectories_on_kymo()
+
+        # re-draw intensity / velocity plots
+        self.intensityCanvas.plot_intensity(
+            self.analysis_frames,
+            self.analysis_intensities,
+            avg_intensity=self.analysis_avg,
+            median_intensity=self.analysis_median,
+            colors=self._get_traj_colors(traj)[0]
+        )
+        self.intensityCanvas.highlight_current_point()
+        self.velocityCanvas.plot_velocity_histogram(self.analysis_velocities)
+
+        # ── 9) Draw the invalidation/validation circles ──
+        if was_valid:
+            # grey on kymo at search center
+            sx, sy = search_ctr
             kymo_name = self.kymoCombo.currentText()
             if kymo_name and kymo_name in self.kymographs and self.rois:
                 roi = self.rois[self.roiCombo.currentText()]
@@ -1473,13 +1502,24 @@ class KymographNavigator(QMainWindow):
                 )
                 if xk is not None:
                     disp_frame = (self.movie.shape[0] - 1) - frame
-                    self.kymoCanvas.add_gaussian_circle(
-                        xk, disp_frame,
-                        color='grey'
-                    )
+                    self.kymoCanvas.add_circle(xk, disp_frame, color='grey')
         else:
-            self.movieCanvas.add_gaussian_circle(fitted_center, sigma)
-            fx, fy = fitted_center
+            # magenta on movie at fitted center
+            if fitted is not None:
+                pointcolor = self.get_point_color()
+                self.movieCanvas.add_gaussian_circle(fitted, sigma, pointcolor)
+                center_for_zoom = fitted if fitted is not None else search_ctr
+                self.movieCanvas.update_inset(
+                    frame_image, center_for_zoom, int(self.insetViewSize.value()), 2,
+                    fitted_center=fitted,
+                    fitted_sigma=sigma,
+                    fitted_peak=peak,
+                    intensity_value=intensity,
+                    offset = bkgr,
+                    pointcolor = pointcolor
+                )
+            # magenta on kymo at fitted center (or search if fit failed)
+            fx, fy = (fitted if fitted is not None else search_ctr)
             kymo_name = self.kymoCombo.currentText()
             if kymo_name and kymo_name in self.kymographs and self.rois:
                 roi = self.rois[self.roiCombo.currentText()]
@@ -1489,37 +1529,182 @@ class KymographNavigator(QMainWindow):
                 )
                 if xk is not None:
                     disp_frame = (self.movie.shape[0] - 1) - frame
-                    self.kymoCanvas.add_gaussian_circle(
-                        xk, disp_frame,
-                        color='magenta'
-                    )
-            center_for_zoom = fitted_center if fitted_center is not None else search_center
-            self.movieCanvas.update_inset(
-                frame_image, center_for_zoom, int(self.insetViewSize.value()), 2,
-                fitted_center=fitted_center,
-                fitted_sigma=sigma,
-                fitted_peak=peak,
-                intensity_value=intensity,
-                offset = bkgr
-            )
+                    self.kymoCanvas.add_circle(xk, disp_frame, color=self.get_point_color())
 
-        # If overlay is toggled on, redraw the overlay lines.
-        if self.traj_overlay_button.isChecked():
-            self.movieCanvas.draw_trajectories_on_movie()
-            self.kymoCanvas.draw_trajectories_on_kymo()
-        
-        # Update the intensity plot.
-        self.intensityCanvas.plot_intensity(self.analysis_frames, self.analysis_intensities,
-                            avg_intensity=self.analysis_avg,
-                            median_intensity=self.analysis_median,
-                            colors=self._get_traj_colors(traj)[0])
-        self.intensityCanvas.highlight_current_point()
-
-        self.velocityCanvas.plot_velocity_histogram(self.analysis_velocities)
-
+        # final idle draws
         self.zoomInsetWidget.draw_idle()
         self.kymoCanvas.draw_idle()
         self.movieCanvas.draw_idle()
+
+    def get_point_color(self):
+        return self.intensityCanvas.get_current_point_color()
+
+    # def handleGlobalX(self):
+    #     """Global handler for the X key.
+    #     If the current analysis point is valid, mark it invalid (and remove the magenta circle);
+    #     if it is already invalid, re-run the analysis (undo the invalidation) and update all overlays.
+    #     Also update the trajectory metadata, table, and (if overlay is toggled on) redraw the overlay lines.
+    #     """
+
+    #     if not hasattr(self, "intensityCanvas") or self.intensityCanvas is None:
+    #         print("No intensity canvas available; ignoring X key.")
+    #         return
+    #     if not self.analysis_frames or not self.analysis_original_coords:
+    #         print("No analysis data available; ignoring X key.")
+    #         return
+    #     if not self.intensityCanvas.point_highlighted:
+    #         return
+
+    #     if self.looping:
+    #         self.stoploop()
+
+    #     # print("handleglobalx analysis_channel", self.analysis_channel)
+
+    #     if self.analysis_channel is not None:
+    #         if getattr(self.movieCanvas, 'current_channel', None) != self.analysis_channel:
+    #             self._select_channel(self.analysis_channel)
+
+    #     idx = self.intensityCanvas.current_index
+    #     fitted_center, sigma, peak = self.analysis_fit_params[idx]
+    #     bkgr = self.analysis_background[idx]
+    #     intensity = self.analysis_intensities[idx]
+    #     search_center = self.analysis_search_centers[idx]
+    #     # Get frame and coordinate for this analysis point.
+    #     frame = self.analysis_frames[idx]
+    #     crop_size = int(2 * self.searchWindowSpin.value())
+
+    #     frame_image = self.get_movie_frame(frame)
+    #     row = self.trajectoryCanvas.table_widget.selectionModel().selectedRows()[0].row()
+    #     traj = self.trajectoryCanvas.trajectories[row]
+
+    #     if frame_image is not None:
+
+    #         was_valid = (self.analysis_intensities[idx] is not None)
+
+    #         if self.analysis_intensities[idx] is None:
+    #             # Re-analysis branch: re-run Gaussian fit
+    #             fitted_center, sigma, intensity, peak, bkgr = perform_gaussian_fit(
+    #                 frame_image, search_center, crop_size, pixelsize=self.pixel_size, bg_fixed=bkgr
+    #             )
+    #             self.movieCanvas.overlay_rectangle(
+    #                 search_center[0], search_center[1], crop_size
+    #             )
+
+    #             if fitted_center is not None:
+
+    #                 if getattr(self, 'check_colocalization', False) and self.movie.ndim == 4:
+    #                     # Clear existing colocalization for this frame
+    #                     traj["colocalization_any"][idx] = None
+    #                     for ch in traj["colocalization_by_ch"]:
+    #                         traj["colocalization_by_ch"][ch][idx] = None
+
+    #                     # Recompute colocalization just for this one point
+    #                     self.analysis_frames     = traj["frames"]
+    #                     self.analysis_fit_params = list(zip(
+    #                         traj["spot_centers"], traj["sigmas"], traj["peaks"]
+    #                     ))
+
+    #                     # overall-any
+    #                     self.analysis_channel = traj["channel"]
+    #                     self._compute_colocalization_single_frame(idx)
+    #                     traj["colocalization_any"][idx] = (
+    #                         "Yes" if self.analysis_colocalized[idx] else "No"
+    #                     )
+
+    #                     # per-channel
+    #                     oldchannel = self.analysis_channel
+    #                     for tgt_ch in traj["colocalization_by_ch"].keys():
+    #                         self.analysis_channel = tgt_ch
+    #                         self._compute_colocalization_single_frame(idx)
+    #                         traj["colocalization_by_ch"][tgt_ch][idx] = (
+    #                             "Yes" if self.analysis_colocalized[idx] else "No"
+    #                         )
+    #                     self.analysis_channel = oldchannel
+
+    #             self.flash_message("Reattempt")
+
+    #         else:
+    #             if getattr(self, 'check_colocalization', False) and self.movie.ndim == 4:
+    #                 # 1) Clear the *trajectory* dict (you already have this)
+    #                 traj["colocalization_any"][idx] = None
+    #                 for ch in traj["colocalization_by_ch"]:
+    #                     traj["colocalization_by_ch"][ch][idx] = None
+
+    #                 # 2) ALSO clear the navigator’s *analysis* arrays:
+    #                 #    so that future colocalization‐percent calculations skip this point.
+    #                 self.analysis_colocalized[idx] = False
+    #                 for ch, lst in self.analysis_colocalized_by_ch.items():
+    #                     lst[idx] = False
+
+    #             self.flash_message("Remove")
+
+    #     # now update everything else (velocities, intensities, table, etc.)
+    #     self.trajectoryCanvas.update_trajectory(idx, fitted_center, sigma, peak, intensity)
+
+    #     self.kymoCanvas.update_view()
+
+    #     if self.analysis_intensities[idx] is None:
+    #         self.movieCanvas.remove_gaussian_circle()
+    #         self.movieCanvas.remove_inset_circle()
+    #         self.kymoCanvas.remove_circle()
+    #         self.kymoCanvas.clear_kymo_trajectory_markers()
+    #         sx, sy = search_center
+    #         kymo_name = self.kymoCombo.currentText()
+    #         if kymo_name and kymo_name in self.kymographs and self.rois:
+    #             roi = self.rois[self.roiCombo.currentText()]
+    #             xk = self.compute_kymo_x_from_roi(
+    #                 roi, sx, sy,
+    #                 self.kymographs[kymo_name].shape[1]
+    #             )
+    #             if xk is not None:
+    #                 disp_frame = (self.movie.shape[0] - 1) - frame
+    #                 self.kymoCanvas.add_circle(
+    #                     xk, disp_frame,
+    #                     color='grey'
+    #                 )
+    #     else:
+    #         self.movieCanvas.add_gaussian_circle(fitted_center, sigma)
+    #         fx, fy = fitted_center
+    #         kymo_name = self.kymoCombo.currentText()
+    #         if kymo_name and kymo_name in self.kymographs and self.rois:
+    #             roi = self.rois[self.roiCombo.currentText()]
+    #             xk = self.compute_kymo_x_from_roi(
+    #                 roi, fx, fy,
+    #                 self.kymographs[kymo_name].shape[1]
+    #             )
+    #             if xk is not None:
+    #                 disp_frame = (self.movie.shape[0] - 1) - frame
+    #                 self.kymoCanvas.add_circle(
+    #                     xk, disp_frame,
+    #                     color='magenta'
+    #                 )
+    #         center_for_zoom = fitted_center if fitted_center is not None else search_center
+    #         self.movieCanvas.update_inset(
+    #             frame_image, center_for_zoom, int(self.insetViewSize.value()), 2,
+    #             fitted_center=fitted_center,
+    #             fitted_sigma=sigma,
+    #             fitted_peak=peak,
+    #             intensity_value=intensity,
+    #             offset = bkgr
+    #         )
+
+    #     # If overlay is toggled on, redraw the overlay lines.
+    #     if self.traj_overlay_button.isChecked():
+    #         self.movieCanvas.draw_trajectories_on_movie()
+    #         self.kymoCanvas.draw_trajectories_on_kymo()
+        
+    #     # Update the intensity plot.
+    #     self.intensityCanvas.plot_intensity(self.analysis_frames, self.analysis_intensities,
+    #                         avg_intensity=self.analysis_avg,
+    #                         median_intensity=self.analysis_median,
+    #                         colors=self._get_traj_colors(traj)[0])
+    #     self.intensityCanvas.highlight_current_point()
+
+    #     self.velocityCanvas.plot_velocity_histogram(self.analysis_velocities)
+
+    #     self.zoomInsetWidget.draw_idle()
+    #     self.kymoCanvas.draw_idle()
+    #     self.movieCanvas.draw_idle()
 
     # In create_menu(), add a new menu action:
     def create_menu(self):
@@ -1626,6 +1811,14 @@ class KymographNavigator(QMainWindow):
         recalcAction.triggered.connect(self.trajectoryCanvas.recalculate_all_trajectories)
         trajMenu.addAction(recalcAction)
 
+        binColumnAct = QAction("Add binary column", self)
+        trajMenu.addAction(binColumnAct)
+        binColumnAct.triggered.connect(self.trajectoryCanvas._add_binary_column_dialog)
+        
+        valColumnAct = QAction("Add value column", self)
+        trajMenu.addAction(valColumnAct)
+        valColumnAct.triggered.connect(self.trajectoryCanvas._add_value_column_dialog)
+
         self._colorBySeparator = trajMenu.addSeparator()
         self._colorByActions   = []
         self.trajMenu          = trajMenu
@@ -1663,6 +1856,9 @@ class KymographNavigator(QMainWindow):
                 self.trajMenu.insertAction(self._colorBySeparator, act)
                 self._colorByActions.append(act)
 
+        if self.movie is None:
+            return
+        
         # 3) count channels
         if self.movie.ndim == 4 and self._channel_axis is not None:
             n_chan = self.movie.shape[self._channel_axis]
@@ -1804,7 +2000,7 @@ class KymographNavigator(QMainWindow):
             self.set_zoom_window_size(spinbox.value(), dialog)
 
             # 2) grab the old inset parameters
-            image, center, old_crop, zoom_factor, fcenter, fsigma, fpeak, bkgr, ivalue = \
+            image, center, old_crop, zoom_factor, fcenter, fsigma, fpeak, bkgr, ivalue, pointcolor = \
                 self.movieCanvas._last_inset_params
 
             # 3) re‑fire update_inset with the NEW crop_size
@@ -1814,7 +2010,8 @@ class KymographNavigator(QMainWindow):
                 fitted_sigma=fsigma,
                 fitted_peak=fpeak,
                 intensity_value=ivalue,
-                offset = bkgr
+                offset = bkgr,
+                pointcolor = pointcolor
             )
 
         setButton.clicked.connect(on_set)
@@ -2123,7 +2320,7 @@ class KymographNavigator(QMainWindow):
                     col_name = f"Ch. {ch} co. %"
                     self.trajectoryCanvas._add_custom_column(col_name, col_type="coloc")
 
-                print("load_movie custom_columns, after add_custom_column", self.trajectoryCanvas.custom_columns)
+                # print("load_movie custom_columns, after add_custom_column", self.trajectoryCanvas.custom_columns)
 
                 if not hasattr(self, 'colocalizationAction'):
                     self.colocalizationAction = QAction("Check colocalization", self, checkable=True)
@@ -2139,8 +2336,19 @@ class KymographNavigator(QMainWindow):
                     if idx is not None:
                         self.trajectoryCanvas._remove_custom_column(idx, name)
 
+                self.check_colocalization = False
+                # if we previously added the colocalization action, uncheck & remove it
                 if hasattr(self, 'colocalizationAction'):
+                    # 1) uncheck so UI state is clean
+                    self.colocalizationAction.setChecked(False)
+                    # 2) disconnect its signal to avoid any stray callbacks
+                    try:
+                        self.colocalizationAction.toggled.disconnect(self.on_colocalization_toggled)
+                    except TypeError:
+                        pass
+                    # 3) remove it from the spot‐menu
                     self.spotMenu.removeAction(self.colocalizationAction)
+                    # 4) delete the attribute so next time we know it’s gone
                     del self.colocalizationAction
 
             # Always untoggle any active “Color by …” before we potentially reload columns
@@ -2252,7 +2460,8 @@ class KymographNavigator(QMainWindow):
 
         # 1) figure out which channel we’re on
         ch = index + 1
-        self.flash_message(f"Channel {ch}")
+        if self.flashchannel:
+            self.flash_message(f"Channel {ch}")
 
         # 2) refresh kymographs
         self.update_kymo_list_for_channel()
@@ -3014,6 +3223,38 @@ class KymographNavigator(QMainWindow):
 
     def on_kymo_click(self, event):
 
+        if event.button == 1 and event.inaxes is self.kymoCanvas.ax and self.traj_overlay_button.isChecked() and len(self.analysis_points) == 0:
+            current_row = self.trajectoryCanvas.table_widget.currentRow()
+            for scatter in self.kymoCanvas.scatter_objs_traj:
+                hit, info = scatter.contains(event)
+                if not hit:
+                    continue
+
+                if self.looping:
+                    self.stoploop()
+
+                traj_idx  = scatter.traj_idx  # or lookup from your dict
+                point_idx = info["ind"][0]
+
+                # 1) If we clicked a different trajectory:
+                if traj_idx != current_row:
+                    tbl = self.trajectoryCanvas.table_widget
+                    # block signals so we don’t re‐enter on_trajectory_selected_by_table
+                    tbl.blockSignals(True)
+                    tbl.selectRow(traj_idx)  # or tbl.setCurrentCell(traj_idx, 0)
+                    tbl.blockSignals(False)
+
+                    # now update everything else
+                    self.trajectoryCanvas.on_trajectory_selected_by_index(traj_idx)
+
+                # 2) Same trajectory → pick the point:
+                self.jump_to_analysis_point(point_idx)
+                if self.sumBtn.isChecked():
+                    self.sumBtn.setChecked(False)
+                self.intensityCanvas.current_index = point_idx
+                self.intensityCanvas.highlight_current_point()
+                return
+        
         if self.looping:
             self.stoploop()
 
@@ -3055,7 +3296,6 @@ class KymographNavigator(QMainWindow):
         if not self.kymoCanvas.hasFocus() or self.movie is None:
             return
 
-        self.intensityCanvas.clear_highlight()
         if event.button != 1:  # left‐button only
             return
 
@@ -3318,7 +3558,7 @@ class KymographNavigator(QMainWindow):
         # Cache the clean background for blitting
         self.kymoCanvas.update_view()
         # Now blit the new marker
-        self.kymoCanvas.add_gaussian_circle(event.xdata, event.ydata, color='#7da1ff')
+        self.kymoCanvas.add_circle(event.xdata, event.ydata, color='#7da1ff')
 
     def on_kymo_right_release(self, event):
         # Check for valid event data.
@@ -3620,15 +3860,30 @@ class KymographNavigator(QMainWindow):
 
             if zoom:
                 r     = self.searchWindowSpin.value()
-                fov   = 10 * r
-                half  = fov / 2.0
-                new_xlim = (cx - half, cx + half)
-                new_ylim = (cy - half, cy + half)
 
-                # mark that we’ve manually zoomed
+                # 1) get the container’s current size and pixel aspect ratio
+                cont = self.movieDisplayContainer
+                pw   = cont.width()   # pixel width
+                ph   = cont.height()  # pixel height
+                if ph == 0:
+                    aspect = 1.0
+                else:
+                    aspect = pw / ph   # e.g. 16/9 = 1.78
+
+                # 2) define your zoom height in data units
+                fov_y = 10 * r
+                #    then compute the matching width
+                fov_x = fov_y * aspect
+
+                half_x = fov_x / 2.0
+                half_y = fov_y / 2.0
+
+                new_xlim = (cx - half_x, cx + half_x)
+                new_ylim = (cy - half_y, cy + half_y)
+
+                # 3) mark manual zoom & animate or set directly
                 mc.manual_zoom = True
 
-                # animate or discrete
                 if animate == "ramp":
                     self.animate_axes_transition(new_xlim, new_ylim, duration=300)
                 elif animate == "linear":
@@ -3636,10 +3891,10 @@ class KymographNavigator(QMainWindow):
                 else:
                     mc.ax.set_xlim(new_xlim)
                     mc.ax.set_ylim(new_ylim)
-                    mc.zoom_center = ((new_xlim[0]+new_xlim[1])/2,
-                                     (new_ylim[0]+new_ylim[1])/2)
+                    mc.zoom_center = ((new_xlim[0] + new_xlim[1]) / 2,
+                                    (new_ylim[0] + new_ylim[1]) / 2)
 
-            elif not mc.manual_zoom:
+            else:
                 new_xlim = (cx - w/2, cx + w/2)
                 new_ylim = (cy - h/2, cy + h/2)
                 if animate == "ramp":
@@ -3684,10 +3939,13 @@ class KymographNavigator(QMainWindow):
                 fc = fs = pk = None
 
             if fc is not None and fs is not None:
-                mc.add_gaussian_circle(fc, fs)
                 if ic: ic.highlight_current_point()
             elif ic:
                 ic.highlight_current_point(override=True)
+
+            ic.current_index = index
+            pointcolor = ic.get_current_point_color()
+            mc.add_gaussian_circle(fc, fs, pointcolor)
 
             # ——— 6) Inset & kymo ———
             intensity = getattr(self, "analysis_intensities", [None])[index]
@@ -3699,7 +3957,8 @@ class KymographNavigator(QMainWindow):
                             fitted_sigma=fs,
                             fitted_peak=pk,
                             intensity_value=intensity,
-                            offset = background)
+                            offset = background,
+                            pointcolor = pointcolor)
 
             # only overlay kymo marker if ROI present
             kymo_name = self.kymoCombo.currentText()
@@ -3724,9 +3983,9 @@ class KymographNavigator(QMainWindow):
                         )
                     if xk is not None:
                         disp_frame = (self.movie.shape[0] - 1) - frame
-                        kc.add_gaussian_circle(
+                        kc.add_circle(
                             xk, disp_frame,
-                            color='magenta' if fc is not None else 'grey'
+                            color=pointcolor if fc is not None else 'grey'
                         )
 
             # ——— 7) Histogram & sliders ———
@@ -3734,7 +3993,8 @@ class KymographNavigator(QMainWindow):
                 center_hist = fc if fc is not None else (cx, cy)
                 hc.update_histogram(frame_img, center_hist,
                                     int(2*self.searchWindowSpin.value()),
-                                    sigma=fs, intensity=intensity, background=background)
+                                    sigma=fs, intensity=intensity, background=background,
+                                    peak=pk, pointcolor=pointcolor)
                 
             self.frameSlider.setValue(frame)
             if hasattr(self, 'analysisSlider'):
@@ -3903,7 +4163,7 @@ class KymographNavigator(QMainWindow):
         )
 
         try:
-            frames, coords, search_centers, ints, fits, background, colors = self._compute_analysis(points, trajectory_background)
+            frames, coords, search_centers, ints, fits, background = self._compute_analysis(points, trajectory_background)
         except Exception as e:
             QMessageBox.warning(self, "", "There was an error adding computing this trajectory. Please try again (consider a longer trajectory or different radius).")
             print(f"_compute failed: {e}")
@@ -3915,7 +4175,6 @@ class KymographNavigator(QMainWindow):
         self.analysis_start, self.analysis_end = points[0], points[-1]
         self.analysis_frames, self.analysis_original_coords, self.analysis_search_centers = frames, coords, search_centers
         self.analysis_intensities, self.analysis_fit_params, self.analysis_background = ints, fits, background
-        self.analysis_colors = colors
         self.analysis_trajectory_background = trajectory_background
 
         # compute avg & median
@@ -3966,14 +4225,14 @@ class KymographNavigator(QMainWindow):
         elif mode == "Smooth":
             # 1) do the independent pass
             try:
-                frames, coords, search_centers, ints, fit_params, background, colors = (
+                frames, coords, search_centers, ints, fit_params, background = (
                     self._compute_independent(points, bg, showprogress)
                 )
             except Exception as e:
                 print(f"_compute_independent failed: {e}")
                 self.cancelled = True
                 return None, None, None, None, None, None
-            return self._postprocess_smooth(frames, coords, ints, fit_params, background, colors, bg)
+            return self._postprocess_smooth(frames, coords, ints, fit_params, background, bg)
         elif mode == "Same center":
             return self._compute_same_center(points, bg, showprogress)
         else:
@@ -3996,7 +4255,6 @@ class KymographNavigator(QMainWindow):
         integrated_intensities = [None] * N
         background             = [None] * N
         fit_params             = [(None, None, None)] * N
-        colors                 = ["grey"] * N
 
         # 4) (Optional) progress dialog
         progress = None
@@ -4020,7 +4278,6 @@ class KymographNavigator(QMainWindow):
                     bg_fixed=bg
                 )
                 if fc is not None:
-                    colors[idx]                = "magenta"
                     background[idx]            = max(0, bkgr)
                     fit_params[idx]            = (fc, sigma, peak)
                     integrated_intensities[idx] = max(0, intensity)
@@ -4038,7 +4295,7 @@ class KymographNavigator(QMainWindow):
         if progress:
             progress.close()
 
-        return all_frames, all_coords, all_coords, integrated_intensities, fit_params, background, colors
+        return all_frames, all_coords, all_coords, integrated_intensities, fit_params, background
 
     def _compute_independent(self, points, bg=None, showprogress=True):  
 
@@ -4056,7 +4313,6 @@ class KymographNavigator(QMainWindow):
         integrated_intensities = [None]*N
         background             = [None] * N
         fit_params            = [(None,None,None)]*N
-        colors                = ["grey"]*N
 
         # 3) Progress dialog once N > 50
         progress = None
@@ -4082,6 +4338,7 @@ class KymographNavigator(QMainWindow):
                 cy = y1 + t*(y2-y1)
                 all_coords.append((cx, cy))
                 img = frame_cache[f]
+                fc, sigma, intensity, peak, bkgr = None, None, None, None, None
                 if img is not None:
                     fc, sigma, intensity, peak, bkgr = perform_gaussian_fit(
                         img, (cx, cy), int(2 * self.searchWindowSpin.value()), pixelsize = self.pixel_size, bg_fixed=bg
@@ -4096,7 +4353,6 @@ class KymographNavigator(QMainWindow):
                         )
                     )
                     if not is_retrack:
-                        colors[idx]                = "magenta"
                         fit_params[idx]            = (fc, sigma, peak)
                         background[idx]            = max(0, bkgr)
                         integrated_intensities[idx] = max(0, intensity)
@@ -4111,12 +4367,12 @@ class KymographNavigator(QMainWindow):
                     if progress.wasCanceled():
                         self.cancelled = True
                         progress.close()
-                        return all_frames, all_coords, all_coords, integrated_intensities, fit_params, background, colors
+                        return all_frames, all_coords, all_coords, integrated_intensities, fit_params, background
 
         if progress:
             progress.close()
 
-        return all_frames, all_coords, all_coords, integrated_intensities, fit_params, background, colors
+        return all_frames, all_coords, all_coords, integrated_intensities, fit_params, background
 
     def _compute_tracked(self, points, bg=None, showprogress=True):
 
@@ -4144,7 +4400,6 @@ class KymographNavigator(QMainWindow):
         integrated_intensities = []
         fit_params             = []
         background             = []
-        colors                 = []
 
         # 4) Progress dialog
         total_frames = len(all_frames)
@@ -4179,7 +4434,7 @@ class KymographNavigator(QMainWindow):
                 independent_centers.append((icx, icy))
 
                 # — do the fit & blend
-                new_center, fc, sigma, intensity, peak, bkgr, color = \
+                new_center, fc, sigma, intensity, peak, bkgr = \
                     self._track_frame(
                         f,
                         frame_cache[f],
@@ -4191,7 +4446,6 @@ class KymographNavigator(QMainWindow):
                     )
 
                 new_centers.append(new_center)
-                colors.append(color)
                 if fc is not None:
                     integrated_intensities.append(max(0, intensity))
                     fit_params.append((fc, sigma, peak))
@@ -4218,7 +4472,6 @@ class KymographNavigator(QMainWindow):
                             integrated_intensities,
                             fit_params,
                             background,
-                            colors
                         )
 
             if canceled:
@@ -4230,7 +4483,7 @@ class KymographNavigator(QMainWindow):
             progress.close()
 
         # 7) return frames, independent centers, blended centers, and fit results
-        return all_frames, independent_centers, new_centers, integrated_intensities, fit_params, background, colors
+        return all_frames, independent_centers, new_centers, integrated_intensities, fit_params, background
 
     def _track_frame(self, framenum, img, icx, icy, current, radius, pixel_size, bg=None):
         
@@ -4238,7 +4491,7 @@ class KymographNavigator(QMainWindow):
 
         if img is None:
             # fallback to midpoint
-            return nc, None, None, None, None, "grey"
+            return nc, None, None, None, None, None
 
         fc, sigma, intensity, peak, bkgr = perform_gaussian_fit(
             img, current, radius,
@@ -4246,21 +4499,21 @@ class KymographNavigator(QMainWindow):
             bg_fixed=bg
         )
         if fc is None:
-            return nc, None, None, None, None, None, "grey"
+            return nc, None, None, None, None, None
 
         if self.avoid_previous_spot and fc is not None:
             for pf, px, py in self.past_centers:
                 if pf == framenum and np.hypot(fc[0] - px, fc[1] - py) < self.same_spot_threshold:
-                    return (nc, None, None, None, None, None, "grey")
+                    return (nc, None, None, None, None, None)
 
         dx, dy = fc[0]-icx, fc[1]-icy
         d       = np.hypot(dx, dy)
         w       = np.exp(-0.5*(d/radius))
         nc      = (w*fc[0] + (1-w)*icx, w*fc[1] + (1-w)*icy)
 
-        return nc, fc, sigma, intensity, peak, bkgr, "magenta"
+        return nc, fc, sigma, intensity, peak, bkgr
 
-    def _postprocess_smooth(self, all_frames, all_coords, ints, fit_params, background, colors, bg_fixed=None):
+    def _postprocess_smooth(self, all_frames, all_coords, ints, fit_params, background, bg_fixed=None):
         N = len(fit_params)
         # 1) pull out your raw spot centers (None → nan, nan)
         spot_centers = np.array([
@@ -4273,7 +4526,7 @@ class KymographNavigator(QMainWindow):
         valid = ~np.isnan(spot_centers[:,0])
         if valid.sum() < 2:
             # Not enough valid points to interpolate → bail out
-            return all_frames, all_coords, ints, fit_params, background, colors
+            return all_frames, all_coords, ints, fit_params, background
 
         x_filled = np.interp(idx, idx[valid], spot_centers[valid,0])
         y_filled = np.interp(idx, idx[valid], spot_centers[valid,1])
@@ -4322,12 +4575,10 @@ class KymographNavigator(QMainWindow):
                 fit_params[i]       = (fc, sx, peak)
                 ints[i]             = intensity
                 background[i]       = bkgr
-                colors[i]           = "magenta"
             else:
                 fit_params[i]       = (None, None, None)
                 ints[i]             = None
                 background[i]       = None
-                colors[i]           = "grey"
 
         # new_centers = np.array([
         #     (fc[0], fc[1]) if fc is not None else (np.nan, np.nan)
@@ -4339,21 +4590,56 @@ class KymographNavigator(QMainWindow):
         #     new_centers.tolist()
         # )
 
-        return all_frames, all_coords, all_coords, ints, fit_params, background, colors
+        return all_frames, all_coords, all_coords, ints, fit_params, background
 
+    def _coloc_flags_for_frame(self, frame, center):
+        """
+        Returns a tuple (any_flag, {ch:flag, ...}) for a single frame & ref‐center.
+        Flags are "Yes"/"No"/None.
+        """
+        ref_ch = self.analysis_channel
+        n_chan = self.movie.shape[self._channel_axis]
+
+        # initialize
+        flags_by_ch = {}
+        any_flag = None
+
+        if center is None:
+            # no fit → all None
+            return None, {ch: None for ch in range(1, n_chan+1) if ch != ref_ch}
+
+        x0,y0 = center
+        per_ch = {}
+        for tgt_ch in range(1, n_chan+1):
+            if tgt_ch == ref_ch:
+                continue
+            img = self.get_movie_frame(frame, channel_override=tgt_ch)
+            ok = False
+            if img is not None:
+                fc2, *_ = perform_gaussian_fit(
+                    img, (x0,y0),
+                    crop_size=int(2*self.searchWindowSpin.value()),
+                    pixelsize=self.pixel_size,
+                    bg_fixed=None
+                )
+                if fc2 is not None and np.hypot(fc2[0]-x0, fc2[1]-y0) <= self.colocalization_threshold:
+                    ok = True
+            per_ch[tgt_ch] = "Yes" if ok else "No"
+
+        # overall any
+        any_flag = "Yes" if any(v=="Yes" for v in per_ch.values()) else "No"
+        return any_flag, per_ch
+    
     def _compute_colocalization(self, showprogress=True):
-
-        print("compute_colocalization analysis_channel, before", self.analysis_channel)
-
         frames      = self.analysis_frames
-        fit_centers = [fp[0] for fp in self.analysis_fit_params]
+        centers     = [fp[0] for fp in self.analysis_fit_params]
         ref_ch      = self.analysis_channel
         n_chan      = self.movie.shape[self._channel_axis]
         N           = len(frames)
 
-        # prepare storage: one list per other channel, plus an “any” list
-        results_by_ch = { ch: [None]*N for ch in range(1, n_chan+1) if ch != ref_ch }
+        # storage
         any_list      = [None]*N
+        results_by_ch = {ch: [None]*N for ch in range(1, n_chan+1) if ch != ref_ch}
 
         progress = None
         if showprogress and N > 20:
@@ -4362,38 +4648,17 @@ class KymographNavigator(QMainWindow):
             progress.setMinimumDuration(0)
             progress.show()
 
-        for i in range(N):
+        for i, (frame, center) in enumerate(zip(frames, centers)):
             if progress:
                 progress.setValue(i)
                 QApplication.processEvents()
-                if progress.wasCanceled(): break
+                if progress.wasCanceled():
+                    break
 
-            fc0 = fit_centers[i]
-            if fc0 is None:
-                for ch in results_by_ch: results_by_ch[ch][i] = None
-                any_list[i] = None
-                continue
-
-            x0,y0 = fc0
-            # per-channel flags
-            flags = {}
-            for tgt_ch, out in results_by_ch.items():
-                img = self.get_movie_frame(frames[i], channel_override=tgt_ch)
-                ok = False
-                if img is not None:
-                    fc2, *_ = perform_gaussian_fit(
-                        img, (x0,y0),
-                        crop_size=int(2*self.searchWindowSpin.value()),
-                        pixelsize=self.pixel_size,
-                        bg_fixed=None
-                    )
-                    if fc2 is not None and np.hypot(fc2[0]-x0,fc2[1]-y0) <= self.colocalization_threshold:
-                        ok = True
-                out[i] = "Yes" if ok else "No"
-                flags[tgt_ch] = ok
-
-            # overall “any other channel”:
-            any_list[i] = "Yes" if any(flags.values()) else "No"
+            any_flag, per_ch = self._coloc_flags_for_frame(frame, center)
+            any_list[i] = any_flag
+            for ch, flag in per_ch.items():
+                results_by_ch[ch][i] = flag
 
         if progress:
             progress.setValue(N)
@@ -4402,69 +4667,61 @@ class KymographNavigator(QMainWindow):
         self.analysis_colocalized       = any_list
         self.analysis_colocalized_by_ch = results_by_ch
 
-        self.analysis_channel = ref_ch
+    def _compute_colocalization_for_row(self, row: int):
+        traj = self.trajectoryCanvas.trajectories[row]
 
-        print("compute_colocalization analysis_channel, after", self.analysis_channel)
+        # 1) stash old context
+        old_frames  = self.analysis_frames
+        old_params  = self.analysis_fit_params
+        old_channel = self.analysis_channel
 
-    def _compute_colocalization_single_frame(self, idx: int):
-        """
-        Compute colocalization flags for just one analysis frame at index `idx`.
-        Populates:
-        - self.analysis_colocalized[idx]
-        - self.analysis_colocalized_by_ch[ch][idx]  for each non-reference channel
-        """
+        # 2) point “analysis_*” at this trajectory
+        self.analysis_frames     = traj["frames"]
+        self.analysis_fit_params = list(zip(
+            traj["spot_centers"],
+            traj["sigmas"],
+            traj["peaks"]
+        ))
+        self.analysis_channel    = traj["channel"]
 
-        N = len(self.analysis_frames)
-        # one list for “any”
-        self.analysis_colocalized = [None] * N
-        # one list per non-ref channel
-        n_chan = self.movie.shape[self._channel_axis]
-        ref_ch = self.analysis_channel
-        self.analysis_colocalized_by_ch = {
-            ch: [None] * N
-            for ch in range(1, n_chan+1)
-            if ch != ref_ch
+        # 3) compute all flags
+        self._compute_colocalization(showprogress=True)
+
+        # 4) **store the raw lists** on the traj dict
+        traj["colocalization_any"]       = list(self.analysis_colocalized)
+        traj["colocalization_by_ch"]     = {
+            ch: list(flags)
+            for ch, flags in self.analysis_colocalized_by_ch.items()
         }
 
-        print("compute_colocalization_single_frame analysis_channel", self.analysis_channel)
-        # 1) grab the fitted center for this point
-        fc0, *_ = self.analysis_fit_params[idx]
-        # if there was no valid fit, clear all flags
-        if fc0 is None:
-            self.analysis_colocalized[idx] = None
-            for ch, flags in self.analysis_colocalized_by_ch.items():
-                flags[idx] = None
-            return
+        # 5) now write percentages back into custom_fields & table
+        cf      = traj.setdefault("custom_fields", {})
+        n_chan  = self.movie.shape[self._channel_axis]
+        valid_any = [f for f in self.analysis_colocalized if f is not None]
+        pct_any   = (
+            f"{100*sum(1 for f in valid_any if f=='Yes')/len(valid_any):.1f}"
+            if valid_any else ""
+        )
 
-        x0, y0 = fc0
-        frame = self.analysis_frames[idx]
-        # 2) per‐channel
-        flags = {}
-        for tgt_ch, ch_flags in self.analysis_colocalized_by_ch.items():
-            # grab just that frame & channel
-            img = self.get_movie_frame(frame, channel_override=tgt_ch)
-            ok = False
-            if img is not None:
-                # re‐fit at the same spot
-                result = perform_gaussian_fit(
-                    img,
-                    (x0, y0),
-                    crop_size=int(2 * self.searchWindowSpin.value()),
-                    pixelsize=self.pixel_size,
-                    bg_fixed=None
+        for ch in range(1, n_chan+1):
+            col = f"Ch. {ch} co. %"
+            if ch == self.analysis_channel:
+                cf[col] = ""
+            elif n_chan == 2:
+                cf[col] = pct_any
+            else:
+                flags = self.analysis_colocalized_by_ch.get(ch, [])
+                valid = [f for f in flags if f is not None]
+                cf[col] = (
+                    f"{100*sum(1 for f in valid if f=='Yes')/len(valid):.1f}"
+                    if valid else ""
                 )
-                fc2 = result[0] if result is not None else None
-                # within threshold?
-                if (
-                    fc2 is not None and
-                    np.hypot(fc2[0] - x0, fc2[1] - y0) <= self.colocalization_threshold
-                ):
-                    ok = True
-            ch_flags[idx] = "Yes" if ok else "No"
-            flags[tgt_ch] = ok
+            self.trajectoryCanvas._mark_custom(row, col, cf[col])
 
-        # 3) overall “any” flag
-        self.analysis_colocalized[idx] = "Yes" if any(flags.values()) else "No"
+        # 6) restore old context
+        self.analysis_frames, self.analysis_fit_params, self.analysis_channel = (
+            old_frames, old_params, old_channel
+        )
 
     def _remove_past_centers(self, centers_to_remove):
         """
@@ -4597,6 +4854,8 @@ class KymographNavigator(QMainWindow):
         # ——— 4) Ensure the canvas actually shows it ———
         self.intensityCanvas.fig.canvas.blit(self.intensityCanvas.ax_bottom.bbox)
 
+        image, center, crop_size, sigma, intensity, background, peak, pointcolor = self.histogramCanvas._last_histogram_params
+        self.histogramCanvas._do_update_histogram(image, center, crop_size, sigma, intensity, background, peak, pointcolor)
 
     def finalizeTrajectory(self, analysis_points, trajid=None):
         if not analysis_points or len(analysis_points) < 2:
@@ -5141,7 +5400,7 @@ class KymographNavigator(QMainWindow):
         if hasattr(self, "histogramCanvas"):
             # Use the fitted center if available; if not, fall back to the original search center (cx, cy)
             center_for_hist = fitted_center if fitted_center is not None else (x_orig, y_orig)
-            self.histogramCanvas.update_histogram(frame_image, center_for_hist, search_crop_size, sigma=fitted_sigma, intensity=intensity)
+            self.histogramCanvas.update_histogram(frame_image, center_for_hist, search_crop_size, sigma=fitted_sigma, intensity=intensity, peak=peak)
 
         # Optionally, you can also add a magenta circle overlay on the MovieCanvas here.
         self.movieCanvas.remove_gaussian_circle()
@@ -5197,6 +5456,7 @@ class KymographNavigator(QMainWindow):
 
             if self.kymoCanvas is not None:
                 self.clear_temporary_analysis_markers()
+                self.kymoCanvas.remove_circle()
 
             # Only respond if the click is in the movie canvas and has valid coordinates.
             if event.inaxes != self.movieCanvas.ax or event.xdata is None or event.ydata is None:
@@ -5249,7 +5509,7 @@ class KymographNavigator(QMainWindow):
             )
             center_to_use = fitted_center if fitted_center is not None else (x_click, y_click)
             if hasattr(self, "histogramCanvas"):
-                self.histogramCanvas.update_histogram(frame_image, center_to_use, search_crop_size, fitted_sigma, intensity=intensity)
+                self.histogramCanvas.update_histogram(frame_image, center_to_use, search_crop_size, fitted_sigma, intensity=intensity, peak=peak)
             # Remove any previous gaussian circle and draw a new one if fit succeeded.
             if fitted_center is None or fitted_sigma is None:
                 self.movieCanvas.remove_gaussian_circle()
@@ -5319,11 +5579,11 @@ class KymographNavigator(QMainWindow):
             self.movieCanvas.ax.draw_artist(self.movieCanvas.tempRoiLine)        
         canvas.blit(self.movieCanvas._roi_bbox)
 
-    def on_movie_scroll(self, event):
-        if event.inaxes == self.movieCanvas.ax:
-            # let the MovieCanvas scroll logic update scale & center…
-            # then ask it to redraw & recapture its clean background
-            self.movieCanvas._perform_throttled_update()  
+    # def on_movie_scroll(self, event):
+    #     if event.inaxes == self.movieCanvas.ax:
+    #         # let the MovieCanvas scroll logic update scale & center…
+    #         # then ask it to redraw & recapture its clean background
+    #         self.movieCanvas._perform_throttled_update()  
 
     def on_movie_left_click(self, event):
         # Get the current frame index from the frame slider.
@@ -5505,6 +5765,7 @@ class KymographNavigator(QMainWindow):
             self.movieCanvas.rect_overlay = None
 
         self.movieCanvas.remove_gaussian_circle()
+        self.kymoCanvas.remove_circle()
 
         # Clear accumulated left-click points.
         self.analysis_points = []
@@ -5563,7 +5824,15 @@ class KymographNavigator(QMainWindow):
                 xmin, xmax = -0.5, w - 0.5
                 ymin, ymax = -0.5, h - 0.5
 
-                if hv and xmin <= hv[0] <= xmax and ymin <= hv[1] <= ymax:
+                # only use hover if both coordinates are numeric and within bounds
+                valid_hv = (
+                    isinstance(hv, (tuple, list))
+                    and len(hv) == 2
+                    and hv[0] is not None and hv[1] is not None
+                    and xmin <= hv[0] <= xmax
+                    and ymin <= hv[1] <= ymax
+                )
+                if valid_hv:
                     x0, y0 = hv
 
                 # 2b) last manual marker?
@@ -6173,19 +6442,16 @@ class KymographNavigator(QMainWindow):
         frac = best_along / total
         return frac * kymo_width
 
-    def on_analysis_slider_changed(self, value):
+    def on_analysis_slider_changed(self, index):
         self.movieCanvas.manual_zoom = True
         if self.looping:
             self.stoploop()
         # Sync intensity canvas
-        self.intensityCanvas.current_index = value
+        self.intensityCanvas.current_index = index
 
         # 1) Full update of movie and kymo contexts
-        self.jump_to_analysis_point(value, animate="discrete")
+        self.jump_to_analysis_point(index, animate="discrete")
 
-        self._blit_kymo_marker(value)
-
-    def _blit_kymo_marker(self, index):
         # 1) redraw static trajectories & cache background
         self.kymoCanvas.draw_trajectories_on_kymo()
         # remove any existing marker
@@ -6222,8 +6488,8 @@ class KymographNavigator(QMainWindow):
                 )
                 if xk is not None:
                     disp_frame = (self.movie.shape[0] - 1) - frame
-                    color = "magenta" if fc is not None else "grey"
-                    self.kymoCanvas.add_gaussian_circle(xk, disp_frame, color=color)
+                    color = self.get_point_color() if fc is not None else "grey"
+                    self.kymoCanvas.add_circle(xk, disp_frame, color=color)
 
     def save_rois(self):
         # Ask user where to save the ZIP file.
@@ -6929,22 +7195,10 @@ class KymographNavigator(QMainWindow):
     #         self.traj_overlay_button.setStyleSheet("")
 
     def _show_kymo_context_menu(self, global_pos: QPoint):
-
+        # must have at least one custom column
         if not self.trajectoryCanvas.custom_columns:
             self._last_kymo_artist = None
             return
-
-        cols = [c for c in self.trajectoryCanvas.custom_columns
-                if self.trajectoryCanvas._column_types.get(c) in ("binary","value")]
-        if not cols:
-            self._last_kymo_artist = None
-            return
-
-        # dedupe, preserving original order
-        unique_cols = []
-        for c in cols:
-            if c not in unique_cols:
-                unique_cols.append(c)
 
         artist = self._last_kymo_artist
         if artist is None:
@@ -6954,49 +7208,75 @@ class KymographNavigator(QMainWindow):
         if row is None:
             return
 
+        traj = self.trajectoryCanvas.trajectories[row]
+        cf   = traj.get("custom_fields", {})
+
+        # --- build the menu ---
         menu = QMenu(self.kymoCanvas)
         menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint)
         menu.setAttribute(Qt.WA_TranslucentBackground)
 
+        # --- optional “Check colocalization” entry ---
+        if getattr(self, "check_colocalization", False) and self.movie.ndim == 4:
+            ref_ch = traj["channel"]
+            # find at least one missing co. % for other channels
+            missing = any(
+                col.endswith(" co. %") and
+                not col.endswith(f"{ref_ch} co. %") and
+                not cf.get(col, "").strip()
+                for col in self.trajectoryCanvas.custom_columns
+            )
+            if missing:
+                act = menu.addAction("Check colocalization")
+                act.triggered.connect(lambda _chk=False, r=row: 
+                                        self._compute_colocalization_for_row(r))
+                menu.addSeparator()
+
+        # --- now the normal binary/value columns ---
+        # filter+dedupe
+        cols = [
+            c for c in self.trajectoryCanvas.custom_columns
+            if self.trajectoryCanvas._column_types.get(c) in ("binary","value")
+        ]
+        unique_cols = []
+        for c in cols:
+            if c not in unique_cols:
+                unique_cols.append(c)
+
         tbl = self.trajectoryCanvas.table_widget
         for col in unique_cols:
             col_type = self.trajectoryCanvas._column_types.get(col, "binary")
+            table_col_index = self.trajectoryCanvas._col_index[col]
+            item = tbl.item(row, table_col_index)
+            text = item.text().strip() if item else ""
 
-            #--- binary columns: mark/unmark as before ---
             if col_type == "binary":
-                table_col_index = self.trajectoryCanvas._col_index[col]
-                item = tbl.item(row, table_col_index)
-                marked = bool(item and item.text().strip().lower() == "yes")
-
+                marked = (text.lower() == "yes")
                 if marked:
-                    action_text = f'Unmark as {col}'
+                    action_text = f"Unmark as {col}"
                     callback    = lambda _chk=False, r=row, c=col: \
-                                  self.trajectoryCanvas._unmark_custom(r, c)
+                                self.trajectoryCanvas._unmark_custom(r, c)
                 else:
-                    action_text = f'Mark as {col}'
+                    action_text = f"Mark as {col}"
                     callback    = lambda _chk=False, r=row, c=col: \
-                                  self.trajectoryCanvas._mark_custom(r, c)
-
-            #--- value columns: pop up a dialog ---
-            else:  # col_type == "value"
-                table_col_index = self.trajectoryCanvas._col_index[col]
-                item = tbl.item(row, table_col_index)
-                existing = item.text().strip() if item else ""
-                if existing:
-                    action_text = f'Edit {col} value'
+                                self.trajectoryCanvas._mark_custom(r, c)
+            else:  # value column
+                if text:
+                    action_text = f"Edit {col} value"
                 else:
-                    action_text = f'Add {col} value'
-
-                # call your helper which prompts & writes into the table
+                    action_text = f"Add {col} value"
                 callback = lambda _chk=False, r=row, c=col: \
-                            self._prompt_and_add_kymo_value(c, r)
+                        self._prompt_and_add_kymo_value(c, r)
 
             menu.addAction(action_text, callback)
 
+        # --- show it, then reset state & redraw ---
         menu.exec_(global_pos)
         self._last_kymo_artist = None
 
+        self._update_legends()
         self.kymoCanvas.draw_trajectories_on_kymo()
+        self.kymoCanvas.draw_idle()
 
     def on_connect_spot_gaps_toggled(self, checked: bool):
         # store it on the navigator (that's what your kymo‐drawing code reads)
@@ -7127,9 +7407,14 @@ class KymographNavigator(QMainWindow):
         self.color_by_column = column_name
 
         # redraw the trajectories
+        self.kymoCanvas.remove_circle()
+        self.kymoCanvas.clear_kymo_trajectory_markers()
         self.kymoCanvas.draw_trajectories_on_kymo()
-        self.kymoCanvas.draw()
+        self.movieCanvas.remove_gaussian_circle()
+        self.movieCanvas.clear_movie_trajectory_markers()
         self.movieCanvas.draw_trajectories_on_movie()
+
+        self.kymoCanvas.draw()
         self.movieCanvas.draw()
 
         # update the legends on both canvases
@@ -7149,6 +7434,9 @@ class KymographNavigator(QMainWindow):
                 # re-draw
                 self.intensityCanvas.plot_intensity(**args)
 
+        if self.intensityCanvas.point_highlighted and self.intensityCanvas._last_plot_args is not None:
+            self.jump_to_analysis_point(self.intensityCanvas.current_index)
+
     def _get_traj_colors(self, traj):
         """
         Decide how to color one trajectory.  
@@ -7158,10 +7446,17 @@ class KymographNavigator(QMainWindow):
         col = self.color_by_column
         all_trajs = self.trajectoryCanvas.trajectories
 
-        # fallback to analysis_colors if no column selected:
+        # fallback: color points magenta if intensity exists, grey if None
         if not col:
-            # assume traj['colors'] is a list of per-point colors OR a single color
-            return {"c": traj.get("colors", "magenta"), "zorder": 4}, "magenta"
+            # use per-point intensities to decide color
+            intensities = traj.get("intensities", [])
+            if isinstance(intensities, (list, tuple)) and intensities:
+                colors = ["magenta" if val is not None else "grey" for val in intensities]
+            else:
+                # fallback if no intensities list: use existing colors or uniform magenta
+                existing = traj.get("colors", None)
+                colors = existing if isinstance(existing, (list, tuple)) else ["magenta"]
+            return {"c": colors, "zorder": 4}, "magenta"
 
         # determine mode & target channel
         movie = self.movie
@@ -7195,24 +7490,32 @@ class KymographNavigator(QMainWindow):
         # now pick main_color/point-colors
         if mode == "binary":
             flag = traj["custom_fields"].get(col, False)
-            main = "#FFC107" if flag else "#97b4ff"
+            main = "#FFC107" if flag else "#0088A6"
             scatter_kwargs = {"color": main, "zorder": 4}
         elif mode == "value":
             val = traj["custom_fields"].get(col)
-            c = color_map.get(val, "magenta")
+            c = color_map.get(val, "white")
             scatter_kwargs = {"color": c, "zorder": 4}
             main = c
         elif mode == "coloc":
             flags = traj.get("colocalization_any", [])
-            pts = [ "#FFA500" if f=="Yes" else "#AA80FF" if f=="No" else "grey"
-                    for f in flags ]
+            pts = [
+                "#FFC107" if f == "Yes" else
+                "#339CBF" if f == "No"  else
+                "grey"
+                for f in flags
+            ]
             scatter_kwargs = {"c": pts, "zorder": 4}
             main = "#AA80FF"
         elif mode == "coloc_multi":
             by_ch = traj.get("colocalization_by_ch", {})
             flags = by_ch.get(tgt, [None]*len(traj["frames"]))
-            pts = [ "#FFA500" if f=="Yes" else "#AA80FF" if f=="No" else "grey"
-                    for f in flags ]
+            pts = [
+                "#FFC107" if f == "Yes" else
+                "#339CBF" if f == "No"  else
+                "grey"
+                for f in flags
+            ]
             scatter_kwargs = {"c": pts, "zorder": 4}
             main = "#AA80FF"
         else:
@@ -7222,14 +7525,27 @@ class KymographNavigator(QMainWindow):
 
         return scatter_kwargs, main
 
-    def _reposition_legend(self, margin=2):
-        """Place legend just below the overlay, with a bit of breathing room."""
-        o = self._ch_overlay.geometry()
-        legend_x = o.x() + 3
-        legend_y = o.y() + o.height() + margin
+    def _reposition_legend(self, margin=2, left_margin=10):
+        """
+        Place legend to the right of the overlay (with a bit of breathing room),
+        or all the way to the left if the overlay is hidden.
+        """
+        if self._ch_overlay.isVisible():
+            o = self._ch_overlay.geometry()
+            legend_x = o.x() + o.width() + margin
+        else:
+            # no overlay → stick to a fixed left inset
+            legend_x = left_margin
+
+        # y position can stay where you like relative to top of container
+        legend_y = left_margin + 6
         self.movieLegendWidget.move(legend_x, legend_y)
 
     def _update_legends(self):
+
+        if self.movie is None:
+            return
+        
         # clear both layouts
         for layout in (self.kymoLegendLayout,
                        self.movieLegendLayout):
@@ -7252,9 +7568,9 @@ class KymographNavigator(QMainWindow):
 
         # build a small list of (color, label) entries for this mode
         if mode == "coloc":
-            entries = [("#FFA500", "Colocalized")]
+            entries = [("#FFC107", "Colocalized")]
         elif mode == "coloc_multi":
-            entries = [("#FFA500", f"Ch. {tgt} coloc.")]
+            entries = [("#FFC107", f"Ch. {tgt} coloc.")]
         elif mode == "value":
             # collect unique vals & map them
             seen = []
