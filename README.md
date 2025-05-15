@@ -144,7 +144,7 @@
 
 ### Load TrackMate data<a name="loadtrackmate"></a>
 
-* TrackMate data (.csv) can be loaded using the same *Load trajectories* option, which will trigger a calculation using the trackate centers as search centers to generate a trajectory for each TrackMate track
+* TrackMate data (.csv) can be loaded using the same *Load trajectories* option, which will trigger a calculation using the TrackMate spot data ("TRACK_ID", "FRAME", "POSITION_X", "POSITION_Y") as search centers to generate a Tracy trajectory for each TrackMate track
 
 ## License<a name="license"></a>
 
