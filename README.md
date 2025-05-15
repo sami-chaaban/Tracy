@@ -4,23 +4,23 @@
 
 1. [Install](#install)
 2. [Getting started](#start)
-    * [Start Tracy](#starttracy)
-    * [Load your movie](#loadmovie)
-    * [Browse spots](#browsespots)
+    1. [Start Tracy](#starttracy)
+    2. [Load your movie](#loadmovie)
+    3. [Browse spots](#browsespots)
+    4. [Generate kymographs](#kymographs)
+    5. [Generate trajectories](#trajectories)
+    6. [Browse trajectories](#browsetrajectories)
+    7. [Modify points](#modifypoints)
+3. [Additional features](#features)
     * [Correct drift](#driftcor)
-    * [Generate kymographs](#kymographs)
-    * [Generate trajectories](#trajectories)
-    * [Browse trajectories](#browsetrajectories)
     * [Colocalization](#colocalization)
-3. [Modifications](#modifications)
-    * [Modify individual points](#modify)
     * [Add custom column](#customcolumns)
     * [Color by value](#coloring)
-4. [Save & Load](#saveload)
+5. [Save & Load](#saveload)
     * [Save trajectories](#savetrajectories)
     * [Load trajectories](#loadtrajectories)
     * [Load TrackMate data](#loadtrackmate)
-5. [License](#license)
+6. [License](#license)
 
 ## Install<a name="install"></a>
 
@@ -59,13 +59,6 @@
 3. You can modify the **search radius** by holding down the **`R`** key and scrolling (or in the **Spot** menu)
 4. Use the slider under the movie to browse frames
 
-### Correct drift<a name="driftcor"></a>
-
-1. If your movie drifts, find a spot that is present throughout the movie and is stationary
-2. Click the spot (any frame) and make sure it has been found (magenta circle)
-3. In the **Movie** menu, click **`Correct Drift`**, which will track the spot to the beginning and end of the movie and apply a shift to each frame accordingly
-4. Check the result in the pop-up and save/load the movie if acceptable
-
 ### Generate kymographs<a name="kymographs"></a>
 
 1. To generate a kymograph, enter **`Line`** mode using the switch under the movie (shortcut: **`N`**)
@@ -98,6 +91,19 @@
 * Right click a trajectory in the table to show some helpful options, like **Go to kymograph ch1-001**
 * The **`backspace`** key removes the selected trajectory(ies)
 
+### Modify points<a name="modifypoints"></a>
+
+* When a point is highlighted, use the **`X`** key to either invalidate the spot or re-attempt a fit if it is already invalid
+
+## Additional features<a name="features"></a>
+
+### Drift correction<a name="driftcor"></a>
+
+1. If your movie drifts, find a spot that is present throughout the movie and is stationary
+2. Click the spot (any frame) and make sure it has been found (magenta circle)
+3. In the **Movie** menu, click **`Correct Drift`**, which will track the spot to the beginning and end of the movie and apply a shift to each frame accordingly
+4. Check the result in the pop-up and save/load the movie if acceptable
+
 ### Colocalization<a name="colocalization"></a>
 
 * If your movie has multiple channels, colocalization with other channels can be toggled on under the *Spot* menu
@@ -105,12 +111,6 @@
 * New columns will show up in the table representing the percentage of spots within a trajectory that are colocalized
 * As long as the colocalization option is toggled, every subsequent trajectory will have its colocalization analysed
 * Colocalization is determined by performing a search using the spot center coordinates in a different frame, and marking as colocalized if a spot is found within 4 pixels of the original spot center coordinate
-
-## Modifications<a name="modifications"></a>
-
-### Modify individual points<a name="modify"></a>
-
-* When a point is highlighted, use the **`X`** key to either invalidate the spot or re-attempt a fit if it is already invalid
 
 ### Add custom columns<a name="customcolumns"></a>
 
