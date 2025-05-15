@@ -76,8 +76,8 @@
     * The **spot histogram** shows the pixel intensities in the search range around the spot center and highlights the intensities within the spot
     * The **intensity plot** shows each spot's integrated intensity
     * The **speed histogram** shows the frame-to-frame speeds of the spots and overlay sthe net speed (only considering the start and end point)
-5. If necessary, modify the **search radius** (hold down **`R`** and scroll) and re-attempt (**`Enter`** key)
-6. If necessary, toggle between **tracking mode** with the **`T`** key and re-attempt (**`Enter`** key)
+5. If necessary, modify the **search radius** (hold down **`R`** and scroll) and recalculate the trajectory (**`Enter`** key or in the *Trajectory* menu)
+6. If necessary, toggle between **tracking mode** with the **`T`** key and recalculate the trajectory (**`Enter`** key or in the *Trajectory* menu)
     * **Independent**: each frame is treated independently using the search center from the interpolated line
     * **Tracked**: each frame's search center is based on the previous frame's spot center
     * **Smooth**: equivalent to *Independent* mode but goes through a filtering step at the end to remove spots that are far off the main track
