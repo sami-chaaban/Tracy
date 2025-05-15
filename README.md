@@ -12,7 +12,7 @@
     6. [Browse trajectories](#browsetrajectories)
     7. [Modify points](#modifypoints)
 3. [Additional features](#features)
-    * [Correct drift](#driftcor)
+    * [Drift correction](#driftcor)
     * [Colocalization](#colocalization)
     * [Add custom column](#customcolumns)
     * [Color by value](#coloring)
@@ -110,7 +110,7 @@
 * If trajectories are already available that have not had their colocalization analysed, it will prompt to analyse them
 * New columns will show up in the table representing the percentage of spots within a trajectory that are colocalized
 * As long as the colocalization option is toggled, every subsequent trajectory will have its colocalization analysed
-* Colocalization is determined by performing a search using the spot center coordinates in a different frame, and marking as colocalized if a spot is found within 4 pixels of the original spot center coordinate
+* Colocalization is determined by performing a search using the same spot center coordinates but in a different channel, and marking as colocalized if a spot is found within 4 pixels of the original spot center coordinate
 
 ### Add custom columns<a name="customcolumns"></a>
 
