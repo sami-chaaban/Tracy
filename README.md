@@ -78,7 +78,7 @@
 
 1. To track a spot in the movie using the kymograph as a reference, draw a segmented line by placing blue anchors on the kymograph (**`Escape`** cancels a sequence)
 2. Double-click to complete the sequence to generate a **trajectory**, where spot centers are searched in the movie from the linear interpolation between clicks using the currently set **search radius** and **tracking mode** (see below)
-3. Press the **space bar** to play a movie of the trajectory
+3. Optionally, press the **space bar** to play a movie of the trajectory
 4. Assess the plots
     * The **spot histogram** shows the pixel intensities in the search range around the spot center and highlights the intensities within the spot
     * The **intensity plot** shows each spot's integrated intensity
@@ -98,6 +98,14 @@
 * Right click a trajectory in the table to show some helpful options, like **Go to kymograph ch1-001**
 * The **`backspace`** key removes the selected trajectory(ies)
 
+### Colocalization<a name="colocalization"></a>
+
+* If your movie has multiple channels, colocalization with other channels can be toggled on under the *Spot* menu
+* If trajectories are already available that have not had their colocalization analysed, it will prompt to analyse them
+* New columns will show up in the table representing the percentage of spots within a trajectory that are colocalized
+* As long as the colocalization option is toggled, every subsequent trajectory will have its colocalization analysed
+* Colocalization is determined by performing a search using the spot center coordinates in a different frame, and marking as colocalized if a spot is found within 4 pixels of the original spot center coordinate
+
 ## Modifications<a name="modifications"></a>
 
 ### Modify individual points<a name="modify"></a>
@@ -111,14 +119,6 @@
     * **Value column**: adds a column that can hold any value, which can be assiged to each trajectory
 * After adding a column, right click on a trajectory in the table or on any trajectory label in the kymograph to either **Mark as ***X***** or **Set ***X*****, respectively
 * Optionally, colour by this value (see [below]<a name="coloring"></a>)
-
-### Colocalization<a name="colocalization"></a>
-
-* If your movie has multiple channels, colocalization with other channels can be toggled on under the *Spot* menu
-* If trajectories are already available that have not had their colocalization analysed, it will prompt to analyse them
-* New columns will show up in the table representing the percentage of spots within a trajectory that are colocalized
-* As long as the colocalization option is toggled, every subsequent trajectory will have its colocalization analysed
-* Colocalization is determined by performing a search using the spot center coordinates in a different frame, and marking as colocalized if a spot is found within 4 pixels of the original spot center coordinate
 
 ### Color by value<a name="coloring"></a>
 
