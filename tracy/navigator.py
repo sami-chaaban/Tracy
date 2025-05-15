@@ -143,6 +143,14 @@ class KymographNavigator(QMainWindow):
         self.xKeyShortcut.activated.connect(self.handleGlobalX)
         self._thread_pool = QThreadPool.globalInstance()
 
+        # bind period → next kymograph
+        self.nextKymoSc = QShortcut(QKeySequence(Qt.Key_Period), self)
+        self.nextKymoSc.activated.connect(self._select_next_kymo)
+        
+        # bind comma → previous kymograph
+        self.prevKymoSc = QShortcut(QKeySequence(Qt.Key_Comma), self)
+        self.prevKymoSc.activated.connect(self._select_prev_kymo)
+
         self.roi_overlay_active = False
 
         self.temp_analysis_line = None 
@@ -225,7 +233,7 @@ class KymographNavigator(QMainWindow):
         self._arrow_cooldown = 0.2  
         self._last_arrow = 0.0
 
-        self.last_kymo_by_channel = {}
+        # self.last_kymo_by_channel = {}
         self._roi_zoom_states = {}
         self._last_roi = None
 
@@ -2038,21 +2046,21 @@ class KymographNavigator(QMainWindow):
             self.movieCanvas.zoom_center = (full_width/2, full_height/2)
             self.movieCanvas.display_image(first_frame)
 
-            self.movieCanvas.draw_idle()
-            self.movieCanvas.clear_sum_cache()
-
             if self.clear_flag:
                 self.clear_rois()
                 self.clear_kymographs()
                 self.trajectoryCanvas.clear_trajectories(prompt=False)
                 self.clear_flag = False
 
+            self.movieCanvas.draw_idle()
+            self.movieCanvas.clear_sum_cache()
+
             self.update_scale_label()
 
             if self.pixel_size is None or self.frame_interval is None:
                 self.set_scale()
 
-            self.last_kymo_by_channel = {}
+            # self.last_kymo_by_channel = {}
 
             # If there are any existing custom columns, ask whether to clear them now
             # only ask if there are any custom‐columns other than the auto‐added colocalization % ones
@@ -2444,8 +2452,6 @@ class KymographNavigator(QMainWindow):
         # Finally, display the first frame with the correct contrast.
         self.movieCanvas.update_image_data(first_frame)
 
-
-
     def load_reference(self):
         if self.movie is None:
             QMessageBox.warning(self, "", 
@@ -2787,6 +2793,18 @@ class KymographNavigator(QMainWindow):
         self.update_kymo_list_for_channel()
         self.update_kymo_visibility()
 
+    def _select_next_kymo(self):
+        """Advance the kymo combo one step (if possible)."""
+        idx = self.kymoCombo.currentIndex()
+        if idx >= 0 and idx < self.kymoCombo.count() - 1:
+            self.kymoCombo.setCurrentIndex(idx + 1)
+
+    def _select_prev_kymo(self):
+        """Go back one step in the kymo combo (if possible)."""
+        idx = self.kymoCombo.currentIndex()
+        if idx > 0:
+            self.kymoCombo.setCurrentIndex(idx - 1)
+
     def update_kymo_list_for_channel(self):
         ch = int(self.movieChannelCombo.currentText())
         self.kymoCombo.blockSignals(True)
@@ -2798,37 +2816,38 @@ class KymographNavigator(QMainWindow):
                 self.kymoCombo.addItem(name)
         self.kymoCombo.blockSignals(False)
 
-        # Gather current list
+        # Get all names in this channel
         names = [self.kymoCombo.itemText(i) for i in range(self.kymoCombo.count())]
-        last  = self.last_kymo_by_channel.get(ch, None)
 
-        # 2) No kymos → clear
+        # 2) If there are no kymographs at all, clear and return
         if not names:
             self.kymoCombo.setCurrentIndex(-1)
             self.kymoCanvas.ax.cla()
             self.kymoCanvas.ax.axis("off")
             self.kymoCanvas.draw_idle()
+            # self._last_roi = None
             return
 
-        # 3) If last is present in names, use it
-        if last in names:
-            sel = last
+        # 3) Try to find a “sister” matching the last ROI
+        sel = None
+        last_roi = self._last_roi
+        if last_roi is not None:
+            for name in names:
+                if self.kymo_roi_map[name]["roi"] == last_roi:
+                    sel = name
+                    break
 
-        # 4) If no last remembered (first time), pick first
-        elif last is None:
-            sel = names[0]
-            # remember this as the last for next time
-            self.last_kymo_by_channel[ch] = sel
-
-        # 5) You have a last but it’s not in names → user deleted it ⇒ clear
-        else:
+        # 4) If no sister found, we want a blank canvas
+        if sel is None:
             self.kymoCombo.setCurrentIndex(-1)
             self.kymoCanvas.ax.cla()
             self.kymoCanvas.ax.axis("off")
             self.kymoCanvas.draw_idle()
+            # don’t change self._last_roi — so that if the user later switches
+            # back to a channel where a sister *does* exist, it’ll pop right in.
             return
 
-        # 6) Finally, select & display
+        # 5) Otherwise select & display the sister
         self.kymoCombo.setCurrentText(sel)
         self.kymograph_changed()
 
@@ -2892,37 +2911,30 @@ class KymographNavigator(QMainWindow):
         if not current:
             return
 
-        # 1) Remove mapping and delete its ROI
+        # 1) Remove mapping and drop any zoom state for its ROI
         mapping = self.kymo_roi_map.pop(current, None)
         if mapping:
             roi_name = mapping["roi"]
-            # check if _any_ other kymos still reference this ROI
-            still_refs = any(
-                info["roi"] == roi_name
-                for info in self.kymo_roi_map.values()
-            )
-            if not still_refs:
-                # safe to delete the ROI itself
-                if roi_name in self.rois:
-                    del self.rois[roi_name]
-                    idx = self.roiCombo.findText(roi_name)
-                    if idx >= 0:
-                        self.roiCombo.removeItem(idx)
-                        # drop saved zoom/pan state
-                        if roi_name in self._roi_zoom_states:
-                            del self._roi_zoom_states[roi_name]
-                        if self._last_roi == roi_name:
-                            self._last_roi = None
+            # drop zoom/pan state
+            self._roi_zoom_states.pop(roi_name, None)
+            # if this was the last ROI we saw, clear it
+            if self._last_roi == roi_name:
+                self._last_roi = None
+            # remove the ROI itself if nobody else references it
+            if not any(info["roi"] == roi_name for info in self.kymo_roi_map.values()):
+                self.rois.pop(roi_name, None)
+                idx = self.roiCombo.findText(roi_name)
+                if idx >= 0:
+                    self.roiCombo.removeItem(idx)
 
-        # 2) Delete the kymograph itself
-        if current in self.kymographs:
-            del self.kymographs[current]
+        # 2) Delete the kymograph
+        self.kymographs.pop(current, None)
 
-        # 3) Remove it from the kymo combo
+        # 3) Remove it from the combo
         old_index = self.kymoCombo.currentIndex()
         self.kymoCombo.removeItem(old_index)
 
-        # 4) Refresh display: show next kymo if any, otherwise clear canvas
+        # 4) Show next one or clear
         if self.kymoCombo.count() > 0:
             new_index = old_index - 1 if old_index > 0 else 0
             self.kymoCombo.setCurrentIndex(new_index)
@@ -2931,7 +2943,7 @@ class KymographNavigator(QMainWindow):
             self.kymoCanvas.ax.axis("off")
             self.kymoCanvas.draw_idle()
 
-        # 5) Update UI visibility in case lists are now empty
+        # 5) Re-run selection & visibility
         self.kymograph_changed()
         self.update_kymo_visibility()
         self.update_roilist_visibility()
@@ -2953,29 +2965,21 @@ class KymographNavigator(QMainWindow):
                 if idx >= 0:
                     self.roiCombo.removeItem(idx)
 
-        # 2) Clear the kymo→ROI map
+        self.kymographs.clear()
         self.kymo_roi_map.clear()
-
-        # 3) Now clear all kymographs
-        self.kymoCombo.clear()
-        self.kymographs = {}
-        # drop saved zoom/pan state
         self._roi_zoom_states.clear()
         self._last_roi = None
-
-        # 4) Clear the canvas
+        self.kymoCombo.clear()
         self.kymoCanvas.ax.cla()
         self.kymoCanvas.ax.axis("off")
         self.kymoCanvas.draw_idle()
-
-        # 5) Update UI visibility
         self.update_kymo_visibility()
         self.update_roilist_visibility()
 
     def clear_rois(self):
         # Clear the ROI combo box and the dictionary.
+        self.rois.clear()
         self.roiCombo.clear()
-        self.rois = {}
 
         # Remove the ROI overlay line (if any) from the movie canvas.
         if hasattr(self.movieCanvas, "roi_line") and self.movieCanvas.roi_line is not None:
@@ -3001,12 +3005,12 @@ class KymographNavigator(QMainWindow):
                     pass
             self.movieCanvas.roi_texts = []
 
-        # Redraw the canvas so that no ROI overlays remain.
+        self._roi_zoom_states.clear()
+        self._last_roi = None
         self.movieCanvas.draw_idle()
-
         self.update_kymo_visibility()
         self.update_roilist_visibility()
-
+        
     def on_kymo_click(self, event):
 
         if event.button == 1 and event.inaxes is self.kymoCanvas.ax and self.traj_overlay_button.isChecked() and len(self.analysis_points) == 0:
@@ -3421,7 +3425,7 @@ class KymographNavigator(QMainWindow):
             pixel_val = image[real_y, real_x]
 
         # Build the display string (without intensity)
-        display_text = f"F: {int(frame_val)} X: {real_x_fortxt:.2f} Y: {real_y_fortxt:.2f} V: {pixel_val}"
+        display_text = f"F: {int(frame_val)} X: {real_x_fortxt:.1f} Y: {real_y_fortxt:.1f} V: {pixel_val}"
         #print("Setting label text to:", display_text)
         
         # Update the label.
@@ -5229,6 +5233,7 @@ class KymographNavigator(QMainWindow):
                 self.movieCanvas.update_roi_drawing(current_pos=(event.xdata, event.ydata))
                 if event.dblclick:
                     # On double-click, now finalize the ROI (after adding the current click)
+                    self.kymoCanvas.manual_zoom = False
                     self.movieCanvas.clear_temporary_roi_markers()
                     self.movieCanvas.finalize_roi()
             return
@@ -6206,134 +6211,109 @@ class KymographNavigator(QMainWindow):
             QMessageBox.information(self, "No Kymographs", "Nothing to save.")
             return
 
-        self.movieCanvas.setUpdatesEnabled(False)
-        self.kymoCanvas.setUpdatesEnabled(False)
+        # clear any existing selection
+        tw = self.trajectoryCanvas.table_widget
+        tw.clearSelection()
+        tw.setCurrentCell(-1, -1)
 
-        # 2) Show dialog and get options
+        # 2) ask user where/how to save
         all_items = list(self.kymographs.items())
         base_name = os.path.splitext(self.movieNameLabel.text())[0]
-        dlg = SaveKymographDialog(base_name, all_items, parent=self)
+        dlg       = SaveKymographDialog(base_name, all_items, parent=self)
         if dlg.exec_() != QDialog.Accepted:
             return
-        opts      = dlg.getOptions()
-        directory = opts["directory"]
-        sel_names = opts["selected"]
-        ft        = opts["filetype"]
-        do_overlay= opts["overlay"]
-        use_pref  = opts.get("use_prefix", False)
-        mid       = opts.get("middle", "")
-        custom    = opts.get("custom", False)
-        cname     = opts.get("custom_name", "")
+        opts       = dlg.getOptions()
+        directory  = opts["directory"]
+        sel_names  = opts["selected"]
+        ft         = opts["filetype"]
+        do_overlay = opts["overlay"]
+        use_pref   = opts.get("use_prefix", False)
+        mid        = opts.get("middle", "")
+        custom     = opts.get("custom", False)
+        cname      = opts.get("custom_name", "")
 
-        # 3) Progress dialog
+        # 3) progress bar
         total = len(sel_names)
-        prog = QProgressDialog("Saving kymographs…", "Cancel", 0, total, self)
+        prog  = QProgressDialog("Saving kymographs…", "Cancel", 0, total, self)
         prog.setWindowModality(Qt.WindowModal)
         prog.setMinimumDuration(0)
         prog.show()
 
-        kfig = self.kymoCanvas.fig
-        orig_size = kfig.get_size_inches().copy()
-        # orig_dpi  = kfig.get_dpi()
+        tw = self.trajectoryCanvas.table_widget
+        tw.clearSelection()
+        tw.setCurrentCell(-1, -1)
 
-        old_roi         = self.roiCombo.currentText()
-        old_channel_idx = self.movieChannelCombo.currentIndex()
-        old_sel         = self.trajectoryCanvas.table_widget.selectedIndexes()
+        # remember the current kymo so we can re-select it at the end
+        current = self.kymoCombo.currentText()
 
-        # 4) Save each kymo
+        # cache figure size for high-DPI save
+        fig = self.kymoCanvas.fig
+        orig_size = fig.get_size_inches().copy()
+
         try:
             for i, name in enumerate(sel_names):
                 if prog.wasCanceled():
                     break
                 prog.setValue(i)
 
-                # decide filename
+                # build filename
                 if custom:
                     fname = cname or name
                 else:
-                    parts = []
-                    if use_pref:
-                        parts.append(base_name)
-                    if mid:
-                        parts.append(mid)
-                    parts.append(name)
+                    parts = ([base_name] if use_pref else []) + ([mid] if mid else []) + [name]
                     fname = "-".join(parts)
                 out_path = os.path.join(directory, f"{fname}.{ft}")
 
                 if do_overlay:
-
-                    # ——— Overlay path: draw with Matplotlib and snapshot ———
+                    print([name])
+                    # 1) load & flip the raw kymo
                     kymo = np.flipud(self.kymographs[name])
+
+                    # 2) ensure display_image does a full reset
+                    self.kymoCanvas.manual_zoom = False
                     self.kymoCanvas.display_image(kymo)
 
-                    # restore ROI & channel so your draw_trajectories uses the right mapping
-                    info = self.kymo_roi_map.get(name, {})
-                    if "roi" in info:
-                        self.roiCombo.setCurrentText(info["roi"])
-                        self.movieChannelCombo.setCurrentIndex(info["channel"]-1)
-                        self.update_movie_channel_combo()
-                        if self.sumBtn.isChecked():
-                            self.movieCanvas.display_sum_frame()
+                    # 3) switch ROI & channel
+                    if name in self.kymographs:
+                        self.kymoCombo.setCurrentText(name)
+                        self.kymograph_changed()
 
-                    # clear any selection/highlight
-                    tw = self.trajectoryCanvas.table_widget
-                    tw.clearSelection()
-                    tw.setCurrentCell(-1, -1)
+                    # 5) now draw a skinny overlay (axes already off, full‐frame)
+                    self.kymoCanvas.draw_trajectories_on_kymo(
+                        showsearchline=False,
+                        skinny=True
+                    )
+                    self.kymoCanvas.fig.canvas.draw()
 
-                    # make the axes fill the whole figure
-                    fig, ax = self.kymoCanvas.fig, self.kymoCanvas.ax
-                    fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
-
-                    # draw overlays
-                    self.kymoCanvas.draw_trajectories_on_kymo(showsearchline=False, skinny=True)
-                    fig.canvas.draw()
-
-                    target_dpi = 300
-                    # restore to original inches
+                    # 6) save
+                    fig = self.kymoCanvas.fig
                     fig.set_size_inches(orig_size)
-                    # now save at high dpi
-                    fig.savefig(out_path,
-                                dpi=target_dpi,
+                    fig.savefig(out_path, dpi=300,
                                 facecolor=fig.get_facecolor(),
-                                edgecolor='none',
-                                bbox_inches='tight')
+                                edgecolor="none",
+                                bbox_inches="tight")
 
                 else:
-                    # ——— Plain path: pixel export ———
+                    # plain export
                     kymo = self.kymographs[name]
                     if ft == "tif":
                         tifffile.imsave(out_path, kymo)
                     else:
-                        # replicate your display contrast & cmap & orientation
-                        kp15, kp99 = np.percentile(kymo, (15, 99))
-                        disp = np.clip((kymo - kp15) / (kp99 - kp15), 0, 1)
-                        disp = (disp * 255).astype(np.uint8)
-                        cmap = "gray_r" if getattr(self, "inverted_cmap", False) else "gray"
-                        disp = np.flipud(disp)
-                        plt.imsave(out_path, disp, cmap=cmap, origin='lower')
-
-            # QMessageBox.information(self, "Saved", f"Kymographs written to:\n{directory}")
+                        p15, p99 = np.percentile(kymo, (15, 99))
+                        disp     = np.clip((kymo - p15)/(p99 - p15), 0, 1)
+                        disp     = (disp*255).astype(np.uint8)
+                        cmap     = "gray_r" if getattr(self, "inverted_cmap", False) else "gray"
+                        disp     = np.flipud(disp)
+                        plt.imsave(out_path, disp, cmap=cmap, origin="lower")
 
             prog.setValue(total)
+
         finally:
             prog.close()
-            if do_overlay:
-                if old_roi:
-                    self.roiCombo.setCurrentText(old_roi)
-                self.movieChannelCombo.setCurrentIndex(old_channel_idx)
-                self.update_movie_channel_combo()
-                for idx in old_sel:
-                    self.trajectoryCanvas.table_widget.selectRow(idx.row())
-
-            current = self.kymoCombo.currentText()
+            # just re-select the original kymo; that will reset ROI, channel, contrast, overlays, etc.
             if current in self.kymographs:
-                img = np.flipud(self.kymographs[current])
-                self.kymoCanvas.display_image(img)
-                self.kymoCanvas.draw_trajectories_on_kymo()
-                self.kymoCanvas.draw_idle()
-
-        self.movieCanvas.setUpdatesEnabled(True)
-        self.kymoCanvas.setUpdatesEnabled(True)
+                self.kymoCombo.setCurrentText(current)
+                self.kymograph_changed()
 
     #UNUSED
     def save_kymograph_with_rois(self):
@@ -7217,7 +7197,7 @@ class KymographNavigator(QMainWindow):
 
         return scatter_kwargs, main
 
-    def _reposition_legend(self, margin=2, left_margin=10):
+    def _reposition_legend(self, margin=7, left_margin=10):
         """
         Place legend to the right of the overlay (with a bit of breathing room),
         or all the way to the left if the overlay is hidden.
@@ -7230,7 +7210,7 @@ class KymographNavigator(QMainWindow):
             legend_x = left_margin
 
         # y position can stay where you like relative to top of container
-        legend_y = left_margin + 6
+        legend_y = left_margin + 7
         self.movieLegendWidget.move(legend_x, legend_y)
 
     def _update_legends(self):

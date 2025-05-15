@@ -502,8 +502,8 @@ class KymoCanvas(ImageCanvas):
             scattersize = 9
             linesize = 1.5
             if skinny:
-                scattersize = 0.25
-                linesize = 0.2
+                scattersize = 3
+                linesize = 0.5
 
 
             if showsearchline:
@@ -562,7 +562,7 @@ class KymoCanvas(ImageCanvas):
                         gap_line, = ax.plot(
                             [xx0, gx1], [yy0, gy1],
                             linestyle='-', color=line_color,
-                            linewidth=linesize, alpha=0.4, zorder=2
+                            linewidth=linesize, alpha=0.8, zorder=2
                         )
                         markers.append(gap_line)
 
@@ -1436,8 +1436,7 @@ class MovieCanvas(ImageCanvas):
             next_num = max_num + 1
         else:
             next_num = 1
-        name = f"{next_num:03d}"
-        
+        name = f"{next_num:03d}"        
 
         # Store the ROI and kymograph with the same name.
         self.navigator.rois[name] = roi
@@ -1461,9 +1460,11 @@ class MovieCanvas(ImageCanvas):
                 "orphaned": False
             }
 
-            self.navigator.last_kymo_by_channel[ch+1] = kymo_name
+            # self.navigator.last_kymo_by_channel[ch+1] = kymo_name
 
+        self.navigator._last_roi = name
         self.navigator.update_kymo_list_for_channel()
+        self.navigator.kymograph_changed()
         self.navigator.kymoCombo.setEnabled(True)
 
 
@@ -2624,7 +2625,7 @@ class TrajectoryCanvas(QWidget):
             with pd.ExcelWriter(filename) as writer:
                 df_data.to_excel(writer, sheet_name="Data Points", index=False)
                 df_summary.to_excel(writer, sheet_name="Per-trajectory", index=False)
-                df_per_roi.to_excel(writer, sheet_name="Per-kymographI", index=False)
+                df_per_roi.to_excel(writer, sheet_name="Per-kymograph", index=False)
 
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save trajectories: {str(e)}")

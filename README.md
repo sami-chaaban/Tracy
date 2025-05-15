@@ -46,8 +46,8 @@
 2. Choose any single- or multi-channel movie (.tif format)
 3. If the pixel size and frame interval could not be loaded from the metadata, you will be prompted to enter them
 4. Click and drag using the middle button to pan (or Ctrl + left click / Cmd + left click) and middle wheel scroll to zoom
-5. Once loaded, toggle between channels with the number keys
-6. Use the **`M`** shortcut to show/hide the maximum projection
+5. Once loaded, toggle between channels by clicking the channel label (shortcut: **`1`**, **`2`**, etc.)
+6. The maximum projection can be shown by toggling it under the movie  (shortcut: **`m`**)
 7. Adjust the contrast using the contrast slider
 
 ### Browse spots<a name="browsespots"></a>
@@ -56,16 +56,17 @@
     * The **blue square** marks the search area around the center
     * The **magenta circle** marks the spot that was found *(the circle radius is 2 standard deviations)*
 2. Hover over the top-right inset to see a 3D representation of the fit (scroll to zoom, click and drag to rotate)
-3. You can modify the **search radius** by holding down the **`R`** key and scrolling (or in the **Spot** menu)
+3. You can modify the **search radius** by holding down the **`r`** key and scrolling (or in the **Spot** menu)
 4. Use the slider under the movie to browse frames
 
 ### Generate kymographs<a name="kymographs"></a>
 
-1. To generate a kymograph, enter **`Line`** mode using the switch under the movie (shortcut: **`N`**)
-2. Optionally, look at the maximum-projection (shortcut: **`M`**) to better see where you should draw lines
+1. To generate a kymograph, enter **`Line`** mode using the switch under the movie (shortcut: **`n`**)
+2. Optionally, look at the maximum-projection (shortcut: **`m`**) to better see where you should draw lines
 3. Draw the segmented line by placing green anchors on the movie (**`Escape`** cancels a sequence)
 4. Double-click to complete the sequence and generate a **kymograph**
-5. If your movie has multiple channels, a kymograph will be generated for each, which will show when you toggle between channels (shortcut: number keys)
+5. If your movie has multiple channels, a kymograph will be generated for each, which will show when you toggle between channels (shortcut: **`1`**, **`2`**, etc.)
+6. You can use the **`,`** and **`.`** keys to quickly go to the previous or next kymograph, respectively
 
 ### Generate trajectories<a name="trajectories"></a>
 
@@ -76,18 +77,18 @@
     * The **spot histogram** shows the pixel intensities in the search range around the spot center and highlights the intensities within the spot
     * The **intensity plot** shows each spot's integrated intensity
     * The **speed histogram** shows the frame-to-frame speeds of the spots and overlay sthe net speed (only considering the start and end point)
-5. If necessary, modify the **search radius** (hold down **`R`** and scroll) and recalculate the trajectory (**`Enter`** key or in the *Trajectory* menu)
-6. If necessary, toggle between **tracking mode** with the **`T`** key and recalculate the trajectory (**`Enter`** key or in the *Trajectory* menu)
+5. If necessary, modify the **search radius** (hold down **`r`** and scroll) and recalculate the trajectory (**`Enter`** key or in the *Trajectory* menu)
+6. If necessary, toggle between **tracking mode** with the **`t`** key and recalculate the trajectory (**`Enter`** key or in the *Trajectory* menu)
     * **Independent**: each frame is treated independently using the search center from the interpolated line
     * **Tracked**: each frame's search center is based on the previous frame's spot center
     * **Smooth**: equivalent to *Independent* mode but goes through a filtering step at the end to remove spots that are far off the main track
-7. Click any point in the kymograph or in the *intensity plot* to jump to that point
+7. Click any point in the kymograph or in the *intensity plot* to jump to that point, or browse sequentially with the arrow keys (**`→`**, **`←`**)
 
     **!!** Trajectories do not belong to kymographs, and their presence within one is determined on-the-fly for visualisation
 
 ### Browse trajectories<a name="browsetrajectories"></a>
 
-* Adding trajectories will append the data to the **trajectory table**
+* Adding trajectories will append the data to the **trajectory table**, which can be clicked or selected with the arrow keys (**`↑`**, **`↓`**)
 * Right click a trajectory in the table to show some helpful options, like **Go to kymograph ch1-001**
 * The **`backspace`** key removes the selected trajectory(ies)
 
@@ -135,12 +136,12 @@
 
     **!!** Make sure two kymographs do not contain the same trajectory or the Per-kymograph statistics will be wrong
 
-* You do not need to save kymographs since the clicks you used to build them are embedded in the trajectories. Use **Draw from trajectories** in the *Kymograph* menu to redraw them after loading trajectories.
+* You do not need to save kymographs or line ROIs along with trajectories since the clicks you used to build them are embedded in the trajectories. Use **Draw from trajectories** in the *Kymograph* menu to redraw them after loading trajectories.
 
 ### Load trajectories<a name="loadtrajectories"></a>
 
 * Trajectories can be loaded back as they were saved by Tracy (.xlsx file) or any similar file with a Data Points sheet with at least Trajectory, Channel, Frame, Search Center X, and Search Center Y (it will recalculate trajecotires when spot centers are missing in this case)
-* You do not need to save kymographs since the clicks you used to build them are embedded in the trajectories. Use **Draw from trajectories** in the *Kymograph* menu to redraw them after loading trajectories.
+* You do not need to save kymographs or line ROIs along with trajectories since the clicks you used to build them are embedded in the trajectories. Use **Draw from trajectories** in the *Kymograph* menu to redraw them after loading trajectories.
 
 ### Load TrackMate data<a name="loadtrackmate"></a>
 
