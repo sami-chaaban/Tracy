@@ -95,7 +95,7 @@
 
 * Adding trajectories will append the data to the **trajectory table**
 * Right click a trajectory in the table to show some helpful options, like **Go to kymograph ch1-001**
-* The **backspace** key removes the selected trajectory(ies)
+* The **`backspace`** key removes the selected trajectory(ies)
 
 ### Save trajectories<a name="savetrajectories"></a>
 
@@ -113,7 +113,7 @@
 
 ### Load TrackMate data<a name="loadtrackmate"></a>
 
-* TrackMate data (.csv) can be loaded, which will trigger a calculation using the trackate centers as search centers to generate a trajectory for each TrackMate track
+* TrackMate data (.csv) can be loaded using the same *Load trajectories* option, which will trigger a calculation using the trackate centers as search centers to generate a trajectory for each TrackMate track
 
 ## License<a name="license"></a>
 
