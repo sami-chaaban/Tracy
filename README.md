@@ -12,6 +12,9 @@
     * [Track using kymograph reference](#kymoclick)
     * [Modify individual points](#modify)
     * [Browse trajectories](#browsetrajectories)
+    * [Add custom column](#customcolumns)
+    * [Colocalization](#colocalization)
+    * [Color by value](#coloring)
     * [Save trajectories](#savetrajectories)
     * [Load trajectories](#loadtrajectories)
     * [Load TrackMate data](#loadtrackmate)
@@ -64,25 +67,25 @@
 ### Kymographs<a name="kymographs"></a>
 
 1. To generate a kymograph, enter **`Line`** mode using the switch under the movie (shortcut: **`N`**)
-2. Optionally, look at the maximum-projection (shortcut **`M`**) to better see where you should draw lines
+2. Optionally, look at the maximum-projection (shortcut: **`M`**) to better see where you should draw lines
 3. Draw the segmented line by placing green anchors on the movie (**`Escape`** cancels a sequence)
-4. Double-click to complete the sequence and store a **kymograph**
-5. If your movie has multiple channels, a kymograph will be generated for each, which will show when you toggle between channels (number keys)
+4. Double-click to complete the sequence and generate a **kymograph**
+5. If your movie has multiple channels, a kymograph will be generated for each, which will show when you toggle between channels (shortcut: number keys)
 
 ### Track using kymograph reference<a name="kymoclick"></a>
 
 1. To track a spot in the movie using the kymograph as a reference, draw a segmented line by placing blue anchors on the kymograph (**`Escape`** cancels a sequence)
-2. Double-click to complete the sequence to generate a **trajectory**, where spot centers are searched in the movie from the linear interpolation between clicks
+2. Double-click to complete the sequence to generate a **trajectory**, where spot centers are searched in the movie from the linear interpolation between clicks using the currently set **search radius** and **tracking mode** (see below)
 3. Press the **space bar** to play a movie of the trajectory
 4. Assess the plots
     * The **spot histogram** shows the pixel intensities in the search range around the spot center and highlights the intensities within the spot
     * The **intensity plot** shows each spot's integrated intensity
     * The **speed histogram** shows the frame-to-frame speeds of the spots and overlay sthe net speed (only considering the start and end point)
-5. If necessary, modify the search radius (hold down **`R`** and scroll) and re-attempt (**`Enter`** key)
-6. If necessary, toggle tracking modes with the **`T`** key and re-attempt (**`Enter`** key)
-    * **Independent**: each frame is treated independently using the interpolated search centers
+5. If necessary, modify the **search radius** (hold down **`R`** and scroll) and re-attempt (**`Enter`** key)
+6. If necessary, toggle between **tracking mode** with the **`T`** key and re-attempt (**`Enter`** key)
+    * **Independent**: each frame is treated independently using the search center from the interpolated line
     * **Tracked**: each frame's search center is based on the previous frame's spot center
-    * **Smooth**: equivalent to *Independent* mode but goes through a filtering at the end to remove spots that are far off the main track
+    * **Smooth**: equivalent to *Independent* mode but goes through a filtering step at the end to remove spots that are far off the main track
 7. Click any point in the kymograph or in the *intensity plot* to jump to that point
 
     **!!** Trajectories do not belong to kymographs, and their presence within one is determined on-the-fly for visualisation
@@ -97,6 +100,26 @@
 * Right click a trajectory in the table to show some helpful options, like **Go to kymograph ch1-001**
 * The **`backspace`** key removes the selected trajectory(ies)
 
+### Add custom columns<a name="customcolumns"></a>
+
+* Right click on any column header to show the options for column types to add (also in the *Trajectories* menu)
+    * **Binary column**: adds a column composed of Yes/No, which can be assiged to each trajectory
+    * **Value column**: adds a column that can hold any value, which can be assiged to each trajectory
+* After adding a column, right click on a trajectory in the table or on any trajectory label in the kymograph to either **Mark as ***X***** or **Set ***X*****, respectively
+* Optionally, colour by this value (see [below]<a name="coloring"></a>)
+
+### Colocalization<a name="colocalization"></a>
+
+* If your movie has multiple channels, colocalization with other channels can be toggled on under the *Spot* menu
+* If trajectories are already available that have not had their colocalization analysed, it will prompt to analyse them
+* New columns will show up in the table representing the percentage of spots within a trajectory that are colocalized
+* As long as the colocalization option is toggled, every subsequent trajectory will have its colocalization analysed
+* Colocalization is determined by performing a search using the spot center coordinates in a different frame, and marking as colocalized if a spot is found within 4 pixels of the original spot center coordinate
+
+### Color by value<a name="coloring"></a>
+
+* All data can be coloured by **binary**, **value**, or **colocalization** values under the *Trajectories* menu
+
 ### Save trajectories<a name="savetrajectories"></a>
 
 * Save trajectories in the **Save** menu, which saves an excel file with three sheets
@@ -105,6 +128,8 @@
     * **Per-kymograph**: Analysis of points belonging to the same kymograph
 
     **!!** Make sure two kymographs do not contain the same trajectory or the Per-kymograph statistics will be wrong
+
+* You do not need to save kymographs since the clicks you used to build them are embedded in the trajectories. Use **Draw from trajectories** in the *Kymograph* menu to redraw them after loading trajectories.
 
 ### Load trajectories<a name="loadtrajectories"></a>
 
