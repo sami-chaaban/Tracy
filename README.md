@@ -16,11 +16,11 @@
     * [Colocalization](#colocalization)
     * [Add custom column](#customcolumns)
     * [Color by value](#coloring)
-5. [Save & Load](#saveload)
+4. [Save & Load](#saveload)
     * [Save trajectories](#savetrajectories)
     * [Load trajectories](#loadtrajectories)
     * [Load TrackMate data](#loadtrackmate)
-6. [License](#license)
+5. [License](#license)
 
 ## Install<a name="install"></a>
 
