@@ -10,7 +10,7 @@
     * [Correct drift](#driftcor)
     * [Generate kymographs](#kymographs)
     * [Generate trajectories](#trajectories)
-    * [Browsing](#browsing)
+    * [Browse trajectories](#browsetrajectories)
 3. [Modifications](#modifications)
     * [Modify individual points](#modify)
     * [Add custom column](#customcolumns)
@@ -92,7 +92,7 @@
 
     **!!** Trajectories do not belong to kymographs, and their presence within one is determined on-the-fly for visualisation
 
-### Browsing<a name="browsing"></a>
+### Browse trajectories<a name="browsetrajectories"></a>
 
 * Adding trajectories will append the data to the **trajectory table**
 * Right click a trajectory in the table to show some helpful options, like **Go to kymograph ch1-001**
