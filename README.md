@@ -10,15 +10,17 @@
     * [Drift correction](#driftcor)
     * [Kymographs](#kymographs)
     * [Track using kymograph reference](#kymoclick)
-    * [Modify individual points](#modify)
     * [Browse trajectories](#browsetrajectories)
+3. [Modifications](#modifications)
+    * [Modify individual points](#modify)
     * [Add custom column](#customcolumns)
     * [Colocalization](#colocalization)
     * [Color by value](#coloring)
+4. [Save & Load](#saveload)
     * [Save trajectories](#savetrajectories)
     * [Load trajectories](#loadtrajectories)
     * [Load TrackMate data](#loadtrackmate)
-3. [License](#license)
+5. [License](#license)
 
 ## Install<a name="install"></a>
 
@@ -90,15 +92,17 @@
 
     **!!** Trajectories do not belong to kymographs, and their presence within one is determined on-the-fly for visualisation
 
-### Modify individual points<a name="modify"></a>
-
-* When a point is highlighted, use the **`X`** key to either invalidate the spot or re-attempt a fit if it is already invalid
-
 ### Browse trajectories<a name="browsetrajectories"></a>
 
 * Adding trajectories will append the data to the **trajectory table**
 * Right click a trajectory in the table to show some helpful options, like **Go to kymograph ch1-001**
 * The **`backspace`** key removes the selected trajectory(ies)
+
+## Modifications<a name="modifications"></a>
+
+### Modify individual points<a name="modify"></a>
+
+* When a point is highlighted, use the **`X`** key to either invalidate the spot or re-attempt a fit if it is already invalid
 
 ### Add custom columns<a name="customcolumns"></a>
 
@@ -119,6 +123,8 @@
 ### Color by value<a name="coloring"></a>
 
 * All data can be coloured by **binary**, **value**, or **colocalization** values under the *Trajectories* menu
+
+## Save & Load<a name="saveload"></a>
 
 ### Save trajectories<a name="savetrajectories"></a>
 
