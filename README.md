@@ -59,11 +59,11 @@
 3. You can modify the **search radius** by holding down the **`R`** key and scrolling (or in the **Spot** menu)
 4. Use the slider under the movie to browse frames
 
-### Drift correction<a name="driftcor"></a>
+### Correct drift<a name="driftcor"></a>
 
 1. If your movie drifts, find a spot that is present throughout the movie and is stationary
 2. Click the spot (any frame) and make sure it has been found (magenta circle)
-3. In the **Movie** menu, click **`Correct Drift`**
+3. In the **Movie** menu, click **`Correct Drift`**, which will track the spot to the beginning and end of the movie and apply a shift to each frame accordingly
 4. Check the result in the pop-up and save/load the movie if acceptable
 
 ### Generate kymographs<a name="kymographs"></a>
