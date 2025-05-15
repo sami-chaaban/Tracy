@@ -7,10 +7,10 @@
     * [Start Tracy](#starttracy)
     * [Load your movie](#loadmovie)
     * [Browse spots](#browsespots)
-    * [Drift correction](#driftcor)
-    * [Kymographs](#kymographs)
-    * [Track using kymograph reference](#kymoclick)
-    * [Browse trajectories](#browsetrajectories)
+    * [Correct drift](#driftcor)
+    * [Generate kymographs](#kymographs)
+    * [Generate trajectories](#trajectories)
+    * [Browsing](#browsing)
 3. [Modifications](#modifications)
     * [Modify individual points](#modify)
     * [Add custom column](#customcolumns)
@@ -66,7 +66,7 @@
 3. In the **Movie** menu, click **`Correct Drift`**
 4. Check the result in the pop-up and save/load the movie if acceptable
 
-### Kymographs<a name="kymographs"></a>
+### Generate kymographs<a name="kymographs"></a>
 
 1. To generate a kymograph, enter **`Line`** mode using the switch under the movie (shortcut: **`N`**)
 2. Optionally, look at the maximum-projection (shortcut: **`M`**) to better see where you should draw lines
@@ -74,7 +74,7 @@
 4. Double-click to complete the sequence and generate a **kymograph**
 5. If your movie has multiple channels, a kymograph will be generated for each, which will show when you toggle between channels (shortcut: number keys)
 
-### Track using kymograph reference<a name="kymoclick"></a>
+### Generate trajectories<a name="trajectories"></a>
 
 1. To track a spot in the movie using the kymograph as a reference, draw a segmented line by placing blue anchors on the kymograph (**`Escape`** cancels a sequence)
 2. Double-click to complete the sequence to generate a **trajectory**, where spot centers are searched in the movie from the linear interpolation between clicks using the currently set **search radius** and **tracking mode** (see below)
@@ -92,7 +92,7 @@
 
     **!!** Trajectories do not belong to kymographs, and their presence within one is determined on-the-fly for visualisation
 
-### Browse trajectories<a name="browsetrajectories"></a>
+### Browsing<a name="browsing"></a>
 
 * Adding trajectories will append the data to the **trajectory table**
 * Right click a trajectory in the table to show some helpful options, like **Go to kymograph ch1-001**
