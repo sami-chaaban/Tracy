@@ -25,7 +25,7 @@ import matplotlib.colors as mcolors
 from matplotlib.gridspec import GridSpec
 from matplotlib.transforms import Bbox
 import scipy
-from scipy.ndimage import map_coordinates
+from scipy.ndimage import map_coordinates, gaussian_laplace
 import time
 import copy
 import math
@@ -370,7 +370,7 @@ class KymoCanvas(ImageCanvas):
         # When resizing, update the view so that the zoom_center and scale are maintained.
         self.update_view()
 
-    def add_circle(self, x, y, size=14, color='grey'):
+    def add_circle(self, x, y, size=12, color='grey'):
         """
         Draw a hollow circle marker at (x, y) using blitting for performance.
         """
@@ -1371,7 +1371,31 @@ class MovieCanvas(ImageCanvas):
             kymo_rows.append(profile)
 
         kymo = np.vstack(kymo_rows)
-        return kymo
+
+        if self.navigator.applylogfilter:
+
+            # suppose `kymo` is your generated kymograph as a 2D NumPy array
+            sigma = getattr(self.navigator, 'log_sigma', 1.5)
+
+            # convert to float to avoid clipping
+            kymo_f = kymo.astype(np.float32)
+
+            # apply LoG (invert if you want positive edges)
+            log_kymo = -gaussian_laplace(kymo_f, sigma=sigma)
+
+            # normalize back to 1–255
+            minv, maxv = log_kymo.min(), log_kymo.max()
+            if maxv > minv:
+                log_kymo = (log_kymo - minv) / (maxv - minv) * 254 + 1
+            else:
+                log_kymo = np.ones_like(log_kymo) * 128
+            log_kymo = log_kymo.astype(np.uint8)
+
+            return log_kymo
+        
+        else:
+            
+            return kymo
 
     def update_roi_drawing(self, current_pos):
         pts = list(self.roiPoints) + ([current_pos] if current_pos else [])
@@ -1960,7 +1984,7 @@ class IntensityCanvas(FigureCanvas):
             )
             self.ax_top.add_patch(rect)
 
-        self.ax_bottom.set_ylabel("Intensity (AU)", fontsize=12)
+        self.ax_bottom.set_ylabel("Intensity (A.U.)", fontsize=12)
         self.ax_bottom.set_xlabel("Frame", fontsize=12)
         self.ax_bottom.tick_params(axis='both', which='major', labelsize=12)
         self.ax_bottom.tick_params(axis='x', which='major', labelsize=10)
@@ -4953,7 +4977,7 @@ class HistogramCanvas(FigureCanvas):
         self.ax.clear()
         self.fig.patch.set_alpha(1.0)
         self.ax.set_facecolor("white")
-        self.ax.set_xlabel("Pixel Intensity", fontsize=12)
+        self.ax.set_xlabel("Pixel Intensity (A.U.)", fontsize=12)
         self.ax.set_ylabel("Count", fontsize=12)
         self.ax.tick_params(axis='both', which='major', labelsize=12)
         
@@ -5045,86 +5069,74 @@ class VelocityCanvas(FigureCanvas):
         if ax is None:
             ax = self.ax_vel
 
-        # Filter out None values.
-        valid_velocities = [v for v in velocities if v is not None]
-
-        # Clear the axes.
+        # 1) Clear & filter out None / non-finite
         ax.clear()
+        valid = np.asarray([v for v in velocities if v is not None])
+        valid = valid[np.isfinite(valid)]
 
-        # --- Compute the net speed ---
-        net_speed = None
-        if (self.navigator is not None and
-            hasattr(self.navigator, 'analysis_frames') and len(self.navigator.analysis_frames) >= 2 and
-            hasattr(self.navigator, 'analysis_original_coords') and len(self.navigator.analysis_original_coords) >= 2):
-            start_frame, start_x, start_y = self.navigator.analysis_start
-            end_frame,   end_x,   end_y   = self.navigator.analysis_end
-            dx = end_x - start_x
-            dy = end_y - start_y
+        # 2) Compute net_speed exactly as before...
+        net_speed = 0
+        nav = self.navigator
+        if (nav is not None
+            and hasattr(nav, 'analysis_frames') and len(nav.analysis_frames) >= 2
+            and hasattr(nav, 'analysis_original_coords') and len(nav.analysis_original_coords) >= 2):
+            start_frame, sx, sy = nav.analysis_start
+            end_frame,   ex, ey = nav.analysis_end
+            dx, dy = ex - sx, ey - sy
             dt = end_frame - start_frame
-            dist_px = np.hypot(dx, dy)
-            if (self.navigator.pixel_size is not None and
-                self.navigator.frame_interval is not None):
-                # Convert from pixels to micrometers.
-                dist_um = dist_px * self.navigator.pixel_size / 1000.0
-                dt_ms = dt * self.navigator.frame_interval
-                dt_s = dt_ms / 1000.0
-                net_speed = dist_um / dt_s if dt_s > 0 else 0
+            px_dist = np.hypot(dx, dy)
+            if nav.pixel_size is not None and nav.frame_interval is not None:
+                um_dist = px_dist * nav.pixel_size / 1000.0
+                dt_s = dt * nav.frame_interval / 1000.0
+                net_speed = um_dist / dt_s if dt_s > 0 else 0
             else:
-                # Fallback: use pixels per frame.
-                net_speed = np.hypot(dx, dy) / (end_frame - start_frame)
-        else:
-            net_speed = 0  # or leave as None
+                net_speed = px_dist / dt
 
-        # Only draw the net speed line if we have some valid velocity data.
-        if valid_velocities:
-            try:
-                # Attempt to draw the net speed vertical line.
-                ax.axvline(net_speed, color='black', linestyle='--', linewidth=1.5,
-                    solid_capstyle='round',
-                    dash_capstyle='round',
-                    label=f"Net: {net_speed:.2f}")
-            except np.linalg.LinAlgError:
-                pass
-                # If the axis transform is singular, you can skip this drawing.
-                #print("Warning: Cannot draw net speed line; transformation matrix is singular.")
+        # 3) Scale to μm/s if possible
+        xlabel = "Speed (px/frame)"
+        if valid.size and nav and nav.pixel_size and nav.frame_interval:
+            valid = valid * (nav.pixel_size / nav.frame_interval)
+            xlabel = r"Speed ($\mathrm{\mu m/s}$)"
 
-        # --- Determine the units for the velocities ---
-        if valid_velocities and self.navigator.pixel_size is not None and self.navigator.frame_interval is not None:
-            conversion = self.navigator.pixel_size / self.navigator.frame_interval
-            valid_velocities = np.array(valid_velocities) * conversion
-            ax.set_xlabel(r"Speed ($\mathrm{\mu m/s}$)", fontsize=12)
-        else:
-            ax.set_xlabel("Speed (px/frame)", fontsize=12)
-
+        ax.set_xlabel(xlabel, fontsize=12)
         ax.set_ylabel("Count", fontsize=12)
         ax.tick_params(axis='both', which='major', labelsize=12)
 
-        if len(valid_velocities) > 0:
-            counts, bin_edges, _ = ax.hist(valid_velocities, bins='auto',
-                                        color='#7da1ff', edgecolor='black')
-            avg_velocity = np.mean(valid_velocities)
-            try:
-                # Attempt to draw the net speed vertical line.
-                ax.axvline(avg_velocity, color='grey', linestyle='--', linewidth=1.5,
-                    solid_capstyle='round',
-                    dash_capstyle='round',
-                    label=f"Avg: {avg_velocity:.2f}")
-            except np.linalg.LinAlgError:
-                # If the axis transform is singular, you can skip this drawing.
-                print("Warning: Cannot draw net speed line; transformation matrix is singular.")
-        else:
-            avg_velocity = None
-            ax.text(0.5, 0.5, "No valid speed data", ha='center', va='center',
-                    transform=self.fig.transFigure, color='grey')
-            ax.axis("off")
+        legend_handles = []
 
-        legend = ax.legend(
-            loc="upper right",
-            fontsize=10,
-            frameon=True,
-            labelspacing=0.5,
-            handlelength=2
-        )
+        # 4a) If we have data, plot it + avg line + real net line
+        if valid.size > 0:
+            ax.hist(valid, bins='auto', color='#7da1ff', edgecolor='black')
+            avg = np.mean(valid)
+            # net line
+            net_line = ax.axvline(net_speed,
+                                color='black', linestyle='--',
+                                linewidth=1.5, solid_capstyle='round',
+                                dash_capstyle='round')
+            legend_handles.append(Line2D([], [], color='black', linestyle='--',
+                                        label=f"Net: {net_speed:.2f}"))
+            # avg line
+            avg_line = ax.axvline(avg,
+                                color='grey', linestyle='--',
+                                linewidth=1.5, solid_capstyle='round',
+                                dash_capstyle='round')
+            legend_handles.append(Line2D([], [], color='grey', linestyle='--',
+                                        label=f"Avg: {avg:.2f}"))
+
+        # 4b) If no data, show placeholder + only proxy net legend
+        else:
+            ax.text(0.5, 0.5, "No valid speed data",
+                    ha='center', va='center',
+                    transform=ax.transAxes, color='grey')
+            ax.axis("off")
+            # proxy net legend
+            legend_handles.append(Line2D([], [], color='black', linestyle='--',
+                                        label=f"Net: {net_speed:.2f}"))
+
+        # 5) Draw the legend from our handles
+        legend = ax.legend(handles=legend_handles,
+                        loc="upper right", fontsize=10,
+                        frameon=True, labelspacing=0.5, handlelength=2)
         frame = legend.get_frame()
         frame.set_facecolor("white")
         frame.set_alpha(0.8)
@@ -5133,4 +5145,3 @@ class VelocityCanvas(FigureCanvas):
 
         ax.figure.subplots_adjust(left=0.17, right=0.95, bottom=0.3, top=0.9)
         self.draw_idle()
-        

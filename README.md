@@ -14,7 +14,7 @@
 3. [Additional features](#features)
     * [Drift correction](#driftcor)
     * [Colocalization](#colocalization)
-    * [Add custom column](#customcolumns)
+    * [Custom column](#customcolumns)
     * [Color by value](#coloring)
 4. [Save & Load](#saveload)
     * [Save trajectories](#savetrajectories)
@@ -113,7 +113,7 @@
 * As long as the colocalization option is toggled, every subsequent trajectory will have its colocalization analysed
 * Colocalization is determined by performing a search using the same spot center coordinates but in a different channel, and marking as colocalized if a spot is found within 4 pixels of the original spot center coordinate
 
-### Add custom columns<a name="customcolumns"></a>
+### Custom columns<a name="customcolumns"></a>
 
 * Right click on any column header to show the options for column types to add (also in the *Trajectories* menu)
     * **Binary column**: adds a column composed of Yes/No, which can be assiged to each trajectory
@@ -145,7 +145,7 @@
 
 ### Load TrackMate data<a name="loadtrackmate"></a>
 
-* TrackMate data (.csv) can be loaded using the same *Load trajectories* option, which will trigger a calculation using the TrackMate spot data ("TRACK_ID", "FRAME", "POSITION_X", "POSITION_Y") as search centers to generate a Tracy trajectory for each TrackMate track
+* TrackMate data (.csv) can be loaded using the same *Load trajectories* option, which will trigger a calculation using the TrackMate spot data ("TRACK_ID", "FRAME", "POSITION_X", "POSITION_Y") as search centers, generating a Tracy trajectory for each TrackMate track
 
 ## License<a name="license"></a>
 

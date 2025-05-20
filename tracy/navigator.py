@@ -157,6 +157,8 @@ class KymographNavigator(QMainWindow):
         self._bg = None
         self.clear_flag = False
 
+        self.applylogfilter = False
+
         self.save_and_load_routine = False
 
         # For adding a trajectory (Ctrl+Enter)
@@ -1578,6 +1580,12 @@ class KymographNavigator(QMainWindow):
         self.spotMenu.addAction(avoidOldSpotsAction)
 
         kymoMenu = menubar.addMenu("Kymograph")
+
+        kymoLoGAction = QAction("Apply LoG filter", self, checkable=True)
+        kymoLoGAction.setChecked(False)
+        kymoLoGAction.toggled.connect(self.on_toggle_log_filter)
+        kymoMenu.addAction(kymoLoGAction)
+
         kymopreferencesAction = QAction("Line options", self)
         kymopreferencesAction.triggered.connect(self.open_kymopreferences_dialog)
         kymoMenu.addAction(kymopreferencesAction)
@@ -3461,55 +3469,55 @@ class KymographNavigator(QMainWindow):
             .setdefault("custom_fields", {})[col_name] = val
         self.trajectoryCanvas.writeToTable(row, col_name, val)
 
-    def update_analysis_line(self):
-        """
-        Draw a permanent dashed line connecting the user‑clicked kymo anchors in order.
-        """
-        # Must have at least two anchors
-        if not hasattr(self, "analysis_anchors") or len(self.analysis_anchors) < 2:
-            return
+    # def update_analysis_line(self):
+    #     """
+    #     Draw a permanent dashed line connecting the user‑clicked kymo anchors in order.
+    #     """
+    #     # Must have at least two anchors
+    #     if not hasattr(self, "analysis_anchors") or len(self.analysis_anchors) < 2:
+    #         return
 
-        # Get display parameters
-        kymoName = self.kymoCombo.currentText()
-        if not kymoName:
-            return
+    #     # Get display parameters
+    #     kymoName = self.kymoCombo.currentText()
+    #     if not kymoName:
+    #         return
 
-        roi_key = (
-            self.roiCombo.currentText()
-            if self.roiCombo.count() > 0
-            else kymoName
-        )
-        roi = self.rois.get(roi_key, None)
-        kymo = self.kymographs.get(kymoName, None)
-        if kymo is None:
-            return
+    #     roi_key = (
+    #         self.roiCombo.currentText()
+    #         if self.roiCombo.count() > 0
+    #         else kymoName
+    #     )
+    #     roi = self.rois.get(roi_key, None)
+    #     kymo = self.kymographs.get(kymoName, None)
+    #     if kymo is None:
+    #         return
 
-        # How many frames tall is the movie?
-        max_frame = self.movie.shape[0]
+    #     # How many frames tall is the movie?
+    #     max_frame = self.movie.shape[0]
 
-        # Build the lists of display coords directly from anchors:
-        disp_xs = []
-        disp_ys = []
-        for (frame_idx, kx, ky) in self.analysis_anchors:
-            disp_xs.append(kx)
-            disp_ys.append(ky)
+    #     # Build the lists of display coords directly from anchors:
+    #     disp_xs = []
+    #     disp_ys = []
+    #     for (frame_idx, kx, ky) in self.analysis_anchors:
+    #         disp_xs.append(kx)
+    #         disp_ys.append(ky)
 
-        # Remove any old permanent line
-        if hasattr(self, "permanent_analysis_line") and self.permanent_analysis_line is not None:
-            try:
-                self.permanent_analysis_line.remove()
-            except Exception:
-                pass
+    #     # Remove any old permanent line
+    #     if hasattr(self, "permanent_analysis_line") and self.permanent_analysis_line is not None:
+    #         try:
+    #             self.permanent_analysis_line.remove()
+    #         except Exception:
+    #             pass
 
-        # Draw a simple dashed line through the anchors
-        (self.permanent_analysis_line,) = self.kymoCanvas.ax.plot(
-            disp_xs,
-            disp_ys,
-            color='#7da1ff',
-            linewidth=1.5,
-            linestyle='--'
-        )
-        self.kymoCanvas.draw_idle()
+    #     # Draw a simple dashed line through the anchors
+    #     (self.permanent_analysis_line,) = self.kymoCanvas.ax.plot(
+    #         disp_xs,
+    #         disp_ys,
+    #         color='#7da1ff',
+    #         linewidth=1.5,
+    #         linestyle='--'
+    #     )
+    #     self.kymoCanvas.draw_idle()
 
     def on_kymo_motion(self, event):
         if self.live_update_mode:
@@ -5289,7 +5297,6 @@ class KymographNavigator(QMainWindow):
                 frame_image, (x_click, y_click), search_crop_size, bg_fixed=bg_guess, pixelsize = self.pixel_size
             )
 
-
             self.zoomInsetFrame.setVisible(True)
             self.movieCanvas.update_inset(
                 frame_image, (x_click, y_click), zoom_crop_size, zoom_factor=2,
@@ -5399,6 +5406,10 @@ class KymographNavigator(QMainWindow):
         # # draw the marker once onto the axes
         # self.movieCanvas.draw_manual_marker()
 
+        # Update the temporary dotted line connecting the left-click points.
+        self.movieCanvas._manual_marker_active = False
+        self.update_movie_analysis_line()
+
         # now do a full draw & snapshot the clean background for blitting
         canvas = self.movieCanvas.figure.canvas
         self.movieCanvas.draw()  
@@ -5462,7 +5473,7 @@ class KymographNavigator(QMainWindow):
                 xs, ys,
                 color='#7da1ff', linewidth=1.5, linestyle='--'
             )
-            self.temp_movie_analysis_line.set_animated(True)
+            # self.temp_movie_analysis_line.set_animated(True)
 
             # — take one full draw & grab the background now —
             canvas = self.movieCanvas.figure.canvas
@@ -6955,6 +6966,9 @@ class KymographNavigator(QMainWindow):
         # then force a redraw
         self.kymoCanvas.draw_trajectories_on_kymo()
         self.kymoCanvas.draw_idle()
+
+    def on_toggle_log_filter(self, checked: bool):
+        self.applylogfilter = checked
 
     def on_colocalization_toggled(self, checked: bool):
         if self.movie.ndim != 4:
