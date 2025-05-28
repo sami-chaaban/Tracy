@@ -84,7 +84,7 @@
     * **Smooth**: equivalent to *Independent* mode but goes through a filtering step at the end to remove spots that are far off the main track
 7. Click any point in the kymograph or in the *intensity plot* to jump to that point, or browse sequentially with the arrow keys (**`→`**, **`←`**)
 
-    **!!** Trajectories do not belong to kymographs, and their presence within one is determined on-the-fly for visualisation
+    **!!** A trajectory's presence within a kymograph is determined on-the-fly for visualisation, so overlapping kymographs can show the same trajectory
 
 ### Browse trajectories<a name="browsetrajectories"></a>
 
