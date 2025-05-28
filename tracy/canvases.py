@@ -2404,285 +2404,361 @@ class TrajectoryCanvas(QWidget):
 
     def save_trajectories(self, rows: Optional[List[int]] = None):
         """
-        Export either all trajectories (rows=None) or only those at the given row‐indices.
+        Export either all trajectories (rows=None) or only those at the given row-indices.
         """
-        # pick the subset
         traj_list = self.trajectories if rows is None else [self.trajectories[r] for r in rows]
-        if not traj_list:
-            QMessageBox.warning(self, "", "There are no trajectories to save.")
-            return
 
-        # ask for filename
-        filename, _ = QFileDialog.getSaveFileName(self, "Save Trajectories", "", "Excel Files (*.xlsx)")
+        # Handle no trajectories case
+        if not traj_list:
+            nav_rois = set(self.navigator.rois.keys())
+            if nav_rois:
+                save_empty = (
+                    QMessageBox.question(
+                        self,
+                        "",
+                        "There are no trajectories. Save the empty kymographs in the Per-kymograph sheet?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.Yes
+                    ) == QMessageBox.Yes
+                )
+                if not save_empty:
+                    return
+            else:
+                QMessageBox.warning(self, "", "There are no trajectories to save.")
+                return
+        else:
+            save_empty = False
+
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Trajectories",
+            "",
+            "Excel Files (*.xlsx)"
+        )
         if not filename:
             return
 
         try:
-            summary_rows = []
-            data_rows = []
-            for traj in traj_list:
-                channel = int(traj["channel"])
-                fixed_background = traj["fixed_background"]
-                save_start_frame = int(traj["start"][0]) + 1
-                save_end_frame = int(traj["end"][0]) + 1
-                frames_list = traj.get("frames", [])
-                num_points = len(frames_list)
-                # Compute number of valid points: valid if intensity exists and is greater than 0.
-                intensities_list = traj.get("intensities", [])
-                valid_points = sum(1 for val in intensities_list if val is not None and val > 0)
-                percent_valid = (100 * valid_points / num_points) if num_points > 0 else 0
+            # Build summary and data rows if any trajectories
+            summary_rows, data_rows = [], []
+            if traj_list:
+                for traj in traj_list:
+                    channel = int(traj["channel"])
+                    fixed_background = traj["fixed_background"]
+                    save_start_frame = int(traj["start"][0]) + 1
+                    save_end_frame = int(traj["end"][0]) + 1
+                    frames_list = traj.get("frames", [])
+                    num_points = len(frames_list)
+                    # Compute number of valid points: valid if intensity exists and is greater than 0.
+                    intensities_list = traj.get("intensities", [])
+                    valid_points = sum(1 for val in intensities_list if val is not None and val > 0)
+                    percent_valid = (100 * valid_points / num_points) if num_points > 0 else 0
 
-                avg_vel_px_fr_txt = ""
-                avg_vel_um_s_txt = ""
-                avg_vel_um_min_txt = ""
-                if self.navigator.pixel_size is not None and self.navigator.frame_interval is not None and traj['average_velocity'] is not None:
-                    avg_vel_px_fr_txt = f"{traj['average_velocity']:.2f}"
-                    velocity_nm_per_ms = (traj['average_velocity'] * self.navigator.pixel_size) / self.navigator.frame_interval
-                    avg_vel_um_s_txt = f"{velocity_nm_per_ms:.2f}"
-                    avg_vel_um_min_txt = f"{velocity_nm_per_ms * 60.0:.2f}"
+                    avg_vel_px_fr_txt = ""
+                    avg_vel_um_s_txt = ""
+                    avg_vel_um_min_txt = ""
+                    if self.navigator.pixel_size is not None and self.navigator.frame_interval is not None and traj['average_velocity'] is not None:
+                        avg_vel_px_fr_txt = f"{traj['average_velocity']:.2f}"
+                        velocity_nm_per_ms = (traj['average_velocity'] * self.navigator.pixel_size) / self.navigator.frame_interval
+                        avg_vel_um_s_txt = f"{velocity_nm_per_ms:.2f}"
+                        avg_vel_um_min_txt = f"{velocity_nm_per_ms * 60.0:.2f}"
 
-                dx = traj['end'][1] - traj['start'][1]
-                dy = traj['end'][2] - traj['start'][2]
-                distance_px = np.hypot(dx, dy)
-                time_fr = traj['end'][0]-traj['start'][0]
-                distance_um_txt = ""
-                time_s_txt = ""
-                overall_vel_px_fr_txt = ""
-                overall_vel_um_s_txt = ""
-                overall_vel_um_min_txt = ""
-                if self.navigator.pixel_size is not None and self.navigator.frame_interval is not None and time_fr > 0:
-                    distance_um = distance_px * self.navigator.pixel_size / 1000
-                    time_s = time_fr * self.navigator.frame_interval / 1000
-                    overall_vel_px_fr = distance_px / time_fr
-                    overall_vel_um_s = distance_um/time_s
-                    overall_vel_um_min = overall_vel_um_s * 60.0
-                    distance_um_txt = f"{distance_um:.2f}"
-                    time_s_txt = f"{time_s:.2f}"
-                    overall_vel_px_fr_txt = f"{overall_vel_px_fr:.2f}"
-                    overall_vel_um_s_txt = f"{overall_vel_um_s:.2f}"
-                    overall_vel_um_min_txt = f"{overall_vel_um_min:.2f}"
+                    dx = traj['end'][1] - traj['start'][1]
+                    dy = traj['end'][2] - traj['start'][2]
+                    distance_px = np.hypot(dx, dy)
+                    time_fr = traj['end'][0]-traj['start'][0]
+                    distance_um_txt = ""
+                    time_s_txt = ""
+                    overall_vel_px_fr_txt = ""
+                    overall_vel_um_s_txt = ""
+                    overall_vel_um_min_txt = ""
+                    if self.navigator.pixel_size is not None and self.navigator.frame_interval is not None and time_fr > 0:
+                        distance_um = distance_px * self.navigator.pixel_size / 1000
+                        time_s = time_fr * self.navigator.frame_interval / 1000
+                        overall_vel_px_fr = distance_px / time_fr
+                        overall_vel_um_s = distance_um/time_s
+                        overall_vel_um_min = overall_vel_um_s * 60.0
+                        distance_um_txt = f"{distance_um:.2f}"
+                        time_s_txt = f"{time_s:.2f}"
+                        overall_vel_px_fr_txt = f"{overall_vel_px_fr:.2f}"
+                        overall_vel_um_s_txt = f"{overall_vel_um_s:.2f}"
+                        overall_vel_um_min_txt = f"{overall_vel_um_min:.2f}"
 
-                # 1) Serialize anchors
-                anchors = traj.get("anchors", [])
-                if anchors:
-                    # convert to pure-Python types
-                    anchors_py = [
-                        (int(frame), float(x), float(y))
-                        for frame, x, y in anchors
-                    ]
-                    anchors_str = json.dumps(anchors_py)
-                else:
-                    anchors_str = ""  # empty
-
-                # 2) Serialize ROI
-                roi = traj.get("roi", None)
-                if roi:
-                    # convert all np.floats to floats
-                    roi_clean = {
-                        "type": roi["type"],
-                        "x": [float(xx) for xx in roi.get("x", [])],
-                        "y": [float(yy) for yy in roi.get("y", [])],
-                        "points": [
-                            (float(px), float(py)) for px, py in roi.get("points", [])
+                    # 1) Serialize anchors
+                    anchors = traj.get("anchors", [])
+                    if anchors:
+                        # convert to pure-Python types
+                        anchors_py = [
+                            (int(frame), float(x), float(y))
+                            for frame, x, y in anchors
                         ]
-                    }
-                    roi_str = json.dumps(roi_clean)
-                else:
-                    roi_str = "" 
-
-                summary_rows.append({
-                    "Movie": self.navigator.movieNameLabel.text(),
-                    "Trajectory": traj.get("trajectory_number", "?"),
-                    "Channel": channel,
-                    "Start_Frame": save_start_frame,
-                    "End_Frame": save_end_frame,
-                    "Anchors": anchors_str,
-                    "ROI":    roi_str,
-                    "Num_Points": num_points,
-                    "Valid_Points": valid_points,
-                    "Percent Valid": percent_valid,
-                    "Search Center X Start": float(traj["start"][1]),
-                    "Search Center Y Start": float(traj["start"][2]),
-                    "Search Center X End": float(traj["end"][1]),
-                    "Search Center Y End": float(traj["end"][2]),
-                    "Distance (μm)": distance_um_txt,
-                    "Time (s)": time_s_txt,
-                    "Background": fixed_background,
-                    "Average Intensity": "" if traj["average"] is None else traj["average"],
-                    "Median Intensity": "" if traj["median"] is None else traj["median"],
-                    "Net Speed (px/frame)": overall_vel_px_fr_txt,
-                    "Net Speed (μm/s)": overall_vel_um_s_txt,
-                    "Net Speed (μm/min)": overall_vel_um_min_txt,
-                    "Avg. Speed (px/frame)": avg_vel_px_fr_txt,
-                    "Avg. Speed (μm/s)": avg_vel_um_s_txt,
-                    "Avg. Speed (μm/min)": avg_vel_um_min_txt,
-                })
-
-                for col in self.custom_columns:
-                    col_type = self._column_types.get(col, "binary")
-
-                    # print(col, col_type)
-
-                    # >>> special‐case coloc columns so they get no “[value]” suffix:
-                    if col.startswith("Ch.") and col.endswith("co. %"):
-                        header = col
+                        anchors_str = json.dumps(anchors_py)
                     else:
-                        header = f"{col} [{col_type}]"
+                        anchors_str = ""  # empty
 
-                    summary_rows[-1][header] = traj.get("custom_fields", {}).get(col, "")
-
-                traj_name = str(traj.get("trajectory_number", "?"))
-                coords_list = traj.get("original_coords", [])
-                centers_list = traj.get("search_centers", [])
-
-                # Ensure we have the intensities list from above.
-                for i in range(len(frames_list)):
-
-                    vel_nm_per_ms = ""
-                    vel_um_min = ""
-                    velocity = ""
-                    coord_x, coord_y = "", ""
-                    search_x, search_y = "", ""
-                    spot_x, spot_y = "", ""
-                    sigma_val = ""
-                    peak_val = ""
-                    background_val = ""
-
-                    intensity_val = intensities_list[i] if (intensities_list[i] is not None and intensities_list[i] > 0) else ""
-                    if i < len(coords_list):
-                        coord_x, coord_y = coords_list[i]
+                    # 2) Serialize ROI
+                    roi = traj.get("roi", None)
+                    if roi:
+                        # convert all np.floats to floats
+                        roi_clean = {
+                            "type": roi["type"],
+                            "x": [float(xx) for xx in roi.get("x", [])],
+                            "y": [float(yy) for yy in roi.get("y", [])],
+                            "points": [
+                                (float(px), float(py)) for px, py in roi.get("points", [])
+                            ]
+                        }
+                        roi_str = json.dumps(roi_clean)
                     else:
-                        coord_x, coord_y = "", ""
-                    if i < len(centers_list):
-                        search_x, search_y = centers_list[i]
-                    else:
-                        search_x, search_y = "", ""
-                    if "spot_centers" in traj and len(traj["spot_centers"]) > i and traj["spot_centers"][i] is not None:
-                        spot_x, spot_y = traj["spot_centers"][i]
-                    else:
-                        spot_x, spot_y = "", ""
-                    sigma_val = ""
-                    if "sigmas" in traj and len(traj["sigmas"]) > i and traj["sigmas"][i] is not None:
-                        sigma_val = traj["sigmas"][i]
-                    peak_val = ""
-                    if "peaks" in traj and len(traj["peaks"]) > i and traj["peaks"][i] is not None:
-                        peak_val = traj["peaks"][i]
-                    if "background" in traj and len(traj["background"]) > i and traj["background"][i] is not None:
-                        background_val = traj["background"][i]
-                    if "velocities" in traj and len(traj["velocities"]) > i and traj["velocities"][i] is not None:
-                        velocity = traj["velocities"][i]
-                        if self.navigator.pixel_size is not None and self.navigator.frame_interval is not None:
-                            vel_nm_per_ms = (velocity * self.navigator.pixel_size) / self.navigator.frame_interval
-                            vel_um_min = vel_nm_per_ms  * 60.0
+                        roi_str = "" 
+
+                    summary_rows.append({
+                        "Movie": self.navigator.movieNameLabel.text(),
+                        "Trajectory": traj.get("trajectory_number", "?"),
+                        "Channel": channel,
+                        "Start_Frame": save_start_frame,
+                        "End_Frame": save_end_frame,
+                        "Anchors": anchors_str,
+                        "ROI":    roi_str,
+                        "Num_Points": num_points,
+                        "Valid_Points": valid_points,
+                        "Percent Valid": percent_valid,
+                        "Search Center X Start": float(traj["start"][1]),
+                        "Search Center Y Start": float(traj["start"][2]),
+                        "Search Center X End": float(traj["end"][1]),
+                        "Search Center Y End": float(traj["end"][2]),
+                        "Distance (μm)": distance_um_txt,
+                        "Time (s)": time_s_txt,
+                        "Background": fixed_background,
+                        "Average Intensity": "" if traj["average"] is None else traj["average"],
+                        "Median Intensity": "" if traj["median"] is None else traj["median"],
+                        "Net Speed (px/frame)": overall_vel_px_fr_txt,
+                        "Net Speed (μm/s)": overall_vel_um_s_txt,
+                        "Net Speed (μm/min)": overall_vel_um_min_txt,
+                        "Avg. Speed (px/frame)": avg_vel_px_fr_txt,
+                        "Avg. Speed (μm/s)": avg_vel_um_s_txt,
+                        "Avg. Speed (μm/min)": avg_vel_um_min_txt,
+                    })
+
+                    for col in self.custom_columns:
+                        col_type = self._column_types.get(col, "binary")
+
+                        # print(col, col_type)
+
+                        # >>> special‐case coloc columns so they get no “[value]” suffix:
+                        if col.startswith("Ch.") and col.endswith("co. %"):
+                            header = col
                         else:
-                            vel_um_min = ""
-                    else:
-                        velocity = ""
+                            header = f"{col} [{col_type}]"
+
+                        summary_rows[-1][header] = traj.get("custom_fields", {}).get(col, "")
+
+                    traj_name = str(traj.get("trajectory_number", "?"))
+                    coords_list = traj.get("original_coords", [])
+                    centers_list = traj.get("search_centers", [])
+
+                    # Ensure we have the intensities list from above.
+                    for i in range(len(frames_list)):
+
                         vel_nm_per_ms = ""
                         vel_um_min = ""
+                        velocity = ""
+                        coord_x, coord_y = "", ""
+                        search_x, search_y = "", ""
+                        spot_x, spot_y = "", ""
+                        sigma_val = ""
+                        peak_val = ""
+                        background_val = ""
 
-                    fixedstr = "No"
-                    if fixed_background is not None:
-                        fixedstr = "Yes"
+                        intensity_val = intensities_list[i] if (intensities_list[i] is not None and intensities_list[i] > 0) else ""
+                        if i < len(coords_list):
+                            coord_x, coord_y = coords_list[i]
+                        else:
+                            coord_x, coord_y = "", ""
+                        if i < len(centers_list):
+                            search_x, search_y = centers_list[i]
+                        else:
+                            search_x, search_y = "", ""
+                        if "spot_centers" in traj and len(traj["spot_centers"]) > i and traj["spot_centers"][i] is not None:
+                            spot_x, spot_y = traj["spot_centers"][i]
+                        else:
+                            spot_x, spot_y = "", ""
+                        sigma_val = ""
+                        if "sigmas" in traj and len(traj["sigmas"]) > i and traj["sigmas"][i] is not None:
+                            sigma_val = traj["sigmas"][i]
+                        peak_val = ""
+                        if "peaks" in traj and len(traj["peaks"]) > i and traj["peaks"][i] is not None:
+                            peak_val = traj["peaks"][i]
+                        if "background" in traj and len(traj["background"]) > i and traj["background"][i] is not None:
+                            background_val = traj["background"][i]
+                        if "velocities" in traj and len(traj["velocities"]) > i and traj["velocities"][i] is not None:
+                            velocity = traj["velocities"][i]
+                            if self.navigator.pixel_size is not None and self.navigator.frame_interval is not None:
+                                vel_nm_per_ms = (velocity * self.navigator.pixel_size) / self.navigator.frame_interval
+                                vel_um_min = vel_nm_per_ms  * 60.0
+                            else:
+                                vel_um_min = ""
+                        else:
+                            velocity = ""
+                            vel_nm_per_ms = ""
+                            vel_um_min = ""
 
-                    base = {
-                        "Trajectory": traj_name,
-                        "Channel": channel,
-                        "Frame": frames_list[i] + 1,
-                        "Original Coordinate X": coord_x,
-                        "Original Coordinate Y": coord_y,
-                        "Search Center X": search_x,
-                        "Search Center Y": search_y,
-                        "Spot Center X": spot_x,
-                        "Spot Center Y": spot_y,
-                        "Intensity": intensity_val,
-                        "Sigma": sigma_val,
-                        "Peak": peak_val,
-                        "Background from trajectory": fixedstr,
-                        "Background": background_val,
-                        "Speed (px/frame)": velocity,
-                        "Speed (μm/s)": vel_nm_per_ms,
-                        "Speed (μm/min)": vel_um_min
-                    }
+                        fixedstr = "No"
+                        if fixed_background is not None:
+                            fixedstr = "Yes"
 
-                    if self.navigator.movie.ndim == 4 and self.navigator._channel_axis is not None:
-                        n_chan = self.navigator.movie.shape[self.navigator._channel_axis]
+                        base = {
+                            "Trajectory": traj_name,
+                            "Channel": channel,
+                            "Frame": frames_list[i] + 1,
+                            "Original Coordinate X": coord_x,
+                            "Original Coordinate Y": coord_y,
+                            "Search Center X": search_x,
+                            "Search Center Y": search_y,
+                            "Spot Center X": spot_x,
+                            "Spot Center Y": spot_y,
+                            "Intensity": intensity_val,
+                            "Sigma": sigma_val,
+                            "Peak": peak_val,
+                            "Background from trajectory": fixedstr,
+                            "Background": background_val,
+                            "Speed (px/frame)": velocity,
+                            "Speed (μm/s)": vel_nm_per_ms,
+                            "Speed (μm/min)": vel_um_min
+                        }
 
-                        # build the coloc dict with *all* channel columns
-                        coloc = {"Colocalized w/any channel": traj["colocalization_any"][i] or ""}
+                        if self.navigator.movie.ndim == 4 and self.navigator._channel_axis is not None:
+                            n_chan = self.navigator.movie.shape[self.navigator._channel_axis]
 
-                        for ch in range(1, n_chan+1):
-                            key = f"Colocalized w/ch{ch}"
-                            # for the reference channel this will just be blank
-                            flags = traj["colocalization_by_ch"].get(ch, [None]*num_points)
-                            coloc[key] = flags[i] or ""
+                            # build the coloc dict with *all* channel columns
+                            coloc = {"Colocalized w/any channel": traj["colocalization_any"][i] or ""}
 
-                        data_rows.append({**base, **coloc})
-                    else:
-                        data_rows.append(base)
+                            for ch in range(1, n_chan+1):
+                                key = f"Colocalized w/ch{ch}"
+                                # for the reference channel this will just be blank
+                                flags = traj["colocalization_by_ch"].get(ch, [None]*num_points)
+                                coloc[key] = flags[i] or ""
+
+                            data_rows.append({**base, **coloc})
+                        else:
+                            data_rows.append(base)
 
             df_summary = pd.DataFrame(summary_rows)
             df_data = pd.DataFrame(data_rows)
 
-            # --- Per-ROI sheet ---
-            # Copy and convert columns to numeric
-            df_roi = df_summary.copy()
-            for col in ["Distance (μm)", "Time (s)", "Net Speed (μm/s)", "Avg. Speed (μm/s)", "Average Intensity", "Median Intensity"]:
-                df_roi[col] = pd.to_numeric(df_roi[col], errors="coerce")
-
-            # Pixel size conversion nm->µm
-            pixel_size_um = self.navigator.pixel_size / 1000.0 if self.navigator.pixel_size is not None else None
-
+            #per-ROI
+            pixel_size_um = (
+                self.navigator.pixel_size / 1000.0
+                if self.navigator.pixel_size is not None else None
+            )
+            frame_interval_s = (
+                self.navigator.frame_interval / 1000.0
+                if self.navigator.frame_interval is not None else None
+            )
             n_frames = self.navigator.movie.shape[0]
-            frame_interval_s = self.navigator.frame_interval / 1000.0  if self.navigator.frame_interval is not None else None
+            total_time_s = (
+                n_frames * frame_interval_s
+                if frame_interval_s is not None else None
+            )
 
             per_roi_list = []
 
-            # Group by ROI string
-            for roi_val, grp in df_roi.groupby("ROI"):
-                n_trajs = len(grp)
+            # If we have trajectory-based summaries, include those
+            if not df_summary.empty:
+                # Convert numeric columns
+                df_roi = df_summary.copy()
+                for col in ["Distance (μm)", "Time (s)", "Net Speed (μm/s)",
+                            "Avg. Speed (μm/s)", "Average Intensity", "Median Intensity"]:
+                    if col in df_roi:
+                        df_roi[col] = pd.to_numeric(df_roi[col], errors="coerce")
 
-                events_per_min = float("nan")
-                total_time_s = None
-                if frame_interval_s is not None:
-                    total_time_s = n_frames * frame_interval_s
-                    events_per_min = n_trajs / (total_time_s / 60.0)
+                # Seen ROI JSONs from summary
+                seen_jsons = {
+                    roi for roi in df_roi['ROI']
+                    if isinstance(roi, str) and roi.strip()
+                }
 
-                events_per_um_per_min = float("nan")
-                if pixel_size_um is not None and total_time_s is not None:
-                    events_per_um_per_min = n_trajs / (total_time_s / 60.0) / pixel_size_um
+                # Build entries for seen
+                for roi_json in seen_jsons:
+                    grp = df_roi[df_roi['ROI'] == roi_json]
+                    n_trajs = len(grp)
+                    events_per_min = (n_trajs / (total_time_s / 60.0)) if total_time_s else float('nan')
+                    events_per_um_per_min = (events_per_min / pixel_size_um) if (pixel_size_um and total_time_s) else float('nan')
+                    total_distance_um = None
+                    if pixel_size_um:
+                        roi_dict = json.loads(roi_json)
+                        xs, ys = np.array(roi_dict['x'], float), np.array(roi_dict['y'], float)
+                        total_distance_um = np.sum(np.hypot(np.diff(xs), np.diff(ys))) * pixel_size_um
 
-                total_distance_um = float("nan")
-                if pixel_size_um is not None:
-                    roi_dict = json.loads(roi_val)
-                    xs = np.array(roi_dict["x"], dtype=float)
-                    ys = np.array(roi_dict["y"], dtype=float)
-                    total_distance_um = np.sum(np.hypot(np.diff(xs), np.diff(ys))) * pixel_size_um
+                    per_roi_list.append({
+                        'ROI': roi_json,
+                        'Total distance (μm)': total_distance_um,
+                        'Total time (s)': total_time_s,
+                        'Number of trajectories': n_trajs,
+                        'Events (/min)': events_per_min,
+                        'Events (/μm/min)': events_per_um_per_min,
+                        'Average net speed (μm/s)': grp['Net Speed (μm/s)'].mean(),
+                        'Average average speed (μm/s)': grp['Avg. Speed (μm/s)'].mean(),
+                        'Average run length (μm)': grp['Distance (μm)'].mean(),
+                        'Average run time (s)': grp['Time (s)'].mean(),
+                        'Average median intensity': grp['Median Intensity'].mean(),
+                        'Average average intensity': grp['Average Intensity'].mean(),
+                    })
+            else:
+                seen_jsons = set()
 
-                per_roi_list.append({
-                    "ROI": roi_val,
-                    "Total distance (μm)": total_distance_um,
-                    "Total time (s)": total_time_s,
-                    "Number of trajectories": n_trajs,
-                    "Events (/min)": events_per_min,
-                    "Events (/μm/min)": events_per_um_per_min,
-                    "Average net speed (μm/s)": grp["Net Speed (μm/s)"].mean(),
-                    "Average average speed (μm/s)": grp["Avg. Speed (μm/s)"].mean(),
-                    "Average run length (μm)": grp["Distance (μm)"].mean(),
-                    "Average run time (s)": grp["Time (s)"].mean(),
-                    "Average median intensity": grp["Median Intensity"].mean(),
-                    "Average average intensity": grp["Average Intensity"].mean(),
-                })
+            # Compute all navigator JSONs
+            all_jsons = { json.dumps(roi_dict) for roi_dict in self.navigator.rois.values() }
+            empty_jsons = all_jsons - seen_jsons
+            include_empty = False
+
+            if empty_jsons:
+                include_empty = (
+                    QMessageBox.question(
+                        self,
+                        "",
+                        "Include the empty kymographs in the Per-kymograph sheet?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.Yes
+                    ) == QMessageBox.Yes
+                )
+
+            # If user opted to save empty or no trajectories exist
+            if empty_jsons and (save_empty or include_empty):
+                for roi_json in empty_jsons:
+                    total_distance_um = None
+                    events_txt = ""
+                    if pixel_size_um:
+                        roi_dict = json.loads(roi_json)
+                        xs, ys = np.array(roi_dict['x'], float), np.array(roi_dict['y'], float)
+                        total_distance_um = np.sum(np.hypot(np.diff(xs), np.diff(ys))) * pixel_size_um
+                        events_txt = "0"
+
+                    per_roi_list.append({
+                        'ROI': roi_json,
+                        'Total distance (μm)': total_distance_um,
+                        'Total time (s)': total_time_s,
+                        'Number of trajectories': 0,
+                        'Events (/min)': events_txt,
+                        'Events (/μm/min)': events_txt,
+                        'Average net speed (μm/s)': "",
+                        'Average average speed (μm/s)': "",
+                        'Average run length (μm)': "",
+                        'Average run time (s)': "",
+                        'Average median intensity': "",
+                        'Average average intensity': "",
+                    })
 
             df_per_roi = pd.DataFrame(per_roi_list)
 
+            # Write to Excel
             with pd.ExcelWriter(filename) as writer:
                 df_data.to_excel(writer, sheet_name="Data Points", index=False)
                 df_summary.to_excel(writer, sheet_name="Per-trajectory", index=False)
                 df_per_roi.to_excel(writer, sheet_name="Per-kymograph", index=False)
 
         except Exception as e:
-            QMessageBox.critical(self, "Save Error", f"Failed to save trajectories: {str(e)}")
+            QMessageBox.critical(self, "Save Error", f"Failed to save trajectories: {e}")
 
     def hide_empty_columns(self):
         # columns to never hide, regardless of content
@@ -2844,7 +2920,6 @@ class TrajectoryCanvas(QWidget):
         if trajid is None:
             trajid = self._trajectory_counter
             
-        print(start,end,frames)
         traj_data = {
             "trajectory_number": trajid,
             "channel": channel,
@@ -3251,6 +3326,50 @@ class TrajectoryCanvas(QWidget):
 
         self.navigator.update_table_visibility()
 
+        loaded_rois = [traj.get('roi') for traj in self.trajectories if isinstance(traj.get('roi'), dict)]
+        if loaded_rois:
+            if QMessageBox.question(
+                self,
+                "",
+                "Generate kymographs from loaded trajectories?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            ) == QMessageBox.Yes:
+                # Replay ROIs onto the kymo canvas
+                self.navigator.generate_rois_from_trajectories()
+
+                if ext == ".xlsx":
+                    try:
+                        if 'Per-kymograph' in xls.sheet_names:
+                            pk_df = pd.read_excel(xls, sheet_name='Per-kymograph')
+                            if 'ROI' in pk_df.columns:
+                                pk_rois = set(pk_df['ROI'].dropna().astype(str))
+                                # Determine which ROI dicts were loaded
+                                loaded_rois = [traj.get('roi') for traj in self.trajectories if isinstance(traj.get('roi'), dict)]
+                                loaded_jsons = set(json.dumps(roi) for roi in loaded_rois)
+                                missing = pk_rois - loaded_jsons
+                                if missing:
+                                    if QMessageBox.question(
+                                        self,
+                                        "",
+                                        "Load empty kymographs?",
+                                        QMessageBox.Yes | QMessageBox.No,
+                                        QMessageBox.Yes
+                                    ) == QMessageBox.Yes:
+                                        for roi_json in missing:
+                                            try:
+                                                roi_dict = json.loads(roi_json)
+                                                self.movieCanvas.roiPoints = roi_dict.get('points', [])
+                                                self.movieCanvas.finalize_roi()
+                                            except json.JSONDecodeError:
+                                                continue
+                    except Exception as e:
+                        QMessageBox.critical(
+                            self, "Error",
+                            f"Error: {e}."
+                        )
+                        return
+
     def load_trajectories_from_df(self, df, anchors_map=None, roi_map=None, forcerecalc=False):
 
         # 1) Always require these two columns
@@ -3620,8 +3739,6 @@ class TrajectoryCanvas(QWidget):
                             velocities.append(np.hypot(dx, dy))
                 if velocities:
                     average_velocity = float(group["Speed (px/frame)"].mean()) 
-
-            print(start,end,frames_used)
 
             traj = {
                 "trajectory_number": int(traj_num),
