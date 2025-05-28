@@ -371,7 +371,7 @@ class KymographNavigator(QMainWindow):
         self.kymoCombo = QComboBox()
         self.kymoCombo.setEnabled(False)
         self.kymoCombo.setView(QListView())
-        self.kymoCombo.currentIndexChanged.connect(self.kymograph_changed)
+        self.kymoCombo.currentIndexChanged.connect(self.kymo_changed)
         kymoControlLayout.addWidget(self.kymoCombo)
 
         # Add the kymograph delete and clear buttons
@@ -2857,7 +2857,7 @@ class KymographNavigator(QMainWindow):
 
         # 5) Otherwise select & display the sister
         self.kymoCombo.setCurrentText(sel)
-        self.kymograph_changed()
+        self.kymo_changed()
 
     def _save_zoom_for_roi(self, roiName):
         """Stash the current scale & center under this ROI."""
@@ -2873,7 +2873,7 @@ class KymographNavigator(QMainWindow):
             c.zoom_center = center
             c.update_view()
 
-    def kymograph_changed(self):
+    def kymo_changed(self):
 
         self.cancel_left_click_sequence()
         
@@ -2952,7 +2952,7 @@ class KymographNavigator(QMainWindow):
             self.kymoCanvas.draw_idle()
 
         # 5) Re-run selection & visibility
-        self.kymograph_changed()
+        self.kymo_changed()
         self.update_kymo_visibility()
         self.update_roilist_visibility()
 
@@ -6287,7 +6287,7 @@ class KymographNavigator(QMainWindow):
                     # 3) switch ROI & channel
                     if name in self.kymographs:
                         self.kymoCombo.setCurrentText(name)
-                        self.kymograph_changed()
+                        self.kymo_changed()
 
                     # 5) now draw a skinny overlay (axes already off, full‐frame)
                     self.kymoCanvas.draw_trajectories_on_kymo(
@@ -6324,7 +6324,7 @@ class KymographNavigator(QMainWindow):
             # just re-select the original kymo; that will reset ROI, channel, contrast, overlays, etc.
             if current in self.kymographs:
                 self.kymoCombo.setCurrentText(current)
-                self.kymograph_changed()
+                self.kymo_changed()
 
     #UNUSED
     def save_kymograph_with_rois(self):
@@ -6528,7 +6528,7 @@ class KymographNavigator(QMainWindow):
 
         if not hasattr(self, "drift_reference") or self.drift_reference is None:
             QMessageBox.warning(self, "",
-                                "No valid spot center found. Please click a spot in the movie.")
+                                "Please click an stationary spot that can be found in all frames movie.")
             return
 
         ref_spot = self.drift_reference  # (x, y)

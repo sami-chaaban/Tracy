@@ -34,8 +34,8 @@ import warnings
 import re
 from typing import Optional, List
 from .roi_tools import is_point_near_roi, compute_roi_point
-from .track_tools import calculate_velocities
 from .canvas_tools import RecalcDialog, RecalcWorker, subpixel_crop
+# from .kymotrace import prune_skeleton, overlay_trace_centers, extract_main_path
 
 warnings.filterwarnings(
     "ignore",
@@ -217,6 +217,10 @@ class KymoCanvas(ImageCanvas):
         img8     = np.clip((image - p15)/(p99-p15), 0, 1)*255
         img8     = img8.astype(np.uint8)
         h, w     = img8.shape
+        # if img8.ndim == 3:
+        #     h, w, _ = img8.shape
+        # else:
+        #     h, w = img8.shape
 
         self.ax.set_xlim(0, w)
         self.ax.set_ylim(0, h)
@@ -1278,6 +1282,115 @@ class MovieCanvas(ImageCanvas):
             self.ax.imshow(zoomed, cmap=cmap, origin='lower', extent=[x1, x2, y1, y2])
             self.ax.axis('off')
 
+    def update_roi_drawing(self, current_pos):
+        pts = list(self.roiPoints) + ([current_pos] if current_pos else [])
+        if len(pts) < 2 or not self.roiAddMode:
+            return
+
+        xs, ys = zip(*pts)
+        canvas = self.figure.canvas     # the QtAgg FigureCanvas
+
+        if self.tempRoiLine is None:
+            # 1) draw static image+axes
+            canvas.draw()
+            # 2) snapshot full axes region (no ROI)
+            self._roi_bbox = self.ax.bbox
+            self._roi_bg   = canvas.copy_from_bbox(self._roi_bbox)
+            # 3) create the line artist (but don’t redraw full figure)
+            self.tempRoiLine, = self.ax.plot(xs, ys, '--', linewidth=1.5, color='#81C784')
+        else:
+            # restore the clean background
+            canvas.restore_region(self._roi_bg)
+            # update the line
+            self.tempRoiLine.set_data(xs, ys)
+            # draw just that artist
+            self.ax.draw_artist(self.tempRoiLine)
+            # blit only the axes region
+            canvas.blit(self._roi_bbox)
+
+    def finalize_roi(self):
+        # Make sure we have at least two pointsf
+        if not self.roiPoints or len(self.roiPoints) < 2:
+            print("Not enough points to finalize ROI.")
+            return
+        
+        #print("ROI points:", self.roiPoints)
+
+        # Build the ROI dictionary using all collected points.
+        # We use the keys 'x' and 'y' (as expected by your conversion function)
+        # and also store the full list as 'points' for any later processing.
+        roi = {
+            "type": "line",  # or "segmented_line" if you prefer to be explicit
+            "x": [pt[0] for pt in self.roiPoints],
+            "y": [pt[1] for pt in self.roiPoints],
+            "points": self.roiPoints.copy()
+        }
+
+        # Generate the kymograph from the full ROI.
+        kymo = self.generate_kymograph(roi)
+
+        # Combine keys from both dictionaries.
+        all_names = set(self.navigator.rois.keys()) | set(self.navigator.kymographs.keys())
+        numeric_names = []
+        for name in all_names:
+            try:
+                # Only append if conversion to int is possible.
+                numeric_names.append(int(name))
+            except (ValueError, TypeError):
+                # If a key isn’t numeric, skip it.
+                pass
+
+        if numeric_names:
+            max_num = max(numeric_names)
+            next_num = max_num + 1
+        else:
+            next_num = 1
+        name = f"{next_num:03d}"        
+
+        # Store the ROI and kymograph with the same name.
+        self.navigator.rois[name] = roi
+        self.navigator.roiCombo.addItem(name)
+        self.navigator.roiCombo.setEnabled(True)
+        self.navigator.roiCombo.setCurrentText(name)
+        self.navigator.update_roilist_visibility()
+
+        if self.navigator.movie.ndim == 4:
+            n_chan = self.navigator.movie.shape[self.navigator._channel_axis]
+        else:
+            n_chan = 1
+
+        for ch in range(n_chan):
+            kymo = self.generate_kymograph(roi, channel_override=ch)
+            kymo_name = f"ch{ch+1}-{name}"
+            self.navigator.kymographs[kymo_name] = kymo
+            self.navigator.kymo_roi_map[kymo_name] = {
+                "roi":      name,
+                "channel":  ch+1,
+                "orphaned": False
+            }
+
+            # self.navigator.last_kymo_by_channel[ch+1] = kymo_name
+
+        self.navigator._last_roi = name
+        self.navigator.update_kymo_list_for_channel()
+        self.navigator.kymo_changed()
+        self.navigator.kymoCombo.setEnabled(True)
+
+
+        # Clear the temporary ROI markers and the stored points.
+        self.roiPoints = []
+        if self.tempRoiLine is not None:
+            try:
+                self.tempRoiLine.remove()
+            except Exception:
+                pass
+            self.tempRoiLine = None
+
+        self.navigator.update_kymo_visibility()
+        self.navigator.update_kymo_list_for_channel()
+
+        self.draw()
+
     def generate_kymograph(self, roi, channel_override=None):
         # --- Compute the ROI sample positions along the drawn line ---
         xs = np.array(roi["x"], dtype=float)
@@ -1391,120 +1504,23 @@ class MovieCanvas(ImageCanvas):
                 log_kymo = np.ones_like(log_kymo) * 128
             log_kymo = log_kymo.astype(np.uint8)
 
-            return log_kymo
+            # from bm3d import bm3d
+            # from skimage.restoration import estimate_sigma
+            # sigma_est = estimate_sigma(
+            #     log_kymo,
+            #     channel_axis=None,     # grayscale
+            #     average_sigmas=True    # get one scalar back
+            # )
+            # denoised = bm3d(log_kymo, sigma_psd=sigma_est)
+
+            # # return log_kymo
+            # return overlay_trace_centers(denoised)
+        
+            return(log_kymo)
         
         else:
-            
+
             return kymo
-
-    def update_roi_drawing(self, current_pos):
-        pts = list(self.roiPoints) + ([current_pos] if current_pos else [])
-        if len(pts) < 2 or not self.roiAddMode:
-            return
-
-        xs, ys = zip(*pts)
-        canvas = self.figure.canvas     # the QtAgg FigureCanvas
-
-        if self.tempRoiLine is None:
-            # 1) draw static image+axes
-            canvas.draw()
-            # 2) snapshot full axes region (no ROI)
-            self._roi_bbox = self.ax.bbox
-            self._roi_bg   = canvas.copy_from_bbox(self._roi_bbox)
-            # 3) create the line artist (but don’t redraw full figure)
-            self.tempRoiLine, = self.ax.plot(xs, ys, '--', linewidth=1.5, color='#81C784')
-        else:
-            # restore the clean background
-            canvas.restore_region(self._roi_bg)
-            # update the line
-            self.tempRoiLine.set_data(xs, ys)
-            # draw just that artist
-            self.ax.draw_artist(self.tempRoiLine)
-            # blit only the axes region
-            canvas.blit(self._roi_bbox)
-
-    def finalize_roi(self):
-        # Make sure we have at least two pointsf
-        if not self.roiPoints or len(self.roiPoints) < 2:
-            print("Not enough points to finalize ROI.")
-            return
-        
-        #print("ROI points:", self.roiPoints)
-
-        # Build the ROI dictionary using all collected points.
-        # We use the keys 'x' and 'y' (as expected by your conversion function)
-        # and also store the full list as 'points' for any later processing.
-        roi = {
-            "type": "line",  # or "segmented_line" if you prefer to be explicit
-            "x": [pt[0] for pt in self.roiPoints],
-            "y": [pt[1] for pt in self.roiPoints],
-            "points": self.roiPoints.copy()
-        }
-
-        # Generate the kymograph from the full ROI.
-        kymo = self.generate_kymograph(roi)
-
-        # Combine keys from both dictionaries.
-        all_names = set(self.navigator.rois.keys()) | set(self.navigator.kymographs.keys())
-        numeric_names = []
-        for name in all_names:
-            try:
-                # Only append if conversion to int is possible.
-                numeric_names.append(int(name))
-            except (ValueError, TypeError):
-                # If a key isn’t numeric, skip it.
-                pass
-
-        if numeric_names:
-            max_num = max(numeric_names)
-            next_num = max_num + 1
-        else:
-            next_num = 1
-        name = f"{next_num:03d}"        
-
-        # Store the ROI and kymograph with the same name.
-        self.navigator.rois[name] = roi
-        self.navigator.roiCombo.addItem(name)
-        self.navigator.roiCombo.setEnabled(True)
-        self.navigator.roiCombo.setCurrentText(name)
-        self.navigator.update_roilist_visibility()
-
-        if self.navigator.movie.ndim == 4:
-            n_chan = self.navigator.movie.shape[self.navigator._channel_axis]
-        else:
-            n_chan = 1
-
-        for ch in range(n_chan):
-            kymo = self.generate_kymograph(roi, channel_override=ch)
-            kymo_name = f"ch{ch+1}-{name}"
-            self.navigator.kymographs[kymo_name] = kymo
-            self.navigator.kymo_roi_map[kymo_name] = {
-                "roi":      name,
-                "channel":  ch+1,
-                "orphaned": False
-            }
-
-            # self.navigator.last_kymo_by_channel[ch+1] = kymo_name
-
-        self.navigator._last_roi = name
-        self.navigator.update_kymo_list_for_channel()
-        self.navigator.kymograph_changed()
-        self.navigator.kymoCombo.setEnabled(True)
-
-
-        # Clear the temporary ROI markers and the stored points.
-        self.roiPoints = []
-        if self.tempRoiLine is not None:
-            try:
-                self.tempRoiLine.remove()
-            except Exception:
-                pass
-            self.tempRoiLine = None
-
-        self.navigator.update_kymo_visibility()
-        self.navigator.update_kymo_list_for_channel()
-
-        self.draw()
 
     def clear_temporary_roi_markers(self):
         # Clear any temporary ROI dotted line.
@@ -2617,25 +2633,39 @@ class TrajectoryCanvas(QWidget):
             # Pixel size conversion nm->µm
             pixel_size_um = self.navigator.pixel_size / 1000.0 if self.navigator.pixel_size is not None else None
 
+            n_frames = self.navigator.movie.shape[0]
+            frame_interval_s = self.navigator.frame_interval / 1000.0  if self.navigator.frame_interval is not None else None
+
             per_roi_list = []
+
             # Group by ROI string
             for roi_val, grp in df_roi.groupby("ROI"):
                 n_trajs = len(grp)
-                total_time_s = grp["Time (s)"].sum()
-                if total_time_s > 0:
+
+                events_per_min = float("nan")
+                total_time_s = None
+                if frame_interval_s is not None:
+                    total_time_s = n_frames * frame_interval_s
                     events_per_min = n_trajs / (total_time_s / 60.0)
-                else:
-                    events_per_min = float('nan')
-                if pixel_size_um and total_time_s > 0:
+
+                events_per_um_per_min = float("nan")
+                if pixel_size_um is not None and total_time_s is not None:
                     events_per_um_per_min = n_trajs / (total_time_s / 60.0) / pixel_size_um
-                else:
-                    events_per_um_per_min = float('nan')
+
+                total_distance_um = float("nan")
+                if pixel_size_um is not None:
+                    roi_dict = json.loads(roi_val)
+                    xs = np.array(roi_dict["x"], dtype=float)
+                    ys = np.array(roi_dict["y"], dtype=float)
+                    total_distance_um = np.sum(np.hypot(np.diff(xs), np.diff(ys))) * pixel_size_um
 
                 per_roi_list.append({
                     "ROI": roi_val,
+                    "Total distance (μm)": total_distance_um,
+                    "Total time (s)": total_time_s,
                     "Number of trajectories": n_trajs,
-                    "Events (/min)": events_per_um_per_min,
-                    "Events (/μm/min)": events_per_min,
+                    "Events (/min)": events_per_min,
+                    "Events (/μm/min)": events_per_um_per_min,
                     "Average net speed (μm/s)": grp["Net Speed (μm/s)"].mean(),
                     "Average average speed (μm/s)": grp["Avg. Speed (μm/s)"].mean(),
                     "Average run length (μm)": grp["Distance (μm)"].mean(),
@@ -2814,7 +2844,7 @@ class TrajectoryCanvas(QWidget):
         if trajid is None:
             trajid = self._trajectory_counter
             
-
+        print(start,end,frames)
         traj_data = {
             "trajectory_number": trajid,
             "channel": channel,
@@ -3574,10 +3604,9 @@ class TrajectoryCanvas(QWidget):
                                 # ambiguous numeric values → discard
                                 fixed_background = None
 
+                average_velocity = None
                 # Attempt to retrieve velocities from the imported file.
                 if "Speed (px/frame)" in group.columns:
-                    # Use the value from the first row (or any row) as the summary,
-                    # and obtain the list from the 'Speed (px/frame)' column.
                     velocities = group["Speed (px/frame)"].tolist()
                 else:
                     # Recalculate velocities based on spot centers.
@@ -3590,10 +3619,9 @@ class TrajectoryCanvas(QWidget):
                             dy = spot_centers[i][1] - spot_centers[i-1][1]
                             velocities.append(np.hypot(dx, dy))
                 if velocities:
-                    valid_vels = [v for v in velocities if v is not None]
-                    average_velocity = float(np.mean(valid_vels)) if valid_vels else None
-                else:
-                    average_velocity = None
+                    average_velocity = float(group["Speed (px/frame)"].mean()) 
+
+            print(start,end,frames_used)
 
             traj = {
                 "trajectory_number": int(traj_num),
@@ -4546,7 +4574,7 @@ class TrajectoryCanvas(QWidget):
                                     self.navigator.kymoCombo.setCurrentIndex(
                                         self.navigator.kymoCombo.findText(kn)
                                     ),
-                                    self.navigator.kymograph_changed()
+                                    self.navigator.kymo_changed()
                                 )
                             )
                     break  # only first matching ROI
