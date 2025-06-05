@@ -1,6 +1,6 @@
 # Tracy
 
-***Note: Tracy is still in beta***
+***Tracy is still in beta***
 
 1. [Install](#install)
 2. [Getting started](#start)
@@ -23,6 +23,8 @@
 5. [License](#license)
 
 ## Install<a name="install"></a>
+
+***Hopefully this will not involve the terminal in the future***
 
 1. Open your terminal
     * Mac: just open Terminal
@@ -140,7 +142,7 @@
 
 ### Load trajectories<a name="loadtrajectories"></a>
 
-* Trajectories can be loaded back as they were saved by Tracy (.xlsx file) or any similar file with a Data Points sheet with at least Trajectory, Channel, Frame, Search Center X, and Search Center Y (it will recalculate trajecotires when spot centers are missing in this case)
+* Trajectories can be loaded back as they were saved by Tracy (.xlsx file) or any similar file with a Data Points sheet with at least Trajectory, Channel, Frame, Search Center X, and Search Center Y (it will recalculate trajectories when spot centers are missing in this case)
 * You do not need to save kymographs or line ROIs along with trajectories since the clicks you used to build them are embedded in the trajectories. Use **Draw from trajectories** in the *Kymograph* menu to redraw them after loading trajectories.
 
 ### Load TrackMate data<a name="loadtrackmate"></a>

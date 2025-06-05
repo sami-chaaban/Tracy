@@ -1719,106 +1719,133 @@ class MovieCanvas(ImageCanvas):
         return removed
 
     def draw_trajectories_on_movie(self):
-        # Clear any existing movie canvas trajectory markers.
+        # 1) Clear any existing movie‐canvas markers
         self.clear_movie_trajectory_markers()
 
+        # 2) If the overlay toggle is off, do nothing
         if not self.navigator.traj_overlay_button.isChecked():
             return
 
-        idx = self.navigator.trajectoryCanvas.table_widget.currentRow()
+        # 3) Which table row is currently selected?
+        selected_idx = self.navigator.trajectoryCanvas.table_widget.currentRow()
 
-        if idx < 0:
-            return
-        
-        traj = self.navigator.trajectoryCanvas.trajectories[idx]
-
+        # 4) Which movie channel is active? (so we skip mismatched trajectories)
         try:
             current_ch = int(self.navigator.movieChannelCombo.currentText())
-        except ValueError:
+        except (ValueError, AttributeError):
             current_ch = None
 
-        traj_ch = traj.get("channel", None)
-        # print(idx, traj_ch, current_ch)
-        if traj_ch != current_ch and traj_ch is not None:
-            # not the right channel → leave canvas clear
-            return
+        # 5) Loop over all trajectories and draw them
+        for idx, traj in enumerate(self.navigator.trajectoryCanvas.trajectories):
+            # 5a) Skip if trajectory has a channel that doesn't match
+            traj_ch = traj.get("channel", None)
+            if traj_ch is not None and traj_ch != current_ch:
+                continue
 
-        traj_label = traj.get("file_index") if traj.get("file_index") else str(traj["trajectory_number"])
-        
-        # Draw dotted line for search centers.
-        original_coords = traj.get('original_coords', [])
-        if original_coords:
-            xs = [pt[0] for pt in original_coords]
-            ys = [pt[1] for pt in original_coords]
-            dotted_line, = self.ax.plot(
-                xs, ys, color='#7da1ff', linestyle='--', linewidth=1.5, zorder=1,
-                solid_capstyle='round',
-                dash_capstyle='round')
-            self.movie_trajectory_markers.append(dotted_line)
-            dispA = self.ax.transData.transform((xs[0], ys[0]))
-            dispB = self.ax.transData.transform((xs[-1], ys[-1]))
-            v = dispB - dispA
-            norm = (v[0]**2 + v[1]**2)**0.5
-            u = (v / norm) if norm else np.array([1.0, 0.0])
-            offset = 20  # pixels
+            # 5b) Are we highlighting this one?
+            is_hl = (idx == selected_idx)
 
-            # Label “A” at start
-            dxA, dyA = u * (-offset)
-            start_label = self.ax.annotate(
-                f"{traj_label}A",
-                xy=(xs[0], ys[0]),
-                xytext=(dxA, dyA),
-                textcoords="offset points",
-                color='white',
-                fontsize=10,
-                fontweight='bold',
-                ha="center",
-                va="center",
-                bbox=dict(boxstyle='circle,pad=0.3', facecolor='#7da1ff', alpha=0.7, linewidth=1.5),
-                zorder=3
+            # Build a label string like "3A"/"3B"
+            traj_label = traj.get("file_index") or str(traj["trajectory_number"])
+
+            # 5c) Draw the dashed "search‐center" line if original_coords exist
+            original_coords = traj.get("original_coords", [])
+            if original_coords:
+                xs = [pt[0] for pt in original_coords]
+                ys = [pt[1] for pt in original_coords]
+
+                lw_search = 2.0 if is_hl else 1.5
+                alpha_search = 0.9 if is_hl else 0.6
+                z_search = 5 if is_hl else 1
+
+                dotted_line, = self.ax.plot(
+                    xs, ys,
+                    color='#7da1ff',
+                    linestyle='--',
+                    linewidth=lw_search,
+                    alpha=alpha_search,
+                    zorder=z_search,
+                    solid_capstyle='round',
+                    dash_capstyle='round'
+                )
+                self.movie_trajectory_markers.append(dotted_line)
+
+                # 5c-i) Annotate "A" at first point and "B" at last point, picker=True
+                dispA = self.ax.transData.transform((xs[0], ys[0]))
+                dispB = self.ax.transData.transform((xs[-1], ys[-1]))
+                v = dispB - dispA
+                norm = (v[0]**2 + v[1]**2) ** 0.5
+                u = (v / norm) if norm else np.array([1.0, 0.0])
+                offset_px = 15
+
+                for (cx, cy, suffix), sign in [((xs[0], ys[0], 'A'), -1),
+                                               ((xs[-1], ys[-1], 'B'), +1)]:
+                    dx, dy = u * (offset_px * sign)
+                    lbl = self.ax.annotate(
+                        f"{traj_label}{suffix}",
+                        xy=(cx, cy),
+                        xytext=(dx, dy),
+                        textcoords="offset points",
+                        color=('white' if is_hl else 'black'),
+                        fontsize=8,
+                        fontweight="bold",
+                        ha="center",
+                        va="center",
+                        bbox=dict(
+                            boxstyle='circle,pad=0.3',
+                            facecolor=('#7da1ff' if is_hl else '#cbd9ff'),
+                            alpha=(0.9 if is_hl else 0.6),
+                            linewidth=(1.5 if is_hl else 1.0)
+                        ),
+                        picker=True,      # Make the label clickable
+                        zorder=(7 if is_hl else 2)
+                    )
+                    # Attach custom attribute so pick_event tells us which row was clicked:
+                    lbl.traj_idx = idx
+                    self.movie_trajectory_markers.append(lbl)
+
+            # 5d) Draw the solid connecting line through spot_centers for every trajectory
+            spot_centers = traj.get('spot_centers', [])
+            xs_pts = [pt[0] if pt is not None else np.nan for pt in spot_centers]
+            ys_pts = [pt[1] if pt is not None else np.nan for pt in spot_centers]
+
+            scatter_kwargs, line_color = self.navigator._get_traj_colors(traj)
+
+            # Remove any pre‐existing zorder in scatter_kwargs so we can supply our own
+            scatter_kwargs = scatter_kwargs.copy()
+            scatter_kwargs.pop('zorder', None)
+
+            # Style for the connecting line
+            lw_line = (2.0 if is_hl else 1.5)
+            alpha_line = (0.9 if is_hl else 0.7)
+            z_line = (6 if is_hl else 3)
+
+            line, = self.ax.plot(
+                xs_pts, ys_pts,
+                linestyle='-',
+                color=(line_color),
+                linewidth=lw_line,
+                alpha=alpha_line,
+                zorder=z_line
             )
-            dxB, dyB = u * offset
-            end_label = self.ax.annotate(
-                f"{traj_label}B",
-                xy=(xs[-1], ys[-1]),
-                xytext=(dxB, dyB),
-                textcoords="offset points",
-                color='white',
-                fontsize=10,
-                fontweight='bold',
-                ha="center",
-                va="center",
-                bbox=dict(boxstyle='circle,pad=0.3', facecolor='#7da1ff', alpha=0.7, linewidth=1.5),
-                zorder=2
-            ) 
-            self.movie_trajectory_markers.extend([start_label, end_label])
-        
-        # extract your x/y lists, turning None → np.nan
-        xs = [pt[0] if pt is not None else np.nan for pt in traj['spot_centers']]
-        ys = [pt[1] if pt is not None else np.nan for pt in traj['spot_centers']]
-        # frames = traj["frames"]
+            self.movie_trajectory_markers.append(line)
 
-        scatter_kwargs, line_color = self.navigator._get_traj_colors(traj)
-            
-        scatter = self.ax.scatter(xs, ys, s=11, **scatter_kwargs)
+            # 5e) Draw scatter points ONLY for the highlighted trajectory
+            if is_hl:
+                # Bump size and add black edge
+                scatter_kwargs.update(s=15, edgecolors='black', linewidths=0.5)
+                z_scatter = 6
+                scatter = self.ax.scatter(
+                    xs_pts, ys_pts,
+                    picker=True,
+                    zorder=z_scatter,
+                    **scatter_kwargs
+                )
+                scatter.traj_idx = idx
+                self.movie_trajectory_markers.append(scatter)
 
-        self.movie_trajectory_markers.append(scatter)
-
-        # 2) overlay a  circle at eac
-        # scatter = self.ax.scatter(
-        #     xs, ys,
-        #     s=1,
-        #     color='magenta',
-        #     alpha=0.8,
-        #     lw=1.5,
-        #     zorder=5)
-        
-        # self.movie_trajectory_markers.append(scatter)
-
-        # draws lines
-        line, = self.ax.plot(xs, ys, linestyle='-', color=line_color, linewidth=1.5, zorder=3)
-
-        self.movie_trajectory_markers.append(line)
+        # 6) Finally, request a redraw
+        self.ax.figure.canvas.draw_idle()
 
     def clear_movie_trajectory_markers(self):
         if hasattr(self, "movie_trajectory_markers"):
@@ -1889,6 +1916,10 @@ class IntensityCanvas(FigureCanvas):
         self.mpl_connect("draw_event", self._on_full_draw)
         # Hook pick_event for your scatter dots
         self.mpl_connect("pick_event", self.on_pick_event)
+
+        self._legend = None
+        self.mpl_connect("axes_enter_event", self._on_axes_enter)
+        self.mpl_connect("axes_leave_event", self._on_axes_leave)
 
         self.current_index = 0
         self.scatter_obj_top = None
@@ -2051,6 +2082,8 @@ class IntensityCanvas(FigureCanvas):
         frame.set_edgecolor("none")
         frame.set_boxstyle("round,pad=0.2")
 
+        self._legend = legend
+
         valid_vals = [
             val for val, col in zip(intensities, colors_list)
             if col != "grey" and val is not None
@@ -2089,6 +2122,17 @@ class IntensityCanvas(FigureCanvas):
         )
          
     def on_pick_event(self, event):
+
+        # artist = event.artist
+
+        # # 1) If it’s one of our labels or a scatter point, it carries traj_idx:
+        # if hasattr(artist, "traj_idx"):
+        #     idx = artist.traj_idx
+        #     # Select that row:
+        #     table = self.navigator.trajectoryCanvas.table_widget
+        #     table.selectRow(idx)
+        #     return
+
         # ignore middle-click picks
         if hasattr(event, 'mouseevent') and getattr(event.mouseevent, 'button', None) == 2:
             return
@@ -2162,13 +2206,23 @@ class IntensityCanvas(FigureCanvas):
             self.highlight_current_point(self._last_highlight_override)
 
     def clear_highlight(self):
+        # 1) Hide the markers
         self.highlight_marker_bottom.set_visible(False)
         self.highlight_marker_top.set_visible(False)
         self.top_vline.set_visible(False)
 
-        # restore background and blit clean
+        # 2) Reset internal state so we no longer think a point is highlighted
+        self.point_highlighted = False
+        self._last_highlight_override = False
+
+        # 3) Restore the “no‐highlight” background and blit
         self.fig.canvas.restore_region(self._background)
         self.fig.canvas.blit(self.fig.bbox)
+
+        # 4) (Optional) If you’re going to blit again before a full draw, you may want to
+        #    do a full draw now and recapture background to make sure it’s clean.
+        # self.fig.canvas.draw()
+        # self._background = self.copy_from_bbox(self.fig.bbox)
 
     def get_current_point_color(self):
         # only return a color if a point is currently highlighted
@@ -2189,6 +2243,41 @@ class IntensityCanvas(FigureCanvas):
         except Exception as e:
             # print(f"could not get color: {e}")
             return "magenta"
+
+    def _on_axes_enter(self, event):
+        """Hide the legend as soon as the mouse enters the bottom axes."""
+        if event.inaxes is not self.ax_bottom or self._legend is None:
+            return
+
+        # 1) Hide the legend
+        self._legend.set_visible(False)
+
+        # 2) Force a full redraw and recapture the background
+        self.fig.canvas.draw()
+        self._background = self.copy_from_bbox(self.fig.bbox)
+
+        # 3) If a point was already highlighted, re‐draw it on top
+        if self.point_highlighted:
+            self.highlight_current_point(override=self._last_highlight_override)
+
+
+    def _on_axes_leave(self, event):
+        """Show the legend again as soon as the mouse leaves the bottom axes."""
+        if event.inaxes is not self.ax_bottom or self._legend is None:
+            return
+
+        # 1) Show the legend
+        self._legend.set_visible(True)
+
+        # 2) Force a full redraw and recapture the background
+        self.fig.canvas.draw()
+        self._background = self.copy_from_bbox(self.fig.bbox)
+
+        # 3) If a point was highlighted, re‐draw it on top
+        if self.point_highlighted:
+            self.highlight_current_point(override=self._last_highlight_override)
+
+
 
 # -----------------------------
 # TrajectoryCanvas
@@ -2516,12 +2605,12 @@ class TrajectoryCanvas(QWidget):
                         "Movie": self.navigator.movieNameLabel.text(),
                         "Trajectory": traj.get("trajectory_number", "?"),
                         "Channel": channel,
-                        "Start_Frame": save_start_frame,
-                        "End_Frame": save_end_frame,
+                        "Start Frame": save_start_frame,
+                        "End Frame": save_end_frame,
                         "Anchors": anchors_str,
                         "ROI":    roi_str,
-                        "Num_Points": num_points,
-                        "Valid_Points": valid_points,
+                        "Total Points": num_points,
+                        "Valid Points": valid_points,
                         "Percent Valid": percent_valid,
                         "Search Center X Start": float(traj["start"][1]),
                         "Search Center Y Start": float(traj["start"][2]),
@@ -3127,8 +3216,8 @@ class TrajectoryCanvas(QWidget):
                     roi_map[traj_id] = roi_clean
 
             # — detect any extra columns —
-            known = {"Movie","Trajectory","Channel","Start_Frame","End_Frame",
-                    "Anchors","ROI","Num_Points","Valid_Points","Percent Valid",
+            known = {"Movie","Trajectory","Channel","Start Frame","End Frame",
+                    "Anchors","ROI","Total Points","Valid Points","Percent Valid",
                     "Search Center X Start","Search Center Y Start",
                     "Search Center X End","Search Center Y End",
                     "Distance (μm)","Time (s)","Background",

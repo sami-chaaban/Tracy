@@ -287,6 +287,7 @@ class KymographNavigator(QMainWindow):
         self.movieNameLabel.setStyleSheet("""
         #movieNameLabel {
             background: transparent;
+            color: black;
             font-size: 14px;
             border: 1px solid #DCE6FF;
             border-radius: 8px;
@@ -329,6 +330,7 @@ class KymographNavigator(QMainWindow):
         self.scaleLabel.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.scaleLabel.setStyleSheet("""
         #scaleLabel {
+            color: black;
             background: transparent;
             font-size: 14px;
             border-radius: 8px;
@@ -852,16 +854,16 @@ class KymographNavigator(QMainWindow):
         ).attachTo(self.velocityCanvas)
 
         # --- Analysis Slider (optional; you can also wrap it similarly if desired)
-        self.analysisSlider = QSlider(Qt.Horizontal)
-        analysissliderfilter = BubbleTipFilter("Slide through trajectory points", self, placement="left")
-        self.analysisSlider.installEventFilter(analysissliderfilter)
-        self.analysisSlider._bubble_filter = analysissliderfilter
-        self.analysisSlider.setMinimum(0)
-        self.analysisSlider.setMaximum(0)  # Will be updated later when analysis data is computed
-        self.analysisSlider.setValue(0)
-        self.analysisSlider.valueChanged.connect(self.on_analysis_slider_changed)
-        self.analysisSlider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        rightPanelLayout.addWidget(self.analysisSlider, stretch=0)
+        # self.analysisSlider = QSlider(Qt.Horizontal)
+        # analysissliderfilter = BubbleTipFilter("Slide through trajectory points", self, placement="left")
+        # self.analysisSlider.installEventFilter(analysissliderfilter)
+        # self.analysisSlider._bubble_filter = analysissliderfilter
+        # self.analysisSlider.setMinimum(0)
+        # self.analysisSlider.setMaximum(0)  # Will be updated later when analysis data is computed
+        # self.analysisSlider.setValue(0)
+        # self.analysisSlider.valueChanged.connect(self.on_analysis_slider_changed)
+        # self.analysisSlider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # rightPanelLayout.addWidget(self.analysisSlider, stretch=0)
 
         # rightPanelLayout.addSpacing(-2)
 
@@ -883,7 +885,6 @@ class KymographNavigator(QMainWindow):
         self.trajectoryCanvas = TrajectoryCanvas(self, self.kymoCanvas, self.movieCanvas, self.intensityCanvas, navigator=self)
         self.rightVerticalSplitter.addWidget(self.trajectoryCanvas)
 
-        # Optionally set stretch factors for the main horizontal splitter (e.g., leave the left narrower)
         self.mainSplitter.setStretchFactor(0, 1)
         self.mainSplitter.setStretchFactor(1, 2)
 
@@ -891,7 +892,6 @@ class KymographNavigator(QMainWindow):
 
         self.update_table_visibility()
         self.update_kymo_visibility()
-
 
         self.clear_button.clicked.connect(
             lambda _checked: self.trajectoryCanvas.clear_trajectories()
@@ -1628,7 +1628,7 @@ class KymographNavigator(QMainWindow):
         self.invertAct.triggered.connect(self.toggle_invert_cmap)
         viewMenu.addAction(self.invertAct)
 
-        zoomAction = QAction("Inset zoom", self)
+        zoomAction = QAction("Inset size", self)
         zoomAction.triggered.connect(self.open_zoom_dialog)
         viewMenu.addAction(zoomAction)
 
@@ -1967,7 +1967,7 @@ class KymographNavigator(QMainWindow):
             self.reference_contrast_settings = {}
 
             self.movieNameLabel.setText("")
-            self.movieNameLabel.setStyleSheet("background: transparent; font-size: 16px; font-weight: bold")
+            self.movieNameLabel.setStyleSheet("background: transparent; color: black; font-size: 16px; font-weight: bold")
             self.movieNameLabel.setText(os.path.basename(fname))
             self.movieNameLabel.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             
@@ -2254,12 +2254,13 @@ class KymographNavigator(QMainWindow):
         if self.looping:
             self.stoploop()
 
+        if self.refBtn.isChecked():
+            self.refBtn.setChecked(False)
+
         self.cancel_left_click_sequence()
 
         # 1) figure out which channel we’re on
         ch = index + 1
-        if self.flashchannel:
-            self.flash_message(f"Channel {ch}")
 
         # 2) refresh kymographs
         self.update_kymo_list_for_channel()
@@ -2322,6 +2323,14 @@ class KymographNavigator(QMainWindow):
         self._ch_overlay.adjustSize()
         self._reposition_channel_overlay()
         self._ch_overlay.show()
+
+        # 9) show channel overlay …
+        self._ch_overlay.show()
+
+        # 10) clear & redraw trajectories on the movie, now that channel has changed
+        self.movieCanvas.clear_movie_trajectory_markers()
+        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw()
 
     def _on_overlay_clicked(self):
         # build a stand-alone QMenu
@@ -3620,7 +3629,10 @@ class KymographNavigator(QMainWindow):
         # Restore the saved view limits (thus preserving the manual zoom)
         self.movieCanvas.ax.set_xlim(current_xlim)
         self.movieCanvas.ax.set_ylim(current_ylim)
+
         self.movieCanvas.draw_idle()
+        canvas = self.movieCanvas.figure.canvas
+        self.movieCanvas._bg = canvas.copy_from_bbox(self.movieCanvas.ax.bbox)
 
     def jump_to_analysis_point(self, index, animate="ramp", zoom=False):
 
@@ -3709,8 +3721,7 @@ class KymographNavigator(QMainWindow):
             # print("jump_to_analysis_point analysis_channel", self.analysis_channel)
 
             if self.analysis_channel is not None:
-                if getattr(self.movieCanvas, 'current_channel', None) != self.analysis_channel:
-                    self._select_channel(self.analysis_channel)
+                self._select_channel(self.analysis_channel)
 
             if mc.sum_mode:
                 mc.display_sum_frame()
@@ -3800,11 +3811,19 @@ class KymographNavigator(QMainWindow):
                 self.analysisSlider.setValue(index)
 
         finally:
-            # re-enable updates & single redraw
             mc.setUpdatesEnabled(True)
             kc.setUpdatesEnabled(True)
-            self.kymoCanvas.draw()
+
+            # 1) draw the movie axes so that the new frame + overlays are on screen
             self.movieCanvas.draw()
+
+            # 2) recapture the blit background for the movie axes
+            canvas = mc.figure.canvas
+            mc._bg = canvas.copy_from_bbox(mc.ax.bbox)
+            # mc._roi_bg = canvas.copy_from_bbox(mc.ax.bbox)
+
+            # 3) draw any other canvases as needed
+            self.kymoCanvas.draw()
 
             self.frameSlider.blockSignals(False)
             if hasattr(self, 'analysisSlider'):
@@ -4656,57 +4675,6 @@ class KymographNavigator(QMainWindow):
         image, center, crop_size, sigma, intensity, background, peak, pointcolor = self.histogramCanvas._last_histogram_params
         self.histogramCanvas._do_update_histogram(image, center, crop_size, sigma, intensity, background, peak, pointcolor)
 
-    def finalizeTrajectory(self, analysis_points, trajid=None):
-        if not analysis_points or len(analysis_points) < 2:
-            return
-        
-        if self.sumBtn.isChecked():
-            self.sumBtn.setChecked(False)
-
-        analysis_points.sort(key=lambda pt: pt[0])
-        self.analysis_points = analysis_points
-        self.analysis_start, self.analysis_end = analysis_points[0], analysis_points[-1]
-        
-        self.run_analysis_points()
-
-        if self.cancelled:
-            self.cancelled=False
-            return
-
-        # add to trajectory canvas
-        self.trajectoryCanvas.add_trajectory_from_navigator(trajid=trajid)
-
-        # compute HMM segmentation + full disp/vel
-        # state_seq, segments, model, disp_full, vel_full, posteriors = self.segment_track_hmm(
-        #     spot_centers=spot_centers,
-        #     frame_interval_ms=self.frame_interval,
-        #     pixel_size_nm=self.pixel_size
-        # )
-        # # build absolute times array
-        # times = np.array(self.analysis_frames) * (self.frame_interval / 1000.0)
-        # # now plotmn
-        # self.debug_plot_hmm_segmentation(times, vel_full, disp_full, segments, posteriors)
-
-        #########ADD PERCENT COLOCALISED TO CUSTOM COLUMNS, ONE PER OTHER CHANNEL
-
-        self.trajectory_finalized = True
-        self.new_sequence_start   = True
-        
-        self.intensityCanvas.current_index = 0
-        self.loop_index = 0
-        self.analysis_points = []
-        self.analysis_anchors = []
-        self.analysis_roi = None
-        self.update_movie_analysis_line()
-        self.movieCanvas.clear_manual_marker()
-        # self.movieCanvas.clear_manual_marker()
-        self.movieCanvas._manual_marker_active = False
-
-        is_roi = self.modeSwitch.isChecked()
-        if is_roi:
-            self.set_roi_mode(False)
-
-
     # def compute_step_features(self, spot_centers, frame_interval_ms, pixel_size_nm):
     #     """
     #     Given spot_centers = list of (x,y) or None,
@@ -4989,6 +4957,54 @@ class KymographNavigator(QMainWindow):
     #     canvas.draw()
     #     dlg.exec_()
 
+    def finalizeTrajectory(self, analysis_points, trajid=None):
+        if not analysis_points or len(analysis_points) < 2:
+            return
+        
+        if self.sumBtn.isChecked():
+            self.sumBtn.setChecked(False)
+
+        analysis_points.sort(key=lambda pt: pt[0])
+        self.analysis_points = analysis_points
+        self.analysis_start, self.analysis_end = analysis_points[0], analysis_points[-1]
+        
+        self.run_analysis_points()
+
+        if self.cancelled:
+            self.cancelled=False
+            return
+
+        # add to trajectory canvas
+        self.trajectoryCanvas.add_trajectory_from_navigator(trajid=trajid)
+
+        # compute HMM segmentation + full disp/vel
+        # state_seq, segments, model, disp_full, vel_full, posteriors = self.segment_track_hmm(
+        #     spot_centers=spot_centers,
+        #     frame_interval_ms=self.frame_interval,
+        #     pixel_size_nm=self.pixel_size
+        # )
+        # # build absolute times array
+        # times = np.array(self.analysis_frames) * (self.frame_interval / 1000.0)
+        # # now plotmn
+        # self.debug_plot_hmm_segmentation(times, vel_full, disp_full, segments, posteriors)
+
+        self.trajectory_finalized = True
+        self.new_sequence_start   = True
+        
+        self.intensityCanvas.current_index = 0
+        self.loop_index = 0
+        self.analysis_points = []
+        self.analysis_anchors = []
+        self.analysis_roi = None
+        self.update_movie_analysis_line()
+        self.movieCanvas.clear_manual_marker()
+        # self.movieCanvas.clear_manual_marker()
+        self.movieCanvas._manual_marker_active = False
+
+        is_roi = self.modeSwitch.isChecked()
+        if is_roi:
+            self.set_roi_mode(False)
+
     def endKymoClickSequence(self):
         anchors = self.analysis_anchors
         roi = self.analysis_roi
@@ -5030,7 +5046,7 @@ class KymographNavigator(QMainWindow):
         self.analysis_roi = None
         self.analysis_channel = int(self.movieChannelCombo.currentText()) #1 indexed
         self.finalizeTrajectory(self.analysis_points)
-        self.cancel_left_click_sequence()
+        # self.cancel_left_click_sequence()
         # self.movieCanvas.draw_idle()
 
     def hasMovieClickSequence(self):
@@ -5211,9 +5227,55 @@ class KymographNavigator(QMainWindow):
 
     def on_movie_click(self, event):
         if (
-            event.button == 1 and
-            hasattr(event, 'guiEvent') and
-            (event.guiEvent.modifiers() & Qt.MetaModifier)
+            event.button == 1
+            and event.inaxes == self.movieCanvas.ax
+            and self.traj_overlay_button.isChecked()
+            and len(self.analysis_points) <= 1
+        ):
+            # Loop through all trajectory‐artists (annotations and scatter) that we stored
+            for artist in getattr(self.movieCanvas, "movie_trajectory_markers", []):
+                hit, info = artist.contains(event)
+                if not hit:
+                    continue
+
+                # We clicked one of our annotations or scatter points.
+                # First, stop any looping.
+                if self.looping:
+                    self.stoploop()
+
+                self.cancel_left_click_sequence()
+
+                # Grab the trajectory index from the artist
+                traj_idx = getattr(artist, "traj_idx", None)
+                if traj_idx is None:
+                    continue
+
+                # 1) If they clicked a new trajectory (different row), update table selection
+                current_row = self.trajectoryCanvas.table_widget.currentRow()
+                if traj_idx != current_row:
+                    tbl = self.trajectoryCanvas.table_widget
+                    tbl.blockSignals(True)
+                    tbl.selectRow(traj_idx)
+                    tbl.blockSignals(False)
+                    # trigger whatever happens when a trajectory is selected:
+                    self.trajectoryCanvas.on_trajectory_selected_by_index(traj_idx)
+
+                # 2) If they clicked on a scatter‐dot (info["ind"] exists), jump to that point:
+                #    info["ind"][0] is the index into traj["spot_centers"].
+                point_idx = info.get("ind", [None])[0]
+                if point_idx is not None:
+                    self.jump_to_analysis_point(point_idx)
+                    if self.sumBtn.isChecked():
+                        self.sumBtn.setChecked(False)
+                    self.intensityCanvas.current_index = point_idx
+                    self.intensityCanvas.highlight_current_point()
+
+                # Consume this click (don’t let it fall through).
+                return
+        if (
+            event.button == 1
+            and getattr(event, 'guiEvent', None) is not None
+            and (event.guiEvent.modifiers() & Qt.MetaModifier)
         ):
             return
         # — only if click was inside the image —
@@ -5457,31 +5519,30 @@ class KymographNavigator(QMainWindow):
     def update_movie_analysis_line(self):
         if not hasattr(self, "analysis_points") or not self.analysis_points:
             return
-        # Sort the points by frame index.
+
         points = sorted(self.analysis_points, key=lambda pt: pt[0])
         xs = [pt[1] for pt in points]
         ys = [pt[2] for pt in points]
-        # Remove any existing temporary line.
+
+        # If there’s already a temporary line, remove it
         if hasattr(self, "temp_movie_analysis_line") and self.temp_movie_analysis_line is not None:
             try:
                 self.temp_movie_analysis_line.remove()
             except Exception:
                 pass
-        # — 1) create an animated temp‐line if needed —
-        if not hasattr(self, "temp_movie_analysis_line") or self.temp_movie_analysis_line is None:
-            self.temp_movie_analysis_line, = self.movieCanvas.ax.plot(
-                xs, ys,
-                color='#7da1ff', linewidth=1.5, linestyle='--'
-            )
-            # self.temp_movie_analysis_line.set_animated(True)
 
-            # — take one full draw & grab the background now —
-            canvas = self.movieCanvas.figure.canvas
-            canvas.draw()
-            self.movieCanvas._bg = canvas.copy_from_bbox(self.movieCanvas.ax.bbox)
-        else:
-            # just update data for subsequent blits
-            self.temp_movie_analysis_line.set_data(xs, ys)
+        # 1) create a new dotted line
+        self.temp_movie_analysis_line, = self.movieCanvas.ax.plot(
+            xs, ys,
+            color='#7da1ff', linewidth=1.5, linestyle='--'
+        )
+
+        # 2) Immediately draw it so the user sees it now
+        canvas = self.movieCanvas.figure.canvas
+        canvas.draw()                       # full redraw, shows the new line
+
+        # 3) Store a “clean” background without the animated portion (if you still want to blit later)
+        self.movieCanvas._bg = canvas.copy_from_bbox(self.movieCanvas.ax.bbox)
 
         # NB: NO draw_idle() here — we’ll blit in on_movie_motion
 
@@ -5594,15 +5655,10 @@ class KymographNavigator(QMainWindow):
                 and getattr(self.movie, "ndim", 0) == 4):
             max_ch = self.movie.shape[self._channel_axis]
             if 1 <= requested_channel <= max_ch:
+                if self.flashchannel and requested_channel != int(self.movieChannelCombo.currentText()):
+                    self.flash_message(f"Channel {requested_channel}")
+                # This will emit currentIndexChanged → on_channel_changed(index)
                 self.movieChannelCombo.setCurrentIndex(requested_channel - 1)
-                if self.sumBtn.isChecked():
-                    self.movieCanvas.display_sum_frame()
-                if self.refBtn.isChecked():
-                    self.refBtn.setChecked(False)
-
-        self.movieCanvas.clear_movie_trajectory_markers()
-        self.movieCanvas.draw_trajectories_on_movie()
-        self.movieCanvas.draw()
 
     def _move_manual_marker(self, dx, dy):
         if self.movie is None or self.movieCanvas.roiAddMode:
@@ -5653,25 +5709,48 @@ class KymographNavigator(QMainWindow):
         canvas.draw_idle()
 
     def _simulate_left_click(self):
-        """Fire your on_movie_click handler at the manual marker or cursor."""
         if self.movie is None or self.movieCanvas.roiAddMode:
             return
-        canvas = self.movieCanvas
+        canvas = self.movieCanvas  # your FigureCanvasQTAgg
 
-        self.intensityCanvas.clear_highlight()
-
+        # 1) figure out data‐space coords (xdata,ydata) via either manual marker or cursor
         if getattr(canvas, "_manual_marker_active", False):
-            x, y = canvas._manual_marker_pos
+            xdata, ydata = canvas._manual_marker_pos
+            # we’ll still compute pixel coords from xdata,ydata below
         else:
+            # Get the cursor’s global (screen) position, then map into widget‐space
             pos = canvas.mapFromGlobal(QtGui.QCursor.pos())
-            x, y = canvas.ax.transData.inverted().transform((pos.x(), pos.y()))
+            x_w, y_w = pos.x(), pos.y()  # in logical points
 
+            # 2) convert from logical points → device (physical) pixels
+            dpr = canvas.devicePixelRatioF()  # usually 2.0 on Retina
+            x_phys = x_w * dpr
+            # Flip Y: Qt’s (0,0) is top‐left in points, Matplotlib’s (0,0) is bottom‐left in pixels
+            height_pts = canvas.height()
+            height_phys = height_pts * dpr
+            y_phys = height_phys - (y_w * dpr)
+
+            # 3) invert from display (pixels) → data (xdata, ydata)
+            xdata, ydata = canvas.ax.transData.inverted().transform((x_phys, y_phys))
+
+        # 4) build a fake event that has both x/y (pixels) and xdata/ydata
         evt = type("Evt", (), {})()
-        evt.xdata   = x
-        evt.ydata   = y
-        evt.button  = 1
+        evt.xdata    = xdata
+        evt.ydata    = ydata
+
+        # If we came via manual_marker, compute physical pixels similarly:
+        if getattr(canvas, "_manual_marker_active", False):
+            # Transform (xdata,ydata) → display‐pixel coords
+            x_phys, y_phys = canvas.ax.transData.transform((xdata, ydata))
+        evt.x = x_phys
+        evt.y = y_phys
+
+        evt.button   = 1
         evt.dblclick = False
-        evt.inaxes  = canvas.ax
+        evt.inaxes   = canvas.ax
+        evt.guiEvent = None
+
+        # 5) now calling artist.contains(evt) will see the correct pixel coords
         self.on_movie_click(evt)
 
     def _prev_frame(self):
@@ -6142,54 +6221,60 @@ class KymographNavigator(QMainWindow):
         frac = best_along / total
         return frac * kymo_width
 
-    def on_analysis_slider_changed(self, index):
-        self.movieCanvas.manual_zoom = True
-        if self.looping:
-            self.stoploop()
-        # Sync intensity canvas
-        self.intensityCanvas.current_index = index
+    # def on_analysis_slider_changed(self, index):
+    #     self.movieCanvas.manual_zoom = True
+    #     if self.looping:
+    #         self.stoploop()
+    #     # Sync intensity canvas
+    #     self.intensityCanvas.current_index = index
 
-        # 1) Full update of movie and kymo contexts
-        self.jump_to_analysis_point(index, animate="discrete")
+    #     # 1) Full update of movie and kymo contexts
+    #     self.jump_to_analysis_point(index, animate="discrete")
 
-        # 1) redraw static trajectories & cache background
-        self.kymoCanvas.draw_trajectories_on_kymo()
-        # remove any existing marker
-        if getattr(self.kymoCanvas, "_marker", None) is not None:
-            try:
-                self.kymoCanvas._marker.remove()
-            except Exception:
-                pass
-            self.kymoCanvas._marker = None
-        self.kymoCanvas.update_view()
+    #     mc = self.movieCanvas
+    #     mc.draw()  
+    #     canvas = mc.figure.canvas
+    #     mc._bg     = canvas.copy_from_bbox(mc.ax.bbox)
+    #     mc._roi_bg = canvas.copy_from_bbox(mc.ax.bbox)
 
-        # 2) now overlay just the little magenta/grey X at the current point
-        if not self.analysis_frames or not self.analysis_search_centers:
-            return
-        n = len(self.analysis_frames)
-        if index < 0 or index >= n:
-            return
-        frame = self.analysis_frames[index]
-        cx, cy = self.analysis_search_centers[index]
+    #     # 1) redraw static trajectories & cache background
+    #     self.kymoCanvas.draw_trajectories_on_kymo()
+    #     # remove any existing marker
+    #     if getattr(self.kymoCanvas, "_marker", None) is not None:
+    #         try:
+    #             self.kymoCanvas._marker.remove()
+    #         except Exception:
+    #             pass
+    #         self.kymoCanvas._marker = None
+    #     self.kymoCanvas.update_view()
 
-        # pick fitted vs raw
-        fc = None
-        if hasattr(self, "analysis_fit_params") and index < len(self.analysis_fit_params):
-            fc, sigma, peak = self.analysis_fit_params[index]
-        use_center = fc if fc is not None else (cx, cy)
-        x0, y0 = use_center
+    #     # 2) now overlay just the little magenta/grey X at the current point
+    #     if not self.analysis_frames or not self.analysis_search_centers:
+    #         return
+    #     n = len(self.analysis_frames)
+    #     if index < 0 or index >= n:
+    #         return
+    #     frame = self.analysis_frames[index]
+    #     cx, cy = self.analysis_search_centers[index]
 
-        kymo_name = self.kymoCombo.currentText()
-        if kymo_name and kymo_name in self.kymographs and self.rois:
-            roi = self.rois[self.roiCombo.currentText()]
-            if is_point_near_roi(use_center, roi):
-                xk = self.compute_kymo_x_from_roi(
-                    roi, x0, y0, self.kymographs[kymo_name].shape[1]
-                )
-                if xk is not None:
-                    disp_frame = (self.movie.shape[0] - 1) - frame
-                    color = self.get_point_color() if fc is not None else "grey"
-                    self.kymoCanvas.add_circle(xk, disp_frame, color=color)
+    #     # pick fitted vs raw
+    #     fc = None
+    #     if hasattr(self, "analysis_fit_params") and index < len(self.analysis_fit_params):
+    #         fc, sigma, peak = self.analysis_fit_params[index]
+    #     use_center = fc if fc is not None else (cx, cy)
+    #     x0, y0 = use_center
+
+    #     kymo_name = self.kymoCombo.currentText()
+    #     if kymo_name and kymo_name in self.kymographs and self.rois:
+    #         roi = self.rois[self.roiCombo.currentText()]
+    #         if is_point_near_roi(use_center, roi):
+    #             xk = self.compute_kymo_x_from_roi(
+    #                 roi, x0, y0, self.kymographs[kymo_name].shape[1]
+    #             )
+    #             if xk is not None:
+    #                 disp_frame = (self.movie.shape[0] - 1) - frame
+    #                 color = self.get_point_color() if fc is not None else "grey"
+    #                 self.kymoCanvas.add_circle(xk, disp_frame, color=color)
 
     def save_rois(self):
         # Ask user where to save the ZIP file.
@@ -7180,7 +7265,7 @@ class KymographNavigator(QMainWindow):
             scatter_kwargs = {"color": main, "zorder": 4}
         elif mode == "value":
             val = traj["custom_fields"].get(col)
-            c = color_map.get(val, "white")
+            c = color_map.get(val, "#7DA1FF")
             scatter_kwargs = {"color": c, "zorder": 4}
             main = c
         elif mode == "coloc":

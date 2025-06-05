@@ -16,13 +16,10 @@ mpl.rcParams.update({
 })
 
 def main():
-    # Create the application instance.
     app = QApplication(sys.argv)
     
-    # Set the application name and display name.
     app.setApplicationName("Tracy")
     try:
-        # If your version of PyQt supports it, this will update the menu title on macOS.
         app.setApplicationDisplayName("Tracy")
     except AttributeError:
         pass
@@ -49,30 +46,24 @@ def main():
         app.setFont(default_font)
         # print(f"✨ App default font set to: '{default_font.family()}', weight={default_font.weight()}")
 
-    # 1. point to your bundled font folder
     font_dir = resource_path("fonts")
     font_files = [os.path.join(font_dir, fname)
                 for fname in ("Figtree-Regular.ttf", "Figtree-Bold.ttf")]
 
-    # 2. register each file with Matplotlib
     for fpath in font_files:
         font_manager.fontManager.addfont(fpath)
 
-    # 3. now set your default family to Figtree
     mpl.rcParams['font.family'] = 'Figtree'
 
     qss_path = resource_path('style.qss')
     app.setStyleSheet(load_stylesheet(qss_path))
 
-    # Create the main window.
     navigator = KymographNavigator()
     
     navigator.showMaximized()
 
-    # Show the navigator window.
     navigator.show()
 
-    # Start the application event loop.
     sys.exit(app.exec_())
 
 def resource_path(relative):

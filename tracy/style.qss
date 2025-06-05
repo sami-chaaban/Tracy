@@ -91,7 +91,8 @@ QTableView::viewport {
     background-color: transparent;
 }
 QTableWidget {
-    background-color:rgb(245, 245, 245);
+    color: black;
+    background-color: transparent;
     gridline-color: #E0E0E0;
     border: none;
     border-radius: 5px;
