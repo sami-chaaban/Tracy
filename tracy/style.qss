@@ -1,6 +1,7 @@
 
 QWidget {
     background-color: #ECF0FC;
+    color: #000000
 ;
     font-family: Figtree, Helvetica, Arial, sans-serif;
     font-size: 14px;

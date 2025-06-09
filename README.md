@@ -14,6 +14,7 @@
 3. [Additional features](#features)
     * [Drift correction](#driftcor)
     * [Colocalization](#colocalization)
+    * [Step finding](#stepfinding)
     * [Custom column](#customcolumns)
     * [Color by value](#coloring)
 4. [Save & Load](#saveload)
@@ -114,6 +115,16 @@
 * New columns will show up in the table representing the percentage of spots within a trajectory that are colocalized
 * As long as the colocalization option is toggled, every subsequent trajectory will have its colocalization analysed
 * Colocalization is determined by performing a search using the same spot center coordinates but in a different channel, and marking as colocalized if a spot is found within 4 pixels of the original spot center coordinate
+* Colocalisation data will appear in the saved trajectory file
+
+### Step finding<a name="stepfinding"></a>
+
+* If your spot intensity increases or decreases in a step-like fashion, such as with bleaching data, you can analyse the steps by toggling *Calculate Steps* in the *Trajectory* menu
+* If trajectories are already available that have not had their steps analysed, it will prompt to analyse them
+* The dialog box allows you to modify the *Rolling average window* and *Minimum step size*
+* As long as the step option is toggled, every subsequent trajectory will have its steps analysed
+* Steps are found by smoothing the noisy intensity trace using the rolling average window to reveal the underlying trend, and jumps exceeding the minimum step size are detected, where segments between jumps take on the median intensity
+* Number of steps and average step size will appear in the Per-trajectory sheet of the saved trajectories, in addition to each data point's step identity in the Data Points sheet
 
 ### Custom columns<a name="customcolumns"></a>
 

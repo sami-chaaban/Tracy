@@ -175,3 +175,111 @@ def perform_gaussian_fit(frame_image,
                     float(peak), float(off))
 
     return (None,)*5
+
+def find_minima(x: np.ndarray) -> np.ndarray:
+    """
+    Return indices i where x[i] is a local minimum.
+    Equivalent to: upordown = sign(diff(x)), and look for -1→+1.
+    """
+    dx = np.diff(x)
+    upordown = np.sign(dx)  # +1 => rising, -1 => falling, 0 => flat
+    # an index i (1≤i≤len(x)-2) is a local minimum if upordown[i-1]<0 and upordown[i]>0
+    # We also include boundaries if they “look like” minima.
+    # Build boolean flags for each index in the original x:
+    # Note: len(upordown) = len(x)-1, so we shift indexes by 1.
+    first_flag = (upordown[0] > 0)       # treat x[0] as min if it starts by rising
+    last_flag  = (upordown[-1] < 0)      # treat x[-1] as min if it ends by falling
+    middle_flags = np.concatenate((
+        [False],
+        (np.diff(upordown) > 0),
+        [False]
+    ))
+    # Combine them into a single boolean array of length len(x)
+    flags = np.empty(len(x), dtype=bool)
+    flags[:] = False
+    flags[0] = first_flag
+    flags[-1] = last_flag
+    flags[1:-1] = middle_flags[1:-1]
+    return np.nonzero(flags)[0]
+
+def find_maxima(x: np.ndarray) -> np.ndarray:
+    """
+    Return indices i where x[i] is a local maximum.
+    Equivalent to: upordown = sign(diff(x)), and look for +1→-1.
+    """
+    dx = np.diff(x)
+    upordown = np.sign(dx)
+    first_flag = (upordown[0] < 0)
+    last_flag  = (upordown[-1] > 0)
+    middle_flags = np.concatenate((
+        [False],
+        (np.diff(upordown) < 0),
+        [False]
+    ))
+    flags = np.empty(len(x), dtype=bool)
+    flags[:] = False
+    flags[0] = first_flag
+    flags[-1] = last_flag
+    flags[1:-1] = middle_flags[1:-1]
+    return np.nonzero(flags)[0]
+
+
+def filterX(x0: np.ndarray, W: int, passes: int) -> dict:
+    """
+    Edge-preserving smoother + pseudo-derivative.
+    - x0: 1D array of raw intensities (no NaNs).
+    - W: half-window size.
+    - passes: number of smoothing iterations.
+    Returns a dict with:
+      'I0': original x0,
+      'I' : smoothed result,
+      'Px': pseudo-derivative = forward_mean - backward_mean
+    """
+    r = 10
+    NT = x0.size
+    x = x0.copy().astype(float)
+
+    for _ in range(passes):
+        # Pad on both ends by repeating the endpoint W times
+        left_pad  = np.full(W, x[0])
+        right_pad = np.full(W, x[-1])
+        xpad = np.concatenate((left_pad, x, right_pad))
+
+        # Pre-allocate arrays
+        xavefor = np.empty(NT)
+        xvarfor = np.empty(NT)
+        xavebak = np.empty(NT)
+        xvarbak = np.empty(NT)
+
+        # For each i in [0 .. NT-1], correspond to xpad index i+W
+        for i in range(NT):
+            forward_slice  = xpad[i+W : i+W+W+1]    # length = W+1
+            backward_slice = xpad[i : i+W+1]        # length = W+1
+            xavefor[i] = np.mean(forward_slice)
+            xvarfor[i] = np.var(forward_slice, ddof=0)
+            xavebak[i] = np.mean(backward_slice)
+            xvarbak[i] = np.var(backward_slice, ddof=0)
+
+        rsp = np.power(xvarfor, r)
+        rsm = np.power(xvarbak, r)
+        denom = rsp + rsm
+        # avoid divide-by-zero: if denom==0, give equal weight
+        zero_denom = (denom == 0)
+        denom[zero_denom] = 1.0
+        gm = rsp / denom
+        gp = rsm / denom
+        x = gp * xavefor + gm * xavebak
+
+    # After the last pass, recompute forward/backward means once more for Px:
+    left_pad  = np.full(W, x[0])
+    right_pad = np.full(W, x[-1])
+    xpad = np.concatenate((left_pad, x, right_pad))
+    xavefor = np.empty(NT)
+    xavebak = np.empty(NT)
+    for i in range(NT):
+        xavefor[i] = np.mean(xpad[i+W : i+W+W+1])
+        xavebak[i] = np.mean(xpad[i : i+W+1])
+
+    Px = xavefor - xavebak
+
+    return {"I0": x0.astype(float), "I": x, "Px": Px}

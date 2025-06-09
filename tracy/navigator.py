@@ -44,10 +44,11 @@ from .canvas_tools import (
     KymoLineOptionsDialog, CustomSplitter, 
     RoundedFrame, AxesRectAnimator, SaveKymographDialog,
     ClickableLabel, RadiusDialog, BubbleTipFilter,
-    CenteredBubbleFilter, AnimatedIconButton
+    CenteredBubbleFilter, AnimatedIconButton,
+    StepSettingsDialog
 )
 from tracy import __version__
-from .gaussian_tools import perform_gaussian_fit
+from .gaussian_tools import perform_gaussian_fit, filterX, find_minima, find_maxima
 from .roi_tools import is_point_near_roi, convert_roi_to_binary, parse_roi_blob, generate_multipoint_roi_bytes
 from .track_tools import calculate_velocities
 
@@ -87,7 +88,7 @@ class KymographNavigator(QMainWindow):
         self.analysis_start = None  # (frame_idx, x, y)
         self.analysis_end = None    # (frame_idx, x, y)
         self.last_frame_index = None
-        self.cancelled=False
+        self._is_canceled=False
 
         self.tracking_mode = "Independent"
 
@@ -254,6 +255,11 @@ class KymographNavigator(QMainWindow):
         self.color_by_column = None
 
         self.flashchannel = True
+
+        self.show_steps=False
+        self.min_step=100
+        self.W=15
+        self.passes=10
 
     def create_ui(self):
         # Create the central widget and overall layout.
@@ -821,12 +827,12 @@ class KymographNavigator(QMainWindow):
         rightPanelLayout.addWidget(roundedPlotFrame, stretch=1)
 
         self.intensityCanvas.setMouseTracking(True)
-        CenteredBubbleFilter(
-            text="Spot intensities for the trajectory",
-            parent=self,
-            delay_ms=1000,
-            visible_ms=3000
-        ).attachTo(self.intensityCanvas)
+        # CenteredBubbleFilter(
+        #     text="Spot intensities for the trajectory",
+        #     parent=self,
+        #     delay_ms=1000,
+        #     visible_ms=3000
+        # ).attachTo(self.intensityCanvas)
 
         # --- Velocity Canvas in a rounded frame ---
         self.velocityCanvas = VelocityCanvas(self, navigator=self)
@@ -853,7 +859,7 @@ class KymographNavigator(QMainWindow):
             visible_ms=3000
         ).attachTo(self.velocityCanvas)
 
-        # --- Analysis Slider (optional; you can also wrap it similarly if desired)
+        # --- Analysis Slider
         # self.analysisSlider = QSlider(Qt.Horizontal)
         # analysissliderfilter = BubbleTipFilter("Slide through trajectory points", self, placement="left")
         # self.analysisSlider.installEventFilter(analysissliderfilter)
@@ -1427,15 +1433,28 @@ class KymographNavigator(QMainWindow):
                     val = pct_by_ch.get(ch, "")
                 self.trajectoryCanvas._mark_custom(row, hdr, val)
 
+         # ── 7.5) Steps ──
+        if getattr(self, "show_steps", False):
+            # compute_steps_for_data should return (step_indices, step_medians).
+            step_idxs, step_meds = self.compute_steps_for_data(
+                self.analysis_frames,
+                self.analysis_intensities,
+            )
+            traj["step_indices"] = step_idxs
+            traj["step_medians"] = step_meds
+        else:
+            # if steps aren’t shown, clear them out
+            traj["step_indices"] = None
+            traj["step_medians"] = None
+
         # ── 8) Refresh all canvases ──
         self.kymoCanvas.update_view()
         self.kymoCanvas.clear_kymo_trajectory_markers()
         self.kymoCanvas.remove_circle()
 
         # re-draw overlays if toggled
-        if self.traj_overlay_button.isChecked():
-            self.movieCanvas.draw_trajectories_on_movie()
-            self.kymoCanvas.draw_trajectories_on_kymo()
+        self.movieCanvas.draw_trajectories_on_movie()
+        self.kymoCanvas.draw_trajectories_on_kymo()
 
         # re-draw intensity / velocity plots
         self.intensityCanvas.plot_intensity(
@@ -1617,6 +1636,11 @@ class KymographNavigator(QMainWindow):
         trajMenu.addAction(valColumnAct)
         valColumnAct.triggered.connect(self.trajectoryCanvas._add_value_column_dialog)
 
+        self.showStepsAction = QAction("Calculate Steps", self, checkable=True)
+        self.showStepsAction.setChecked(False)
+        self.showStepsAction.toggled.connect(self.on_show_steps_toggled)
+        trajMenu.addAction(self.showStepsAction)
+
         self._colorBySeparator = trajMenu.addSeparator()
         self._colorByActions   = []
         self.trajMenu          = trajMenu
@@ -1624,7 +1648,6 @@ class KymographNavigator(QMainWindow):
         viewMenu = menubar.addMenu("View")
 
         self.invertAct = QAction("Invert", self, checkable=True)
-        self.invertAct.setStatusTip("Swap foreground/background (black↔white)")
         self.invertAct.triggered.connect(self.toggle_invert_cmap)
         viewMenu.addAction(self.invertAct)
 
@@ -1859,6 +1882,9 @@ class KymographNavigator(QMainWindow):
 
         self.clear_flag = False
         self.cancel_left_click_sequence()
+
+        self.show_steps = False
+        self.showStepsAction.setChecked(False)
 
         if (self.rois or self.kymographs or
             (hasattr(self, 'trajectoryCanvas') and self.trajectoryCanvas.trajectories)):
@@ -2318,18 +2344,63 @@ class KymographNavigator(QMainWindow):
             frame     = self.get_movie_frame(frame_idx)
             mc.update_image_data(frame)
 
-        ch = index + 1
         self._ch_overlay.setText(f"ch{ch}")
         self._ch_overlay.adjustSize()
         self._reposition_channel_overlay()
         self._ch_overlay.show()
 
-        # 9) show channel overlay …
-        self._ch_overlay.show()
-
         # 10) clear & redraw trajectories on the movie, now that channel has changed
         self.movieCanvas.clear_movie_trajectory_markers()
         self.movieCanvas.draw_trajectories_on_movie()
+
+        if self.intensityCanvas.point_highlighted and ch == self.analysis_channel and self.intensityCanvas._last_plot_args is not None:
+
+            ic_index = self.intensityCanvas.current_index
+
+            # cache arrays once
+            centers = np.asarray(self.analysis_search_centers)  # shape (N,2)
+            cx, cy = centers[ic_index]
+
+            mc.overlay_rectangle(cx, cy, int(2*self.searchWindowSpin.value()))
+            mc.remove_gaussian_circle()
+
+            fc = fs = pk = None
+            # draw fit circle & intensity highlight
+            if hasattr(self, "analysis_fit_params") and ic_index < len(self.analysis_fit_params):
+                fc, fs, pk = self.analysis_fit_params[ic_index]
+
+            pointcolor = self.intensityCanvas.get_current_point_color()
+            mc.add_gaussian_circle(fc, fs, pointcolor)
+
+            # only overlay kymo marker if ROI present
+            kymo_name = self.kymoCombo.currentText()
+            # look up its channel in the map
+            info = self.kymo_roi_map.get(kymo_name, {})
+            current_kymo_ch = info.get("channel", None)
+            if self.analysis_channel == current_kymo_ch or self.analysis_channel is None:
+                kymo_name = self.kymoCombo.currentText()
+                if kymo_name and kymo_name in self.kymographs and self.rois:
+                    roi = self.rois[self.roiCombo.currentText()]
+                    xk = None
+                    # check fit‐center first, then raw center
+                    if fc is not None and is_point_near_roi(fc, roi):
+                        xk = self.compute_kymo_x_from_roi(
+                            roi, fc[0], fc[1],
+                            self.kymographs[kymo_name].shape[1]
+                        )
+                    elif is_point_near_roi((cx, cy), roi):
+                        xk = self.compute_kymo_x_from_roi(
+                            roi, cx, cy,
+                            self.kymographs[kymo_name].shape[1]
+                        )
+                    if xk is not None:
+                        disp_frame = (self.movie.shape[0] - 1) - self.frameSlider.value()
+                        self.kymoCanvas.add_circle(
+                            xk, disp_frame,
+                            color=pointcolor if fc is not None else 'grey'
+                        )
+
+
         self.movieCanvas.draw()
 
     def _on_overlay_clicked(self):
@@ -2913,8 +2984,7 @@ class KymographNavigator(QMainWindow):
         # — Display the kymograph
         img = np.flipud(self.kymographs[kymoName])
         self.kymoCanvas.display_image(img)
-        if self.traj_overlay_button.isChecked():
-            self.kymoCanvas.draw_trajectories_on_kymo()
+        self.kymoCanvas.draw_trajectories_on_kymo()
         self.kymoCanvas.draw_idle()
 
         # — Restore pan+zoom for this ROI (if any)
@@ -3030,6 +3100,11 @@ class KymographNavigator(QMainWindow):
         
     def on_kymo_click(self, event):
 
+        if event.button == 3 and self._skip_next_right:
+            # we just showed the menu for a label—don’t do live updates
+            self._skip_next_right = False
+            return
+
         if event.button == 1 and event.inaxes is self.kymoCanvas.ax and self.traj_overlay_button.isChecked() and len(self.analysis_points) == 0:
             current_row = self.trajectoryCanvas.table_widget.currentRow()
             for scatter in self.kymoCanvas.scatter_objs_traj:
@@ -3082,11 +3157,6 @@ class KymographNavigator(QMainWindow):
 
         # 2) your normal early‑outs
         if self.kymoCanvas.image is None or event.xdata is None or event.ydata is None:
-            return
-
-        if event.button == 3 and self._skip_next_right:
-            # we just showed the menu for a label—don’t do live updates
-            self._skip_next_right = False
             return
 
         if event.button == 3:
@@ -3254,7 +3324,11 @@ class KymographNavigator(QMainWindow):
             self._kymo_bg = canvas.copy_from_bbox(self.kymoCanvas.ax.bbox)
 
     def on_kymo_right_click(self, event):
-        
+
+        if getattr(self, "_skip_next_right", False):
+            self._skip_next_right = False
+            return
+    
         for lbl, bbox in self.kymoCanvas._kymo_label_bboxes.items():
             if bbox.contains(event.x, event.y):
                 # it’s a label: get its trajectory row
@@ -3384,6 +3458,36 @@ class KymographNavigator(QMainWindow):
 
         # Now perform the analysis (which will recompute the histogram based on the current spot analysis)
         self.analyze_spot_at_event(event)
+
+
+    def _on_kymo_label_pick(self, event):
+        # whenever any label is picked—left *or* right
+        if getattr(self, "analysis_anchors", None) and not getattr(self, "trajectory_finalized", False):
+            return
+        artist = event.artist
+        if artist in self._kymo_label_to_row:
+            self._last_kymo_artist = artist
+            # if it was a left click, select the row immediately
+            if event.mouseevent.button == 1:
+                row = self._kymo_label_to_row[artist]
+                tbl = self.trajectoryCanvas.table_widget
+                tbl.setCurrentCell(row, 0)
+                tbl.scrollToItem(tbl.item(row, 0))
+                self._ignore_next_kymo_click = True
+                self._skip_next_right = True
+
+        if event.mouseevent.button == 3:
+            self._last_kymo_artist = event.artist
+            self._skip_next_right = True
+            gui_evt = getattr(event.mouseevent, "guiEvent", None)
+            if isinstance(gui_evt, QMouseEvent):
+                # use the real global position
+                self._show_kymo_context_menu(gui_evt.globalPos())
+            else:
+                # fallback for non‐Qt backends
+                local = QPoint(int(event.mouseevent.x), int(event.mouseevent.y))
+                self._show_kymo_context_menu(self.kymoCanvas.mapToGlobal(local))
+            return
 
     def on_kymo_hover(self, event):
         # Debug output
@@ -3985,9 +4089,9 @@ class KymographNavigator(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "", "There was an error adding computing this trajectory. Please try again (consider a longer trajectory or different radius).")
             print(f"_compute failed: {e}")
-            self.cancelled = True
+            self._is_canceled = True
         
-        if self.cancelled:
+        if self._is_canceled:
             return
         
         self.analysis_start, self.analysis_end = points[0], points[-1]
@@ -4024,6 +4128,18 @@ class KymographNavigator(QMainWindow):
                 ch: [None]*N for ch in range(1, n_chan+1) if ch != ref_ch
             }
 
+        if getattr(self, "show_steps", False):
+            (
+                self.analysis_step_indices,
+                self.analysis_step_medians
+            ) = self.compute_steps_for_data(
+                self.analysis_frames,
+                self.analysis_intensities
+            )
+        else:
+            self.analysis_step_indices = None
+            self.analysis_step_medians = None
+
         # slider
         if hasattr(self, 'analysisSlider'):
             s = self.analysisSlider
@@ -4048,7 +4164,7 @@ class KymographNavigator(QMainWindow):
                 )
             except Exception as e:
                 print(f"_compute_independent failed: {e}")
-                self.cancelled = True
+                self._is_canceled = True #REMOVE THIS?
                 return None, None, None, None, None, None
             return self._postprocess_smooth(frames, coords, ints, fit_params, background, bg)
         elif mode == "Same center":
@@ -4106,7 +4222,7 @@ class KymographNavigator(QMainWindow):
                 progress.setValue(idx+1)
                 QApplication.processEvents()
                 if progress.wasCanceled():
-                    self.cancelled = True
+                    self._is_canceled = True
                     progress.close()
                     break
 
@@ -4116,6 +4232,8 @@ class KymographNavigator(QMainWindow):
         return all_frames, all_coords, all_coords, integrated_intensities, fit_params, background
 
     def _compute_independent(self, points, bg=None, showprogress=True):  
+
+        # print("compute", self._is_canceled)
 
         all_frames = []
         for i in range(len(points)-1):
@@ -4144,12 +4262,20 @@ class KymographNavigator(QMainWindow):
         # 4) Walk each segment in turn
         idx = 0
         for i in range(len(points)-1):
+            if getattr(self, "_is_canceled", False):
+                if progress:
+                    progress.close()
+                return all_frames, all_coords, all_coords, integrated_intensities, fit_params, background
             f1, x1, y1 = points[i]
             f2, x2, y2 = points[i+1]
             seg = list(range(f1, f2+1)) if i==0 else list(range(f1+1, f2+1))
             n = len(seg)
 
             for j, f in enumerate(seg):
+                if getattr(self, "_is_canceled", False):
+                    if progress:
+                        progress.close()
+                    return all_frames, all_coords, all_coords, integrated_intensities, fit_params, background
                 # compute independent center
                 t = j/(n-1) if n>1 else 0
                 cx = x1 + t*(x2-x1)
@@ -4183,7 +4309,7 @@ class KymographNavigator(QMainWindow):
                     progress.setValue(idx)
                     QApplication.processEvents()
                     if progress.wasCanceled():
-                        self.cancelled = True
+                        self._is_canceled = True
                         progress.close()
                         return all_frames, all_coords, all_coords, integrated_intensities, fit_params, background
 
@@ -4232,7 +4358,6 @@ class KymographNavigator(QMainWindow):
         # 5) Sequentially track through each segment
         current_center = (points[0][1], points[0][2])
         processed = 0
-        canceled  = False
 
         for i in range(len(points) - 1):
             f1, x1, y1 = points[i]
@@ -4281,7 +4406,7 @@ class KymographNavigator(QMainWindow):
                     progress.setValue(processed)
                     QApplication.processEvents()
                     if progress.wasCanceled():
-                        self.cancelled = True
+                        self._is_canceled = True
                         progress.close()
                         return (
                             all_frames,
@@ -4292,7 +4417,7 @@ class KymographNavigator(QMainWindow):
                             background,
                         )
 
-            if canceled:
+            if self._is_canceled:
                 break
 
         # 6) clean up progress dialog
@@ -4970,8 +5095,8 @@ class KymographNavigator(QMainWindow):
         
         self.run_analysis_points()
 
-        if self.cancelled:
-            self.cancelled=False
+        if self._is_canceled:
+            self._is_canceled=False
             return
 
         # add to trajectory canvas
@@ -5838,34 +5963,6 @@ class KymographNavigator(QMainWindow):
             self._reposition_legend()
 
         return super().eventFilter(obj, ev)
-
-    def _on_kymo_label_pick(self, event):
-        # whenever any label is picked—left *or* right
-        if getattr(self, "analysis_anchors", None) and not getattr(self, "trajectory_finalized", False):
-            return
-        artist = event.artist
-        if artist in self._kymo_label_to_row:
-            self._last_kymo_artist = artist
-            # if it was a left click, select the row immediately
-            if event.mouseevent.button == 1:
-                row = self._kymo_label_to_row[artist]
-                tbl = self.trajectoryCanvas.table_widget
-                tbl.setCurrentCell(row, 0)
-                tbl.scrollToItem(tbl.item(row, 0))
-                self._ignore_next_kymo_click = True
-
-        if event.mouseevent.button == 3:
-            self._last_kymo_artist = event.artist
-            self._skip_next_right = True
-            gui_evt = getattr(event.mouseevent, "guiEvent", None)
-            if isinstance(gui_evt, QMouseEvent):
-                # use the real global position
-                self._show_kymo_context_menu(gui_evt.globalPos())
-            else:
-                # fallback for non‐Qt backends
-                local = QPoint(int(event.mouseevent.x), int(event.mouseevent.y))
-                self._show_kymo_context_menu(self.kymoCanvas.mapToGlobal(local))
-            return
 
     def reset_contrast(self):
         image = self.movieCanvas.image
@@ -7387,3 +7484,178 @@ class KymographNavigator(QMainWindow):
         else:
             self.movieLegendWidget.hide()
             self.kymoLegendWidget.hide()
+
+    def on_show_steps_toggled(self, checked: bool):
+        """
+        Called whenever the user checks/unchecks “Show Steps.”
+        If turning on, we look for any trajectory whose `step_indices` is still None.
+        If found, prompt to compute; otherwise we simply redraw.
+        """
+        self.show_steps = checked
+
+        # 0) If turning on, let user tweak W and min_step
+        if checked:
+            dlg = StepSettingsDialog(current_W=self.W, current_min_step=self.min_step, parent=self)
+            if dlg.exec_() == QDialog.Accepted:
+                self.W = dlg.new_W
+                self.min_step = dlg.new_min_step
+            else:
+                # user cancelled → undo the toggle in the UI
+                self.show_steps = False
+                action = self.sender()
+                if isinstance(action, QAction):
+                    action.setChecked(False)
+                return
+
+        # 1) Find any trajectories that have not yet had step_indices computed:
+        missing = [
+            i for i, traj in enumerate(self.trajectoryCanvas.trajectories)
+            if traj.get("step_indices") is None
+        ]
+
+        # 2) Only prompt if user just turned it on and there are missing trajectories
+        if checked and missing:
+            cnt = len(missing)
+            msg = f"{cnt} trajector{'ies' if cnt > 1 else 'y'} missing step data. Compute now?"
+            yn = QMessageBox.question(
+                self, "Compute Steps", msg,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            if yn == QMessageBox.Yes:
+                progress = QProgressDialog("Computing steps…", "Cancel", 0, cnt, self)
+                progress.setWindowModality(Qt.WindowModal)
+                progress.setMinimumDuration(0)
+                progress.show()
+
+                for idx, traj_idx in enumerate(missing):
+                    progress.setValue(idx)
+                    QApplication.processEvents()
+                    if progress.wasCanceled():
+                        break
+                    self._compute_steps_for_trajectory(traj_idx)
+
+                progress.setValue(cnt)
+                progress.close()
+            else:
+                # User declined; just redraw without steps
+                self._refresh_intensity_canvas()
+                return
+
+        # 3) Redraw whichever trajectory is currently selected
+        self._refresh_intensity_canvas()
+
+    def _refresh_intensity_canvas(self):
+        """
+        Re‐draw whatever trajectory is currently selected in the IntensityCanvas.
+        Because IntensityCanvas.plot_intensity() now checks self.navigator.show_steps,
+        it will automatically overlay or hide arrows.
+        """
+        idx = self.trajectoryCanvas.current_index
+        if idx is None or idx < 0 or idx >= len(self.trajectoryCanvas.trajectories):
+            return
+
+        traj = self.trajectoryCanvas.trajectories[idx]
+        frames = traj["frames"]
+        intensities = traj["intensities"]
+        colors = self._get_traj_colors(traj)[0]
+        avg_int = None
+        med_int = None
+
+        # If you normally pass avg/median or max_frame, do so here:
+        self.intensityCanvas.plot_intensity(
+            frames=frames,
+            intensities=intensities,
+            avg_intensity=avg_int,
+            median_intensity=med_int,
+            colors=colors,
+            max_frame=None
+        )
+
+    def _compute_steps_for_trajectory(self, traj_idx: int):
+        """
+        Look up trajectory #traj_idx (which lives in self.trajectoryCanvas.trajectories),
+        pull out its frames/intensities, call compute_steps_for_data(...), then store
+        the results back onto traj["step_indices"] and traj["step_medians"].
+        """
+        traj = self.trajectoryCanvas.trajectories[traj_idx]
+        frames      = traj["frames"]
+        intensities = traj["intensities"]
+        # assume self.W, self.passes, self.min_step exist:
+        step_idxs, medians = self.compute_steps_for_data(frames, intensities)
+        traj["step_indices"] = step_idxs        # now a List[int], not None
+        traj["step_medians"] = medians          # now a List[(start,end,median)]
+
+    def compute_steps_for_data(self, frames, intensities):
+        """
+        Given a list of frame‐indices and a list of (possibly‐gapped) intensities,
+        return (step_indices, step_medians).  Neither argument is modified.
+        """
+
+        W = self.W
+        passes = self.passes
+        min_step = self.min_step
+
+        frame_arr = np.array(frames, dtype=int)
+        intensity_arr = np.array(
+            [np.nan if (v is None or (isinstance(v, float) and np.isnan(v))) else float(v)
+            for v in intensities],
+            dtype=float
+        )
+        valid_mask   = ~np.isnan(intensity_arr)
+        valid_frames = frame_arr[valid_mask]
+        valid_ints   = intensity_arr[valid_mask]
+
+        # If too few points, return empty lists:
+        if valid_ints.size < 2:
+            return [], []
+
+        fx = filterX(valid_ints, W=W, passes=passes)
+        I_smooth = fx["I"]
+        P        = fx["Px"]
+
+        # find local minima/maxima in P
+        min_idx = find_minima(P)
+        max_idx = find_maxima(P)
+
+        M = P.size
+        Pmin = np.zeros(M, dtype=float)
+        Pmax = np.zeros(M, dtype=float)
+        if min_idx.size > 0:
+            Pmin[min_idx] = P[min_idx]
+        if max_idx.size > 0:
+            Pmax[max_idx] = P[max_idx]
+        Pedge = Pmin + Pmax
+
+        # threshold:
+        thresh = min_step
+        step_compact_idxs = np.where(np.abs(Pedge) > thresh)[0]
+        step_frames = sorted({int(valid_frames[j]) for j in step_compact_idxs})
+
+        first = int(valid_frames[0])
+        step_frames = [f for f in step_frames if f != first] #remove edge artefact
+
+        # build segment boundaries from first→steps→last
+        first_valid = int(valid_frames[0])
+        last_valid  = int(valid_frames[-1])
+        if step_frames:
+            boundaries = [first_valid] + [f for f in step_frames if f != first_valid]
+            if boundaries[-1] != last_valid:
+                boundaries.append(last_valid)
+        else:
+            boundaries = [first_valid, last_valid]
+
+        seg_medians = []
+        for i in range(len(boundaries) - 1):
+            start_f = boundaries[i]
+            end_f   = boundaries[i+1]
+            mask = (valid_frames >= start_f) & (valid_frames <= end_f)
+            if not np.any(mask):
+                continue
+            vals = I_smooth[mask]
+            if vals.size == 0:
+                continue
+            med = float(np.median(vals))
+            seg_medians.append((start_f, end_f, med))
+
+        return step_frames, seg_medians

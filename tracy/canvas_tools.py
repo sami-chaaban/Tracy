@@ -642,8 +642,8 @@ class RecalcDialog(QDialog):
         super().accept()
 
 class RecalcWorker(QObject):
-    progress = pyqtSignal(int)           # emits how many frames processed so far
-    finished = pyqtSignal(list)          # emits a list of (row, new_traj) pairs
+    progress = pyqtSignal(int)
+    finished = pyqtSignal(list)
     canceled = pyqtSignal()
 
     def __init__(self, rows, trajectories, navigator):
@@ -655,28 +655,16 @@ class RecalcWorker(QObject):
 
     @pyqtSlot()
     def run(self):
-        total_frames = sum(len(self._trajectories[r]["frames"]) for r in self._rows)
+        total = sum(len(self._trajectories[r]["frames"]) for r in self._rows)
         count = 0
         results = []
-
         for row in self._rows:
             if self._is_canceled:
                 self.canceled.emit()
                 return
 
             old = self._trajectories[row]
-
-            # decide whether to show the internal progress bar
-            single = (len(self._rows) == 1)
-            pts    = self._build_pts_for(old)
-
-            frames, _, centers, ints, fit = \
-                self._navigator._compute_analysis(
-                    pts,
-                    showprogress=single
-                )
-
-            new_traj = self._recalculate_one(old)
+            new_traj = self._navigator. _rebuild_one_trajectory(old, self._navigator)
             results.append((row, new_traj))
 
             count += len(old["frames"])
@@ -687,137 +675,205 @@ class RecalcWorker(QObject):
     def cancel(self):
         self._is_canceled = True
 
-    def _recalculate_one(self, old):
-        # copy exactly your existing per‑trajectory logic:
-        anchors, roi = old["anchors"], old["roi"]
-        if len(anchors)>1 and roi is not None:
-            pts = []
-            for i in range(len(anchors)-1):
-                f1,x1,_ = anchors[i]
-                f2,x2,_ = anchors[i+1]
-                seg = (range(f1,f2+1) if i==0 else range(f1+1,f2+1))
-                xs = np.linspace(x1,x2,len(seg),endpoint=True)
-                for j,f in enumerate(seg):
-                    mx,my = self._navigator.compute_roi_point(roi, xs[j])
-                    pts.append((f,mx,my))
-        else:
-            pts = [(f,x,y) for f,(x,y) in zip(old["frames"], old["original_coords"])]
+class RecalcAllWorker(QObject):
+    progress = pyqtSignal(int)        # emits number of frames processed so far
+    finished = pyqtSignal(dict)       # emits a dict mapping row → new trajectory
+    canceled = pyqtSignal()
 
-        frames, _, centers, ints, fit = \
-            self._navigator._compute_analysis(pts, showprogress=False)
+    def __init__(self, backup_trajectories: list, navigator):
+        super().__init__()
+        self._backup = backup_trajectories
+        self._navigator = navigator
+        # Use exactly one flag for cancellation:
+        self._navigator._is_canceled = False
 
-        if getattr(self._navigator, "debug", False):
-            print(f"RECALC[{old['trajectory_number']}] → frames:{old['frames'][:3]}…{old['frames'][-3:]}, coords:{old['original_coords'][:3]}…{old['original_coords'][-3:]}")
+    @pyqtSlot()
+    def run(self):
+        # print("▶ run() entered; initial _is_canceled =", self._navigator._is_canceled)
+        processed = 0
+        results = {}
 
-        spots  = [p[0] for p in fit]
-        sigmas = [p[1] for p in fit]
-        peaks  = [p[2] for p in fit]
+        for row_index, old in enumerate(self._backup):
+            # print(f"worker (top of loop) _is_canceled = {self._navigator._is_canceled}")
+            # 1) Check the one shared flag at the top of each iteration
+            if self._navigator._is_canceled:
+                self.canceled.emit()
+                return
 
-        valid_ints = [v for v,s in zip(ints, spots) if v and v>0 and s]
-        avg = float(np.mean(valid_ints)) if valid_ints else None
-        med = float(np.median(valid_ints)) if valid_ints else None
+            # 2) Build “pts” list, checking the same flag inside any nested loops
+            if len(old["anchors"]) > 1 and old.get("roi") is not None:
+                pts = []
+                anchors, roi = old["anchors"], old["roi"]
+                for i in range(len(anchors) - 1):
+                    if self._navigator._is_canceled:
+                        self.canceled.emit()
+                        return
 
-        # recalc velocities
-        vels = []
-        for i in range(1, len(frames)):
-            p0, p1 = spots[i-1], spots[i]
-            vels.append(None if (p0 is None or p1 is None)
-                        else np.hypot(p1[0]-p0[0], p1[1]-p0[1]))
-        good = [v for v in vels if v is not None]
-        avg_vpf = float(np.mean(good)) if good else None
+                    f1, x1, y1 = anchors[i]
+                    f2, x2, y2 = anchors[i+1]
+                    seg = range(f1, f2+1) if i == 0 else range(f1+1, f2+1)
+                    xs = np.linspace(x1, x2, len(seg), endpoint=True)
+                    for j, f in enumerate(seg):
+                        if self._navigator._is_canceled:
+                            self.canceled.emit()
+                            return
+                        mx, my = self._navigator.compute_roi_point(roi, xs[j])
+                        pts.append((f, mx, my))
+            else:
+                pts = []
+                for f, (x, y) in zip(old["frames"], old["original_coords"]):
+                    if self._navigator._is_canceled:
+                        self.canceled.emit()
+                        return
+                    pts.append((f, x, y))
 
-        start = (frames[0],   old["original_coords"][0][0],  old["original_coords"][0][1])
-        end   = (frames[-1],  old["original_coords"][-1][0], old["original_coords"][-1][1])
+            # 3) Just before calling _compute_analysis, check again
+            if self._navigator._is_canceled:
+                self.canceled.emit()
+                return
+            
+            # print(f"compute (just before calling _compute_analysis) _is_canceled = {self._navigator._is_canceled}")
 
-        new_traj = {
-            "trajectory_number": old["trajectory_number"],
-            "start":    old["start"],
-            "end":      old["end"],
-            "anchors":  anchors,
-            "roi":      roi,
-            "spot_centers": spots,
-            "sigmas":      sigmas,
-            "peaks":       peaks,
-            "frames":      old["frames"],
-            "original_coords":      old["original_coords"],
-            "search_centers": centers,
-            "intensities": ints,
-            "average":     avg,
-            "median":      med,
-            "velocities":  vels,
-            "average_velocity": avg_vpf
-        }
+            # 4) Run compute_analysis (no GUI), catch exceptions
+            try:
+                traj_background = self._navigator.compute_trajectory_background(
+                    self._navigator.get_movie_frame,
+                    pts,
+                    crop_size=int(2 * self._navigator.searchWindowSpin.value())
+                )
+                frames, coords, search_centers, ints, fit, background = (
+                    self._navigator._compute_analysis(
+                        pts,
+                        traj_background,
+                        showprogress=False
+                    )
+                )
+            except Exception:
+                # skip this trajectory but still bump the progress bar
+                processed += len(old["frames"])
+                self.progress.emit(processed)
+                continue
 
-        nav = self._navigator
-        n_chan = nav.movie.shape[nav._channel_axis]
-        ref_ch = old["channel"]
+            # print(f"compute returned; now checking cancellation → {self._navigator._is_canceled}")
 
-        if getattr(nav, "check_colocalization", False):
-            # rehydrate analysis state
-            nav.analysis_frames     = new_traj["frames"]
-            nav.analysis_fit_params = list(zip(
-                new_traj["spot_centers"],
-                new_traj["sigmas"],
-                new_traj["peaks"]
-            ))
-            # overall-any
-            nav.analysis_channel    = ref_ch
-            nav._compute_colocalization(showprogress=False)
-            any_list = list(nav.analysis_colocalized)
+            # 5) Immediately after compute_analysis, check cancellation again
+            if self._navigator._is_canceled:
+                self.canceled.emit()
+                return
 
-            # per‐channel if >2
-            by_ch = {}
-            if n_chan > 2:
-                for tgt in range(1, n_chan+1):
-                    if tgt == ref_ch:
-                        continue
-                    nav.analysis_channel = tgt
-                    nav._compute_colocalization(showprogress=False)
-                    by_ch[tgt] = list(nav.analysis_colocalized)
-        else:
-            any_list = [None]*len(new_traj["frames"])
-            by_ch    = { c: [None]*len(new_traj["frames"])
-                         for c in range(1, n_chan+1) if c!=ref_ch }
+            # 6) Unpack & rebuild new_traj (same as before)
+            spots  = [p[0] for p in fit]
+            sigmas = [p[1] for p in fit]
+            peaks  = [p[2] for p in fit]
+            valid_ints = [v for v, s in zip(ints, spots) if v and v > 0 and s]
+            avg_int = float(np.mean(valid_ints)) if valid_ints else None
+            med_int = float(np.median(valid_ints)) if valid_ints else None
 
-        new_traj["colocalization_any"]   = any_list
-        new_traj["colocalization_by_ch"] = by_ch
-
-        # now populate the custom_fields so your table + draw() sees them:
-        cf = new_traj.setdefault("custom_fields", {})
-        if n_chan == 2:
-            valid = [s for s in any_list if s is not None]
-            pct   = f"{100*sum(1 for s in valid if s=='Yes')/len(valid):.1f}" if valid else ""
-            for ch in (1,2):
-                cf[f"Ch. {ch} co. %"] = "" if ch==ref_ch else pct
-        else:
-            for ch in range(1, n_chan+1):
-                name = f"Ch. {ch} co. %"
-                if ch == ref_ch:
-                    cf[name] = ""
+            vels = []
+            for i in range(1, len(spots)):
+                p0, p1 = spots[i-1], spots[i]
+                if p0 is None or p1 is None:
+                    vels.append(None)
                 else:
-                    flags = by_ch.get(ch, [])
-                    valid = [s for s in flags if s is not None]
-                    cf[name] = (f"{100*sum(1 for s in valid if s=='Yes')/len(valid):.1f}"
-                                if valid else "")
+                    vels.append(float(np.hypot(p1[0]-p0[0], p1[1]-p0[1])))
+            good_vels = [v for v in vels if v is not None]
+            avg_vpf   = float(np.mean(good_vels)) if good_vels else None
 
-        return new_traj
-    
-    def _build_pts_for(self, old):
-        anchors, roi = old["anchors"], old["roi"]
-        pts = []
-        if len(anchors) > 1 and roi is not None:
-            for i in range(len(anchors) - 1):
-                f1, x1, _ = anchors[i]
-                f2, x2, _ = anchors[i+1]
-                seg = range(f1, f2+1) if i == 0 else range(f1+1, f2+1)
-                xs = np.linspace(x1, x2, len(seg), endpoint=True)
-                for j, f in enumerate(seg):
-                    mx, my = self._navigator.compute_roi_point(roi, xs[j])
-                    pts.append((f, mx, my))
-        else:
-            for f, (x, y) in zip(old["frames"], old["original_coords"]):
-                pts.append((f, x, y))
-        return pts
+            full_centers, full_sigmas, full_peaks, full_ints = [], [], [], []
+            for f in old["frames"]:
+                if f in frames:
+                    idx = frames.index(f)
+                    full_centers.append(spots[idx])
+                    full_sigmas.append(sigmas[idx])
+                    full_peaks.append(peaks[idx])
+                    full_ints.append(ints[idx])
+                else:
+                    full_centers.append(None)
+                    full_sigmas.append(None)
+                    full_peaks.append(None)
+                    full_ints.append(None)
+
+            new_traj = {
+                "trajectory_number": old["trajectory_number"],
+                "channel":           old["channel"],
+                "start":             old["start"],
+                "end":               old["end"],
+                "anchors":           old["anchors"],
+                "roi":               old["roi"],
+                "spot_centers":      full_centers,
+                "sigmas":            full_sigmas,
+                "peaks":             full_peaks,
+                "fixed_background":  traj_background,
+                "background":        background,
+                "frames":            old["frames"],
+                "original_coords":   old["original_coords"],
+                "search_centers":    search_centers,
+                "intensities":       full_ints,
+                "average":           avg_int,
+                "median":           med_int,
+                "velocities":        vels,
+                "average_velocity":  avg_vpf
+            }
+
+            # 7) Recompute colocalization exactly as before
+            if getattr(self._navigator, "check_colocalization", False) and self._navigator.movie.ndim == 4:
+                nav = self._navigator
+                nav.analysis_frames     = new_traj["frames"]
+                nav.analysis_fit_params = list(zip(
+                    new_traj["spot_centers"],
+                    new_traj["sigmas"],
+                    new_traj["peaks"]
+                ))
+                nav.analysis_channel = new_traj["channel"]
+                nav._compute_colocalization(showprogress=False)
+                any_list = list(nav.analysis_colocalized)
+                by_ch = {
+                    ch: list(flags)
+                    for ch, flags in nav.analysis_colocalized_by_ch.items()
+                }
+            else:
+                if getattr(self._navigator, "movie", None) is None or self._navigator._channel_axis is None:
+                    n_chan = 1
+                else:
+                    n_chan = self._navigator.movie.shape[self._navigator._channel_axis]
+
+                N = len(new_traj["frames"])
+                any_list = [None]*N
+                by_ch    = { ch: [None]*N
+                             for ch in range(1, n_chan+1)
+                             if ch != new_traj["channel"] }
+
+            new_traj["colocalization_any"]   = any_list
+            new_traj["colocalization_by_ch"] = by_ch
+
+            # 8) Optionally recompute steps
+            if getattr(self._navigator, "show_steps", False):
+                idxs, meds = self._navigator.compute_steps_for_data(
+                    new_traj["frames"],
+                    new_traj["intensities"]
+                )
+                new_traj["step_indices"] = idxs
+                new_traj["step_medians"] = meds
+            else:
+                new_traj["step_indices"] = None
+                new_traj["step_medians"] = None
+
+            # 9) Preserve custom_fields
+            new_traj["custom_fields"] = old.get("custom_fields", {}).copy()
+
+            # 10) Store in results and bump progress
+            results[row_index] = new_traj
+            processed += len(old["frames"])
+            self.progress.emit(processed)
+
+        # 11) Finished without cancellation
+        print("▶ run() finished all trajectories without seeing a cancel")
+        self.finished.emit(results)
+
+    def cancel(self):
+        print("cancel() called, setting flag → True")
+        # Called when the user clicks “Cancel” on the QProgressDialog:
+        self._navigator._is_canceled = True
 
 class ClickableLabel(QLabel):
     clicked = pyqtSignal()
@@ -1530,3 +1586,53 @@ class AnimatedIconButton(QPushButton):
         self._anim.setEndValue(self._base_size)
         self._anim.start()
         super().leaveEvent(event)
+
+class StepSettingsDialog(QDialog):
+    def __init__(self, current_W, current_min_step, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Step Step-finding parameters")
+        self.new_W = current_W
+        self.new_min_step = current_min_step
+
+        layout = QVBoxLayout()
+        self.setStyleSheet(QApplication.instance().styleSheet())
+
+        # Rolling average window
+        win_layout = QHBoxLayout()
+        win_label = QLabel("Rolling average window:")
+        win_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.win_spin = QSpinBox()
+        self.win_spin.setRange(1, 999)
+        self.win_spin.setValue(current_W)
+        win_layout.addWidget(win_label)
+        win_layout.addWidget(self.win_spin)
+        layout.addLayout(win_layout)
+
+        # Minimum step threshold
+        step_layout = QHBoxLayout()
+        step_label = QLabel("Minimum step size:")
+        step_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.step_spin = QSpinBox()
+        self.step_spin.setRange(0, 999999)
+        self.step_spin.setValue(current_min_step)
+        step_layout.addWidget(step_label)
+        step_layout.addWidget(self.step_spin)
+        layout.addLayout(step_layout)
+
+        # OK / Cancel
+        btns = QHBoxLayout()
+        btn_cancel = QPushButton("Cancel")
+        btn_ok     = QPushButton("OK")
+        btn_ok.setDefault(True)
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel.clicked.connect(self.reject)
+        btns.addWidget(btn_cancel)
+        btns.addWidget(btn_ok)
+        layout.addLayout(btns)
+
+        self.setLayout(layout)
+
+    def accept(self):
+        self.new_W = self.win_spin.value()
+        self.new_min_step = self.step_spin.value()
+        super().accept()
