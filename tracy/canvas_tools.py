@@ -253,6 +253,41 @@ class ContrastControlsWidget(QWidget):
             "upper": self.contrastRangeSlider.upperValue(),
         }
 
+class KymoContrastControlsWidget(QWidget):
+    def __init__(self, kymocanvas, parent=None):
+        super().__init__(parent)
+        self.kymocanvas = kymocanvas
+        self.contrastRangeSlider = RangeSlider(Qt.Horizontal, self)
+        self.contrastRangeSlider.rangeChanged.connect(self.on_slider_range_changed)
+        self.initUI()
+
+    def initUI(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(10)
+        layout.setAlignment(Qt.AlignCenter)
+        # Add only the range slider.
+        layout.addWidget(self.contrastRangeSlider)
+        self.setLayout(layout)
+
+    def on_slider_range_changed(self, low, high):
+        # Ensure proper ordering of lower and upper bounds.
+        new_low = min(low, high)
+        new_high = max(low, high)
+        # Update the movie canvas display immediately.
+        self.kymocanvas.set_display_range(new_low, new_high)
+
+        # Make sure the contrast settings dictionary exists.
+        # if not hasattr(self.moviecanvas.navigator, "kymo_contrast_settings"):
+        #     self.kymo_contrast_settings = {}
+
+        # self.moviecanvas.navigator.channel_contrast_settings[xxxkymographxxx] = {
+        #     'vmin': new_low,
+        #     'vmax': new_high,
+        #     'extended_min': self.contrastRangeSlider.minimum(),
+        #     'extended_max': self.contrastRangeSlider.maximum()
+        # }
+
 class ToggleSwitch(QAbstractButton):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1050,6 +1085,7 @@ class SaveKymographDialog(QDialog):
         dir_h.addWidget(self.dir_le)
         browse = QPushButton("…")
         browse.clicked.connect(self._browse_dir)
+        browse.setAutoDefault(False)
         dir_h.addWidget(browse)
         dir_h.addStretch()
         main_v.addLayout(dir_h)
@@ -1140,9 +1176,16 @@ class SaveKymographDialog(QDialog):
         # ── Save/Cancel ────────────────────────────────
         btn_h = QHBoxLayout()
         btn_h.addStretch()
-        ok = QPushButton("Save");   ok.clicked.connect(self.accept)
-        cancel = QPushButton("Cancel"); cancel.clicked.connect(self.reject)
-        btn_h.addWidget(ok); btn_h.addWidget(cancel); btn_h.addStretch()
+        ok = QPushButton("Save")
+        ok.clicked.connect(self.accept)
+        ok.setDefault(True)
+        ok.setAutoDefault(True)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        cancel.setAutoDefault(False)
+        btn_h.addWidget(cancel)
+        btn_h.addWidget(ok)
+        btn_h.addStretch()
         main_v.addLayout(btn_h)
 
         # ── Initial sync ───────────────────────────────
@@ -1588,13 +1631,14 @@ class AnimatedIconButton(QPushButton):
         super().leaveEvent(event)
 
 class StepSettingsDialog(QDialog):
-    def __init__(self, current_W, current_min_step, parent=None):
+    def __init__(self, current_W, current_min_step, can_calculate_all: bool, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Step Step-finding parameters")
+        self.setWindowTitle("Step-finding parameters")
         self.new_W = current_W
         self.new_min_step = current_min_step
+        self.calculate_all = False
 
-        layout = QVBoxLayout()
+        layout = QVBoxLayout(self)
         self.setStyleSheet(QApplication.instance().styleSheet())
 
         # Rolling average window
@@ -1619,20 +1663,27 @@ class StepSettingsDialog(QDialog):
         step_layout.addWidget(self.step_spin)
         layout.addLayout(step_layout)
 
-        # OK / Cancel
+        # bottom buttons
         btns = QHBoxLayout()
-        btn_cancel = QPushButton("Cancel")
-        btn_ok     = QPushButton("OK")
-        btn_ok.setDefault(True)
-        btn_ok.clicked.connect(self.accept)
-        btn_cancel.clicked.connect(self.reject)
-        btns.addWidget(btn_cancel)
-        btns.addWidget(btn_ok)
+        btns.addWidget(QPushButton("Cancel", clicked=self.reject))
+        btn_set = QPushButton("Set", clicked=self._on_set)
+        btn_set.setDefault(True)
+        btns.addWidget(btn_set)
+
+        # only add the extra button if there's at least one trajectory
+        if can_calculate_all:
+            btns.addWidget(QPushButton("Set and Calculate", clicked=self._on_setall))
+
         layout.addLayout(btns)
 
-        self.setLayout(layout)
-
-    def accept(self):
-        self.new_W = self.win_spin.value()
+    def _on_set(self):
+        self.new_W        = self.win_spin.value()
         self.new_min_step = self.step_spin.value()
-        super().accept()
+        self.calculate_all = False
+        self.accept()
+
+    def _on_setall(self):
+        self.new_W        = self.win_spin.value()
+        self.new_min_step = self.step_spin.value()
+        self.calculate_all = True
+        self.accept()

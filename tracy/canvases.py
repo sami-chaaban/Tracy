@@ -412,27 +412,25 @@ class KymoCanvas(ImageCanvas):
         self.ax.draw_artist(marker)
         self.fig.canvas.blit(self.ax.bbox)
 
-    def temporary_circle(self, x, y, size=12, color='red'):
+    def temporary_circle(self, x, y, size=12, color='blue'):
         """
-        Add a transient marker circle at (x, y); returns a list of patches so
-        callers can manage them individually.
+        Add a transient marker circle at (x, y) in *data* coords,
+        but with a fixed radius of `size` points.
         """
         if x is None or y is None:
             print("Warning: x or y is None in temporary_circle, skipping marker addition.")
             return None
 
-        radius = size / 2.0
-        circ = Circle(
-            (x, y),
-            radius=radius,
-            edgecolor=color,
-            facecolor=color,
+        # 's' is marker area in points^2, so area ~ (diameter_in_pts)^2
+        marker = self.ax.scatter(
+            [x], [y],
+            s=(size**2),
+            c=color,
             alpha=0.6,
-            linewidth=2
+            linewidths=0  # no edge
         )
-        self.ax.add_patch(circ)
         self.draw()
-        return [circ]
+        return [marker]
 
     def draw_trajectories_on_kymo(self, showsearchline=True, skinny=False):
         
@@ -683,6 +681,24 @@ class KymoCanvas(ImageCanvas):
                 pass
             self._marker = None
 
+    def set_display_range(self, vmin, vmax):
+        """
+        Set the current display contrast range without modifying underlying data.
+        Ensures that vmin is always less than vmax to avoid errors in normalization.
+        """
+        #print("displaying:", vmin, vmax)
+        if vmin >= vmax:
+            # If vmin is not less than vmax, adjust vmax to guarantee a valid range.
+            # Here we choose an arbitrary minimal gap of 1.
+            #print(f"Warning: vmin ({vmin}) >= vmax ({vmax}). Adjusting vmax to {vmin + 1}.")
+            vmax = vmin + 1
+
+        self._vmin = vmin
+        self._vmax = vmax
+        if self._im is not None:
+            self._im.set_clim(self._vmin, self._vmax)
+            self.draw_idle()
+
 # -----------------------------
 # MovieCanvas
 # -----------------------------
@@ -857,11 +873,17 @@ class MovieCanvas(ImageCanvas):
             return
         self.image = image
         if self._im is None:
-            # If the image has never been drawn, fallback to display_image()
+            # if never drawn, fall back
             self.display_image(image)
         else:
+            # update pixels…
             self._im.set_data(image)
+            # …draw…
             self.draw()
+            # …then recapture blit backgrounds so hover/blit won’t restore an old frame
+            canvas = self.figure.canvas
+            self._bg     = canvas.copy_from_bbox(self.ax.bbox)
+            self._roi_bg = canvas.copy_from_bbox(self.ax.bbox)
 
     def update_view(self):
         if self.image is None or self.zoom_center is None:
@@ -1053,8 +1075,8 @@ class MovieCanvas(ImageCanvas):
     def _on_inset_enter(self, event):
         if self.navigator.looping:
             self.navigator.stoploop()
-        if self.navigator.sumBtn.isChecked():
-            self.navigator.sumBtn.setChecked(False)
+        # if self.navigator.sumBtn.isChecked():
+        #     self.navigator.sumBtn.setChecked(False)
         if event.inaxes is self.inset_ax3d or event.inaxes is self.navigator.zoomInsetWidget.ax:
             # hide 2D
             self.navigator.zoomInsetWidget.ax.set_visible(False)
@@ -1549,35 +1571,26 @@ class MovieCanvas(ImageCanvas):
                 ch = int(self.navigator.movieChannelCombo.currentText()) - 1
             except Exception:
                 ch = 0
-        else:
-            # we’ll just key everything as channel 0 in the single-channel case
-            ch = 0
 
-        # reuse if we’ve already done this channel
-        if ch in self.sum_frame_cache:
-            sum_frame = self.sum_frame_cache[ch]
-        else:
-            # compute the max-proj exactly as you did before
-            if movie.ndim == 4:
+            if ch in self.sum_frame_cache:
+                sum_frame = self.sum_frame_cache[ch]
+            else:
                 channel_axis = self.navigator._channel_axis
                 idx = [slice(None)] * movie.ndim
                 idx[channel_axis] = ch
                 channel_movie = movie[tuple(idx)]
                 sum_frame = np.max(channel_movie, axis=0)
+                self.sum_frame_cache[ch] = sum_frame
 
-            elif movie.ndim == 3:
-                # if first axis is “small,” treat as channel
-                if movie.shape[0] <= 4:
-                    sum_frame = movie[0]
-                else:
-                    sum_frame = np.max(movie, axis=0)
+        elif movie.ndim == 3:
+            if movie.shape[0] <= 4:
+                sum_frame = movie[0]
             else:
-                sum_frame = movie
+                sum_frame = np.max(movie, axis=0)
+        else:
+            sum_frame = movie
 
-            # stash it
-            self.sum_frame_cache[ch] = sum_frame
-
-        # now render exactly like you did
+        # now render exactly like before
         self.image = sum_frame
         if self._im is None:
             self.ax.clear()
@@ -1587,6 +1600,11 @@ class MovieCanvas(ImageCanvas):
         else:
             self._im.set_data(sum_frame)
             self.draw()
+
+        # ── recapture blit backgrounds so future blits use the sum‐mode image ──
+        canvas = self.figure.canvas
+        self._bg     = canvas.copy_from_bbox(self.ax.bbox)
+        self._roi_bg = canvas.copy_from_bbox(self.ax.bbox)
 
     def clear_sum_cache(self, channel=None):
         """
@@ -4931,13 +4949,16 @@ class TrajectoryCanvas(QWidget):
         if centers_to_remove and self.navigator is not None:
             self.navigator._remove_past_centers(centers_to_remove)
 
-        # 6) Re-select a sensible row in the table
-        row_count = self.table_widget.rowCount()
-        if row_count > 0:
-            # pick the smallest index of those we deleted, clamped to [0, row_count-1]
-            new_row = min(selected_rows)  
-            new_row = max(0, min(new_row, row_count - 1))
-            self.table_widget.selectRow(new_row)
+        # 6) REMOVED Re-select a sensible row in the table
+        # row_count = self.table_widget.rowCount()
+        # if row_count > 0:
+        #     # pick the smallest index of those we deleted, clamped to [0, row_count-1]
+        #     new_row = min(selected_rows)  
+        #     new_row = max(0, min(new_row, row_count - 1))
+        #     self.table_widget.selectRow(new_row)
+
+        self.table_widget.clearSelection()
+        self.current_index = None
 
         # 7) Recompute trajectory counter:
         #    if none left, reset to 1; otherwise max+1

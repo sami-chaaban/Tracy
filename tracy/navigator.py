@@ -45,7 +45,7 @@ from .canvas_tools import (
     RoundedFrame, AxesRectAnimator, SaveKymographDialog,
     ClickableLabel, RadiusDialog, BubbleTipFilter,
     CenteredBubbleFilter, AnimatedIconButton,
-    StepSettingsDialog
+    StepSettingsDialog, KymoContrastControlsWidget
 )
 from tracy import __version__
 from .gaussian_tools import perform_gaussian_fit, filterX, find_minima, find_maxima
@@ -115,7 +115,7 @@ class KymographNavigator(QMainWindow):
         self.toggle_invert_cmap(True)
 
         self.cancelShortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
-        self.cancelShortcut.activated.connect(self.cancel_left_click_sequence)
+        self.cancelShortcut.activated.connect(self.escape_left_click_sequence)
 
         # Space bar shortcut to toggle looping.
         self.loopShortcut = QShortcut(QKeySequence(Qt.Key_Space), self)
@@ -355,7 +355,6 @@ class KymographNavigator(QMainWindow):
 
         topLayout.addSpacing(25)
         
-
         # --- Main Horizontal Splitter ---
         self.mainSplitter = CustomSplitter(Qt.Horizontal, handle_y_offset_pct=0.4955)
         containerLayout.addWidget(self.mainSplitter, stretch=1)
@@ -526,6 +525,30 @@ class KymographNavigator(QMainWindow):
         self.kymoLegendLayout.setContentsMargins(5,5,5,5)
         self.kymoLegendLayout.setSpacing(5)
 
+        # leftLayout.addSpacing(10)
+        # kymocontrastwidget = QWidget()
+        # kymocontrastLayout = QHBoxLayout(kymocontrastwidget)
+        # kymocontrastLayout.setContentsMargins(0, 0, 0, 0)
+        # kymocontrastLayout.setSpacing(10)
+        # self.kymocontrastControlsWidget = KymoContrastControlsWidget(self.kymoCanvas)
+        # kymocontrastsliderfilter = BubbleTipFilter("Adjust contrast range", self, placement="left")
+        # self.kymocontrastControlsWidget.installEventFilter(kymocontrastsliderfilter)
+        # self.kymocontrastControlsWidget._bubble_filter = kymocontrastsliderfilter
+        # self.kymocontrastControlsWidget.setMinimumWidth(50)
+        # self.kymocontrastControlsWidget.setMaximumWidth(200)
+        # kymocontrastLayout.addWidget(self.kymocontrastControlsWidget)
+        # self.kymoresetBtn = AnimatedIconButton("")
+        # self.kymoresetBtn.setIcon(QIcon(resetcontrastpath))
+        # self.kymoresetBtn.setIconSize(QSize(16, 16))
+        # kymocontrastresetfilter = BubbleTipFilter("Reset contrast", self, placement="right")
+        # self.kymoresetBtn.installEventFilter(kymocontrastresetfilter)
+        # self.kymoresetBtn._bubble_filter = kymocontrastresetfilter
+        # self.kymoresetBtn.clicked.connect(self.reset_kymo_contrast)
+        # self.kymoresetBtn.setObjectName("Passive")
+        # self.kymoresetBtn.setFixedWidth(40)
+        # kymocontrastLayout.addWidget(self.kymoresetBtn)
+        # leftLayout.addWidget(kymocontrastwidget, alignment=Qt.AlignCenter)
+
         self.leftWidget.setLayout(leftLayout)
         self.mainSplitter.addWidget(self.leftWidget)
 
@@ -663,7 +686,7 @@ class KymographNavigator(QMainWindow):
         contrastsliderfilter = BubbleTipFilter("Adjust contrast range", self, placement="left")
         self.contrastControlsWidget.installEventFilter(contrastsliderfilter)
         self.contrastControlsWidget._bubble_filter = contrastsliderfilter
-        self.contrastControlsWidget.setMinimumWidth(150)
+        self.contrastControlsWidget.setMinimumWidth(100)
         contrastLayout.addWidget(self.contrastControlsWidget)
         self.resetBtn = AnimatedIconButton("")
         self.resetBtn.setIcon(QIcon(resetcontrastpath))
@@ -778,7 +801,7 @@ class KymographNavigator(QMainWindow):
 
         # Column 3: Right Panel with additional canvases.
         rightPanel = QWidget()
-        rightPanel.setFixedWidth(400)
+        rightPanel.setFixedWidth(500)
         rightPanelLayout = QVBoxLayout(rightPanel)
         rightPanelLayout.setContentsMargins(6, 6, 6, 6)
         rightPanelLayout.setSpacing(10)
@@ -3214,11 +3237,11 @@ class KymographNavigator(QMainWindow):
 
         # — convert to movie coords & update slider —
         x_orig, y_orig = self.compute_roi_point(roi, event.xdata)
-        if self.get_movie_frame(frame_idx) is not None:
-            self.frameSlider.blockSignals(True)
-            self.frameSlider.setValue(frame_idx)
-            self.frameSlider.blockSignals(False)
-            self.frameNumberLabel.setText(f"{frame_idx+1}")
+        # if self.get_movie_frame(frame_idx) is not None:
+        #     self.frameSlider.blockSignals(True)
+        #     self.frameSlider.setValue(frame_idx)
+        #     self.frameSlider.blockSignals(False)
+        #     self.frameNumberLabel.setText(f"{frame_idx+1}")
 
         # — record the anchor in both kymo‐space & movie‐space —
         self.analysis_anchors.append((frame_idx, event.xdata, event.ydata))
@@ -3226,7 +3249,7 @@ class KymographNavigator(QMainWindow):
 
         # — draw a small circle there —
         marker = self.kymoCanvas.temporary_circle(event.xdata, event.ydata,
-                                              size=6, color='#7da1ff')
+                                              size=8, color='#7da1ff')
         self.analysis_markers.append(marker)
 
         # — initialize the live temp line once —
@@ -3746,6 +3769,8 @@ class KymographNavigator(QMainWindow):
         n = len(self.analysis_frames)
         if index < 0 or index >= n:
             return
+
+        self.cancel_left_click_sequence()
 
         mc = self.movieCanvas
         kc = self.kymoCanvas
@@ -5671,6 +5696,11 @@ class KymographNavigator(QMainWindow):
 
         # NB: NO draw_idle() here — we’ll blit in on_movie_motion
 
+    def escape_left_click_sequence(self):
+        self.cancel_left_click_sequence()
+        self.movieCanvas.draw()
+        self.kymoCanvas.draw()
+
     def cancel_left_click_sequence(self):
         # If we are in ROI mode, clear the temporary ROI drawing state.
         if self.movieCanvas.roiAddMode:
@@ -5756,8 +5786,8 @@ class KymographNavigator(QMainWindow):
         self.analysis_roi = None
         # self.kymoCanvas.unsetCursor()
 
-        self.kymoCanvas.draw_idle()
-        self.movieCanvas.draw_idle()
+        # self.kymoCanvas.draw_idle()
+        # self.movieCanvas.draw_idle()
 
     def toggleTracking(self):
         modes = ["Independent", "Tracked", "Smooth"] #, "Same center"
@@ -6018,6 +6048,46 @@ class KymographNavigator(QMainWindow):
         # If you have a method to apply these values, you could also do:
         self.movieCanvas._im.set_clim(new_vmin, new_vmax)
         self.movieCanvas.draw_idle()
+
+
+    def reset_kymo_contrast(self):
+        image = self.kymoCanvas.image
+        if image is None:
+            #print("No movie loaded; cannot reset contrast.")
+            return
+        p15, p99 = np.percentile(image, (15, 99))
+        
+        new_vmin, new_vmax = int(p15), int(p99 * 1.1)
+            
+        delta = new_vmax - new_vmin
+        new_extended_min = new_vmin - int(0.7 * delta)
+        new_extended_max = new_vmax + int(1.4 * delta)
+        
+        # Update the slider.
+        self.kymocontrastControlsWidget.contrastRangeSlider.blockSignals(True)
+        self.kymocontrastControlsWidget.contrastRangeSlider.setMinimum(new_extended_min)
+        self.kymocontrastControlsWidget.contrastRangeSlider.setMaximum(new_extended_max)
+        self.kymocontrastControlsWidget.contrastRangeSlider.setRangeValues(new_vmin, new_vmax)
+        self.kymocontrastControlsWidget.contrastRangeSlider.blockSignals(False)
+        self.kymocontrastControlsWidget.contrastRangeSlider.update()
+        
+        # self.channel_contrast_settings[current_channel] = {
+        #     'vmin': new_vmin,
+        #     'vmax': new_vmax,
+        #     'extended_min': new_extended_min,
+        #     'extended_max': new_extended_max
+        # }
+                
+        # # **New Step:** Update internal contrast attributes:
+        # self.kymoCanvas._default_vmin = new_vmin
+        # self.kymoCanvas._default_vmax = new_vmax
+        # self.kymoCanvas._vmin = new_vmin
+        # self.kymoCanvas._vmax = new_vmax
+        
+        # Finally, redraw (using display_image or by updating the colormap limits).
+        # If you have a method to apply these values, you could also do:
+        self.kymoCanvas._im.set_clim(new_vmin, new_vmax)
+        self.kymoCanvas.draw_idle()
 
     def on_sum_toggled(self):
         try:
@@ -6710,7 +6780,7 @@ class KymographNavigator(QMainWindow):
 
         if not hasattr(self, "drift_reference") or self.drift_reference is None:
             QMessageBox.warning(self, "",
-                                "Please click an stationary spot that can be found in all frames movie.")
+                                "Please click a stationary spot that can be found in all frames first.")
             return
 
         ref_spot = self.drift_reference  # (x, y)
@@ -7000,44 +7070,66 @@ class KymographNavigator(QMainWindow):
         saved_file = {"path": None}
 
         def save_movie():
-            fname, _ = QFileDialog.getSaveFileName(dialog, "Save Drift-Corrected Movie", "",
-                                                    "TIFF Files (*.tif *.tiff)")
-            if fname:
-                try:
-                    # Use metadata from the originally loaded movie if available.
-                    axes = self.movie_metadata.get('axes', None) if hasattr(self, 'movie_metadata') else None
-                    if axes is None:
-                        # If not available, choose a default. Change as appropriate.
-                        axes = 'TYX'
-                    tifffile.imwrite(fname, np.array(corrected_frames),
-                                    imagej=True,
-                                    metadata=self.movie_metadata)
-                    saved_file["path"] = fname
-                except Exception as e:
-                    QMessageBox.critical(dialog, "Save Error", f"Error saving movie:\n{str(e)}")
-                    return True
-            return False
+            # static file-picker; parent is 'dialog'
+            fname, _ = QFileDialog.getSaveFileName(
+                dialog,
+                "Save Drift-Corrected Movie",
+                "",
+                "TIFF Files (*.tif *.tiff)"
+            )
+            if not fname:
+                # user clicked Cancel in the file-chooser → do nothing
+                return False
+            try:
+                # actually write it out
+                tifffile.imwrite(
+                    fname,
+                    np.array(corrected_frames),
+                    imagej=True,
+                    metadata=getattr(self, "movie_metadata", {})
+                )
+                saved_file["path"] = fname
+                return True
+            except Exception as e:
+                QMessageBox.critical(dialog, "Save Error", f"Error saving movie:\n{e}")
+                return False
 
         def save_and_load_movie():
-            if save_movie():
+            # bail out if the user canceled (or if save_movie hit an error)
+            if not save_movie():
                 return
-            if saved_file["path"]:
-                try:
-                    self.save_and_load_routine = True  # Flag for custom load handling.
-                    self.handle_movie_load(saved_file["path"], pixelsize = self.pixel_size, frameinterval = self.frame_interval)
-                    QMessageBox.information(dialog, "Loaded",
-                                            "The corrected movie has been loaded into the main window.")
-                    self.zoomInsetFrame.setVisible(False)
-                except Exception as e:
-                    QMessageBox.critical(dialog, "Load Error", f"Error loading movie:\n{str(e)}")
-                dialog.accept()
+
+            # at this point, saved_file["path"] must be set
+            try:
+                self.save_and_load_routine = True
+                self.handle_movie_load(
+                    saved_file["path"],
+                    pixelsize=self.pixel_size,
+                    frameinterval=self.frame_interval
+                )
+                QMessageBox.information(
+                    dialog, "Loaded",
+                    "The corrected movie has been loaded into the main window."
+                )
+                self.zoomInsetFrame.setVisible(False)
+            except Exception as e:
+                QMessageBox.critical(dialog, "Load Error", f"Error loading movie:\n{e}")
+                return
+
+            # only now close the corrected-movie popup
+            dialog.accept()
 
         def cancel():
             dialog.accept()
 
-        btn_save.clicked.connect(lambda: [save_movie(), dialog.accept()])
+        def on_save_clicked():
+            if save_movie():
+                # only close the corrected‐movie popup if we actually saved
+                dialog.accept()
+
+        btn_save.clicked.connect(on_save_clicked)
         btn_save_load.clicked.connect(save_and_load_movie)
-        btn_cancel.clicked.connect(cancel)
+        btn_cancel.clicked.connect(dialog.reject)
 
         dialog.exec_()
 
@@ -7484,72 +7576,59 @@ class KymographNavigator(QMainWindow):
         else:
             self.movieLegendWidget.hide()
             self.kymoLegendWidget.hide()
-
+            
     def on_show_steps_toggled(self, checked: bool):
-        """
-        Called whenever the user checks/unchecks “Show Steps.”
-        If turning on, we look for any trajectory whose `step_indices` is still None.
-        If found, prompt to compute; otherwise we simply redraw.
-        """
         self.show_steps = checked
 
-        # 0) If turning on, let user tweak W and min_step
-        if checked:
-            dlg = StepSettingsDialog(current_W=self.W, current_min_step=self.min_step, parent=self)
-            if dlg.exec_() == QDialog.Accepted:
-                self.W = dlg.new_W
-                self.min_step = dlg.new_min_step
-            else:
-                # user cancelled → undo the toggle in the UI
-                self.show_steps = False
-                action = self.sender()
-                if isinstance(action, QAction):
-                    action.setChecked(False)
-                return
+        if not checked:
+            self._refresh_intensity_canvas()
+            return
 
-        # 1) Find any trajectories that have not yet had step_indices computed:
-        missing = [
-            i for i, traj in enumerate(self.trajectoryCanvas.trajectories)
-            if traj.get("step_indices") is None
-        ]
+        # 0) detect whether any trajectory exists at all
+        has_any_trajectory = bool(self.trajectoryCanvas.trajectories)
 
-        # 2) Only prompt if user just turned it on and there are missing trajectories
-        if checked and missing:
-            cnt = len(missing)
-            msg = f"{cnt} trajector{'ies' if cnt > 1 else 'y'} missing step data. Compute now?"
-            yn = QMessageBox.question(
-                self, "Compute Steps", msg,
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes
-            )
-            if yn == QMessageBox.Yes:
-                progress = QProgressDialog("Computing steps…", "Cancel", 0, cnt, self)
-                progress.setWindowModality(Qt.WindowModal)
-                progress.setMinimumDuration(0)
-                progress.show()
+        # 1) pop the SETTINGS dialog, passing that flag
+        dlg = StepSettingsDialog(
+            current_W=self.W,
+            current_min_step=self.min_step,
+            can_calculate_all=has_any_trajectory,
+            parent=self
+        )
+        if dlg.exec_() != QDialog.Accepted:
+            # cancelled → undo toggle
+            self.show_steps = False
+            if isinstance(self.sender(), QAction):
+                self.sender().setChecked(False)
+            return
 
-                for idx, traj_idx in enumerate(missing):
-                    progress.setValue(idx)
-                    QApplication.processEvents()
-                    if progress.wasCanceled():
-                        break
-                    self._compute_steps_for_trajectory(traj_idx)
+        # 2) apply new parameters
+        self.W        = dlg.new_W
+        self.min_step = dlg.new_min_step
 
-                progress.setValue(cnt)
-                progress.close()
-            else:
-                # User declined; just redraw without steps
-                self._refresh_intensity_canvas()
-                return
+        # 3) if they chose “Set and Calculate”, recompute *all* trajectories
+        if dlg.calculate_all:
+            all_idxs = range(len(self.trajectoryCanvas.trajectories))
+            progress = QProgressDialog("Computing steps…", "Cancel", 0, len(self.trajectoryCanvas.trajectories), self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.show()
 
-        # 3) Redraw whichever trajectory is currently selected
+            for i, traj_idx in enumerate(all_idxs):
+                progress.setValue(i)
+                QApplication.processEvents()
+                if progress.wasCanceled():
+                    break
+                self._compute_steps_for_trajectory(traj_idx)
+
+            progress.setValue(len(self.trajectoryCanvas.trajectories))
+            progress.close()
+
+        # 4) finally redraw (with or without steps)
         self._refresh_intensity_canvas()
 
     def _refresh_intensity_canvas(self):
         """
         Re‐draw whatever trajectory is currently selected in the IntensityCanvas.
-        Because IntensityCanvas.plot_intensity() now checks self.navigator.show_steps,
-        it will automatically overlay or hide arrows.
         """
         idx = self.trajectoryCanvas.current_index
         if idx is None or idx < 0 or idx >= len(self.trajectoryCanvas.trajectories):
