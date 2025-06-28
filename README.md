@@ -115,14 +115,15 @@ tracy &                    # run in the background
 
 #### Tracking Options <a name="tracking-options"></a>
 
-* **Search Radius:** adjust with `r` + scroll, then press `Enter` or **Trajectory » Recalculate**.
-* **Tracking Mode (`t`):**
+* **Search Radius:** adjust with `r` + scroll
+* **Tracking Mode** (`t`)**:**
 
   * **Independent:** fits each frame independently.
   * **Tracked:** uses previous frame’s spot as center.
   * **Smooth:** independent + post‑filter outliers.
-* If a spot looks wrong, you can invalidate it with `X` when it's highlighted.
-* Avoid using spots in existing tracks via **Spot » Avoid Previous Spots**.
+* Tracking options are set for any subsequent analysis. An existing trajectory can be recalculating using the currently set options by pressing `Enter` (or **Trajectory » Recalculate**).
+* If a spot looks wrong, you can invalidate it with `x` when it's highlighted.
+* Avoid using spots in existing tracks via **Spot » Avoid previous spots**.
 
 ---
 
