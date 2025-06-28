@@ -44,7 +44,7 @@ class RangeSlider(QtWidgets.QSlider):
         super().__init__(orientation, parent)
         self.setOrientation(orientation)
         # Set required attributes first.
-        self._handleRadius = 10  # radius of the handle circle
+        self._handleRadius = 7  # radius of the handle circle
         self._lower = self.minimum()
         self._upper = self.maximum()
         self._activeHandle = None  # Which handle is currently being dragged?

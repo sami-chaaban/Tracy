@@ -6,7 +6,7 @@ long_description = (this_dir / "README.md").read_text(encoding="utf-8")
 
 setup(
     name='tracyspot',
-    version='1.0.37',
+    version='1.0.38',
     description='Spot navigator',
     long_description=long_description,
     long_description_content_type="text/markdown",

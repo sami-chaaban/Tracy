@@ -1247,6 +1247,8 @@ class KymographNavigator(QMainWindow):
         if is_roi:
             self.set_roi_mode(False)
         else:
+            if self.looping:
+                self.stoploop()
             self.set_roi_mode(True)
 
 
@@ -2649,6 +2651,7 @@ class KymographNavigator(QMainWindow):
 
             reffilt = self.refBtn._bubble_filter
             reffilt._wobj = self.refBtn
+            self.refBtn.setChecked(True)
             QTimer.singleShot(1000, lambda: reffilt._showBubble(force=True))
 
         except Exception as e:
@@ -3771,6 +3774,10 @@ class KymographNavigator(QMainWindow):
             return
 
         self.cancel_left_click_sequence()
+        if self.sumBtn.isChecked():
+            self.sumBtn.setChecked(False)
+        if self.refBtn.isChecked():
+            self.refBtn.setChecked(False)
 
         mc = self.movieCanvas
         kc = self.kymoCanvas
@@ -3852,14 +3859,10 @@ class KymographNavigator(QMainWindow):
             if self.analysis_channel is not None:
                 self._select_channel(self.analysis_channel)
 
-            if mc.sum_mode:
-                mc.display_sum_frame()
-                frame_img = mc.image
-            else:
-                frame_img = self.get_movie_frame(frame)
-                if frame_img is None:
-                    return
-                mc.update_image_data(frame_img)
+            frame_img = self.get_movie_frame(frame)
+            if frame_img is None:
+                return
+            mc.update_image_data(frame_img)
 
             # ——— 4) Restore manual zoom limits if needed ———
             if animate != "discrete" and mc.manual_zoom and not zoom:
@@ -5107,7 +5110,7 @@ class KymographNavigator(QMainWindow):
     #     canvas.draw()
     #     dlg.exec_()
 
-    def finalizeTrajectory(self, analysis_points, trajid=None):
+    def finalize_trajectory(self, analysis_points, trajid=None):
         if not analysis_points or len(analysis_points) < 2:
             return
         
@@ -5186,7 +5189,7 @@ class KymographNavigator(QMainWindow):
         current_kymo_ch = info.get("channel", None)
 
         self.analysis_channel = current_kymo_ch
-        self.finalizeTrajectory(self.analysis_points)
+        self.finalize_trajectory(self.analysis_points)
         # self.kymoCanvas.unsetCursor()
 
     def endMovieClickSequence(self):
@@ -5195,7 +5198,7 @@ class KymographNavigator(QMainWindow):
         self.analysis_anchors = []
         self.analysis_roi = None
         self.analysis_channel = int(self.movieChannelCombo.currentText()) #1 indexed
-        self.finalizeTrajectory(self.analysis_points)
+        self.finalize_trajectory(self.analysis_points)
         # self.cancel_left_click_sequence()
         # self.movieCanvas.draw_idle()
 
