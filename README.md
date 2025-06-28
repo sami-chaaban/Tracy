@@ -45,7 +45,7 @@ conda activate tracy
 pip install tracyspot
 ```
 
-> *Tip:* On Windows, you can use the Anaconda Prompt as your terminal.
+> *Tip:* On Windows, you can download Anaconda and use the Anaconda Prompt as your terminal.
 
 ---
 
