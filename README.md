@@ -102,7 +102,8 @@ tracy &                    # run in the background
 2. Double‑click to finish and compute a trajectory using your search radius and tracking mode (see [tracking options](#tracking-options)).
 3. Click any kymograph or plot point to jump to that spot; use `→`/`←` to step forward and backward.
 4. Press spacebar to animate the trajectory.
-5. (Optional) Fill gaps via **Kymograph » Connect Spot Gaps**.
+5. If you want to recalculate the trajectory with new tracking options, press `Enter` (or **Trajectory » Recalculate**).
+6. (Optional) Fill gaps via **Kymograph » Connect Spot Gaps**.
 
 > Trajectories are displayed on kymographs dynamically, so overlapping kymographs may share trajectories.
 
@@ -112,6 +113,7 @@ tracy &                    # run in the background
 2. Skip a few frames and click the next spot. Repeat until the track is covered.
 3. End a click sequence with `Enter` or cancel with `Esc`.
 4. Browse/select tracks as above.
+5. If you want to recalculate the trajectory with new [tracking options](#tracking-options), press `Enter` (or **Trajectory » Recalculate**).
 
 > You can use “video‑game” controls: `w`/`a`/`s`/`d` to move the cursor, `l`/`j` to change frames, `k` to select the spot.
 
