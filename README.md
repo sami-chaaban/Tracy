@@ -34,7 +34,7 @@
 
 ## Installation <a name="installation"></a>
 
-Install Tracy via Conda and pip:
+Install Tracy with your terminal:
 
 ```bash
 # Create and activate a dedicated environment
@@ -109,9 +109,11 @@ tracy &                    # run in the background
 #### B. Direct Movie Tracking
 
 1. Click an initial spot on the movie.
-2. Use “video‑game” controls: `l`/`j` to change frames, `w`/`a`/`s`/`d` to move, `k` to select the next location.
-3. End with `Enter` or cancel with `Esc`.
+2. Skip a few frames and click the next spot. Repeat until the track is covered.
+3. End a click sequence with `Enter` or cancel with `Esc`.
 4. Browse/select tracks as above.
+
+> You can use “video‑game” controls: `w`/`a`/`s`/`d` to move the cursor, `l`/`j` to change frames, `k` to select the spot.
 
 #### Tracking Options <a name="tracking-options"></a>
 
