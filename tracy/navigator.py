@@ -6563,7 +6563,7 @@ class KymographNavigator(QMainWindow):
                     # plain export
                     kymo = self.kymographs[name]
                     if ft == "tif":
-                        tifffile.imsave(out_path, kymo)
+                        tifffile.imwrite(out_path, kymo, imagej=True)
                     else:
                         p15, p99 = np.percentile(kymo, (15, 99))
                         disp     = np.clip((kymo - p15)/(p99 - p15), 0, 1)

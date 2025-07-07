@@ -67,11 +67,6 @@ QComboBox::drop-down {
     width: 25px;
     border-left: 1px solid #dddddd;
 }
-QComboBox::down-arrow {
-    image: url(file:///Users/chaaban/Downloads/down.png);
-    width: 5px;
-    height: 5px;
-}
 QComboBox::drop-down:hover {
     background-color: #F1F5FF;
     /* color inheritance from base */
