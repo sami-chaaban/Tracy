@@ -141,7 +141,7 @@ tracy &                    # run in the background
 ## Browsing Trajectories <a name="browsing-trajectories"></a>
 
 * New trajectories append to the **Trajectory Table**.
-* Click trajectories in the table or use the arrow keys (**`↑`**, **`↓`**) or click; right‑click for options (e.g., Go to kymograph).
+* Click trajectories in the table or use the arrow keys (**`↑`**, **`↓`**). Right‑click for options (e.g., Go to kymograph).
 * Delete a trajectory with `Backspace`.
 
 ---
@@ -150,8 +150,8 @@ tracy &                    # run in the background
 
 ### Drift Correction <a name="drift-correction"></a>
 
-1. Identify a stationary reference spot.
-2. Ensure it’s detected by clicking it (magenta circle).
+1. Identify a stationary reference spot that can be found in most frames.
+2. Click it and ensure it is found (i.e. a magenta circle appears). It does not matter which frame you choose.
 3. Use **Movie » Correct Drift** to track it from start‑to‑end and apply the frame shifts.
 4. Review and save if satisfactory.
 
@@ -210,7 +210,7 @@ tracy &                    # run in the background
 
 ### Import TrackMate Data <a name="import-trackmate-data"></a>
 
-* Load `.csv` from TrackMate via **Load Trajectories**; uses `TRACK_ID`, `FRAME`, `POSITION_X`, `POSITION_Y` to perform a search.
+* Load `.csv` from TrackMate (spot file) via **Load Trajectories**; uses `TRACK_ID`, `FRAME`, `POSITION_X`, `POSITION_Y` to perform a search.
 
 ---
 
