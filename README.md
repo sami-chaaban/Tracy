@@ -2,6 +2,8 @@
 
 > **Note:** Tracy is currently in **beta** — features and workflows may change regularly.
 
+![Tracy Interface Overview](Screenshots/Interface-Example.jpg)
+
 ---
 
 ### Table of Contents
