@@ -51,6 +51,7 @@ from tracy import __version__
 from .gaussian_tools import perform_gaussian_fit, filterX, find_minima, find_maxima
 from .roi_tools import is_point_near_roi, convert_roi_to_binary, parse_roi_blob, generate_multipoint_roi_bytes
 from .track_tools import calculate_velocities
+from .classification import MotionClassificationConfig, classify_motion_states
 
 # from hmmlearn.hmm import GaussianHMM
 # from sklearn.preprocessing import StandardScaler
@@ -250,6 +251,9 @@ class KymographNavigator(QMainWindow):
         self.check_colocalization = False
         self.colocalization_threshold = 4
 
+        self.calc_diffusion = True
+        self._EPS = 1e-12
+
         self.connect_all_spots = False
 
         self.color_by_column = None
@@ -260,6 +264,13 @@ class KymographNavigator(QMainWindow):
         self.min_step=100
         self.W=15
         self.passes=10
+
+        self.motion_colours = {
+            "ambiguous":  "grey",
+            "paused":     "#EA4343",   # yellow-ish
+            "diffusive":  "#E2D138",   # green-ish
+            "processive": "#4AC32C",   # red-ish
+        }
 
     def create_ui(self):
         # Create the central widget and overall layout.
@@ -1297,6 +1308,29 @@ class KymographNavigator(QMainWindow):
             new_row = (current - 1) % row_count
 
         table.selectRow(new_row)
+
+    def keyPressEvent(self, event):
+        # Shift+Arrow: translate reference image (persist across ref toggles)
+        try:
+            if (event.modifiers() & Qt.ShiftModifier) and hasattr(self, "refBtn") and self.refBtn.isChecked():
+                step = 1
+                if event.key() == Qt.Key_Left:
+                    self._nudge_reference_translation(-step, 0)
+                    return
+                if event.key() == Qt.Key_Right:
+                    self._nudge_reference_translation(step, 0)
+                    return
+                if event.key() == Qt.Key_Down:
+                    self._nudge_reference_translation(0, -step)
+                    return
+                if event.key() == Qt.Key_Up:
+                    self._nudge_reference_translation(0, step)
+                    return
+        except Exception:
+            pass
+
+        # Preserve existing key handling.
+        super().keyPressEvent(event)
 
     def _showRadiusDialog(self):
         # don’t open if it’s already up
@@ -2634,6 +2668,9 @@ class KymographNavigator(QMainWindow):
                     return
 
             self.referenceImage = ref_img
+            self.referenceImage_raw = ref_img
+            self._ref_dx = 0
+            self._ref_dy = 0
 
             # *** Compute reference contrast settings ***
             p15, p99 = np.percentile(ref_img, (15, 99))
@@ -2666,9 +2703,23 @@ class KymographNavigator(QMainWindow):
             # Apply the reference image and its contrast.
             settings = self.reference_contrast_settings
             self.movieCanvas.set_display_range(settings['vmin'], settings['vmax'])
-            self.movieCanvas.image = self.referenceImage
-            self.movieCanvas._im.set_data(self.referenceImage)
-            self.movieCanvas.draw_idle()
+
+            # Use the raw reference and apply the persistent translation.
+            ref_raw = getattr(self, "referenceImage_raw", None)
+            if ref_raw is None:
+                ref_raw = getattr(self, "referenceImage", None)
+
+            dx = int(getattr(self, "_ref_dx", 0))
+            dy = int(getattr(self, "_ref_dy", 0))
+            ref_show = self._shift_image_no_wrap(ref_raw, dx, dy, fill_value=0)
+
+            self.movieCanvas.image = ref_show
+            if self.movieCanvas._im is not None:
+                self.movieCanvas._im.set_data(ref_show)
+                
+            self.movieCanvas._bg = None
+            self._rebuild_movie_blit_background()
+
         else:
             self.refBtn.setStyleSheet("")
             # Only revert if sum mode is off.
@@ -2715,8 +2766,82 @@ class KymographNavigator(QMainWindow):
                     # Now apply the contrast to the movie canvas.
                     self.movieCanvas.set_display_range(settings['vmin'], settings['vmax'])
                     self.movieCanvas.image = frame
-                    self.movieCanvas._im.set_data(frame)
-                    self.movieCanvas.draw_idle()
+                    if self.movieCanvas._im is not None:
+                        self.movieCanvas._im.set_data(frame)
+
+                    self.movieCanvas._bg = None
+                    if getattr(self, "temp_movie_analysis_line", None) is not None:
+                        self._rebuild_movie_blit_background()
+                    else:
+                        self.movieCanvas.draw_idle()
+
+    def _shift_image_no_wrap(self, img, dx, dy, fill_value=0):
+        """Shift an image by (dx, dy) without wraparound.
+
+        dx > 0 shifts right, dy > 0 shifts down. Areas moved in are filled.
+        Works for 2D arrays and for arrays with trailing channel dimensions.
+        """
+        if img is None:
+            return None
+        dx = int(dx)
+        dy = int(dy)
+        if dx == 0 and dy == 0:
+            return img
+
+        out = np.empty_like(img)
+        out[...] = fill_value
+
+        h, w = img.shape[0], img.shape[1]
+
+        if dx >= 0:
+            src_x0, src_x1 = 0, max(0, w - dx)
+            dst_x0, dst_x1 = dx, w
+        else:
+            src_x0, src_x1 = -dx, w
+            dst_x0, dst_x1 = 0, max(0, w + dx)
+
+        if dy >= 0:
+            src_y0, src_y1 = 0, max(0, h - dy)
+            dst_y0, dst_y1 = dy, h
+        else:
+            src_y0, src_y1 = -dy, h
+            dst_y0, dst_y1 = 0, max(0, h + dy)
+
+        if (src_x1 <= src_x0) or (src_y1 <= src_y0) or (dst_x1 <= dst_x0) or (dst_y1 <= dst_y0):
+            return out
+
+        out[dst_y0:dst_y1, dst_x0:dst_x1, ...] = img[src_y0:src_y1, src_x0:src_x1, ...]
+        return out
+
+    def _refresh_reference_view(self):
+        """Re-render the reference with the current stored translation, if ref mode is active."""
+        if not hasattr(self, "refBtn") or not self.refBtn.isChecked():
+            return
+
+        ref_raw = getattr(self, "referenceImage_raw", None)
+        if ref_raw is None:
+            ref_raw = getattr(self, "referenceImage", None)
+        if ref_raw is None:
+            return
+
+        dx = int(getattr(self, "_ref_dx", 0))
+        dy = int(getattr(self, "_ref_dy", 0))
+        ref_show = self._shift_image_no_wrap(ref_raw, dx, dy, fill_value=0)
+
+        settings = getattr(self, "reference_contrast_settings", None)
+        if settings:
+            self.movieCanvas.set_display_range(settings['vmin'], settings['vmax'])
+
+        self.movieCanvas.image = ref_show
+        if self.movieCanvas._im is not None:
+            self.movieCanvas._im.set_data(ref_show)
+        self.movieCanvas.draw_idle()
+
+    def _nudge_reference_translation(self, dx_step, dy_step):
+        """Adjust the stored reference translation and redraw if reference is shown."""
+        self._ref_dx = int(getattr(self, "_ref_dx", 0)) + int(dx_step)
+        self._ref_dy = int(getattr(self, "_ref_dy", 0)) + int(dy_step)
+        self._refresh_reference_view()
 
     def load_kymographs(self):
         fnames, _ = QFileDialog.getOpenFileNames(
@@ -3572,7 +3697,7 @@ class KymographNavigator(QMainWindow):
             pixel_val = image[real_y, real_x]
 
         # Build the display string (without intensity)
-        display_text = f"F: {int(frame_val)} X: {real_x_fortxt:.1f} Y: {real_y_fortxt:.1f} V: {pixel_val}"
+        display_text = f"F: {int(frame_val)} X: {real_x_fortxt:.1f} Y: {real_y_fortxt:.1f} I: {pixel_val}"
         #print("Setting label text to:", display_text)
         
         # Update the label.
@@ -4177,6 +4302,42 @@ class KymographNavigator(QMainWindow):
             s.blockSignals(False)
 
         self.trajectoryCanvas.hide_empty_columns()
+
+        if getattr(self, "calc_diffusion", False):
+            try:
+                cfg = MotionClassificationConfig(
+                    min_valid_points=getattr(self, "min_track_points", 10),
+                    max_frame_gap=getattr(self, "max_frame_gap", 10),
+
+                    cp_threshold=getattr(self, "cp_threshold", 0.25),
+                    min_segment_length=getattr(self, "min_segment_length", 8),
+
+                    directedness_window=getattr(self, "directedness_window", 15),
+                    directedness_min_path_nm=getattr(self, "directedness_min_path_nm", 300.0),
+
+                    static_total_path_nm=getattr(self, "static_total_path_nm", 300.0),
+
+                    processive_min_directedness=getattr(self, "proc_dir_min", 0.70),
+                    processive_min_persistence=getattr(self, "proc_pers_min", 0.20),
+
+                    alpha_immobile_max=getattr(self, "alpha_immobile_max", 0.35),
+                    alpha_processive_min=getattr(self, "alpha_processive_min", 1.30),
+                )
+
+                self.analysis_motion_state, self.analysis_motion_segments = classify_motion_states(
+                    frames=self.analysis_frames,
+                    centers=spot_centers,
+                    pixel_size_nm=self.pixel_size,
+                    frame_interval_ms=self.frame_interval,
+                    cfg=cfg,
+                )
+            except Exception as e:
+                print(f"Classification failed: {e}")
+                self.analysis_motion_state = ["ambiguous"] * len(self.analysis_frames)
+                self.analysis_motion_segments = []
+        else:
+            self.analysis_motion_state = None
+            self.analysis_motion_segments = None
 
     def _compute_analysis(self, points, bg=None, showprogress=True):
         mode = self.tracking_mode
@@ -5625,19 +5786,12 @@ class KymographNavigator(QMainWindow):
         self.movieCanvas._manual_marker_active = False
         self.update_movie_analysis_line()
 
-        # now do a full draw & snapshot the clean background for blitting
-        canvas = self.movieCanvas.figure.canvas
-        self.movieCanvas.draw()  
-        self.movieCanvas._bg = canvas.copy_from_bbox(self.movieCanvas.ax.bbox)
-
-        # and schedule only the incremental blit on future moves
-        self.movieCanvas.draw_idle()
+        # Rebuild the blit background after any click updates (line/overlays/circles).
+        self._rebuild_movie_blit_background()
 
         # if it was a double‐click, finish sequence
         if event.dblclick:
             self.endMovieClickSequence()
-        else:
-            self.movieCanvas.draw_idle()
 
     def on_movie_release(self, event):
         if event.button == 2 and event.inaxes == self.movieCanvas.ax:
@@ -5653,18 +5807,16 @@ class KymographNavigator(QMainWindow):
 
         # If we’re panning or zooming, do a full redraw & snapshot (hiding the line while snapshotting).
         if self.movieCanvas._is_panning or self.movieCanvas.manual_zoom:
-            line.set_visible(False)
-            self.movieCanvas.draw()
-            canvas = self.movieCanvas.figure.canvas
-            # Rebuild our blit‐background without the line.
-            self.movieCanvas._bg = canvas.copy_from_bbox(self.movieCanvas.ax.bbox)
-            # Clear the manual‐zoom flag.
+            self.movieCanvas._bg = None
+            self._rebuild_movie_blit_background()
             self.movieCanvas.manual_zoom = False
-            line.set_visible(True)
             return
 
         # Normal motion: restore background and draw only the line.
         canvas = self.movieCanvas.figure.canvas
+        if getattr(self.movieCanvas, "_bg", None) is None:
+            self._rebuild_movie_blit_background()
+            return
         canvas.restore_region(self.movieCanvas._bg)
         self.movieCanvas.ax.draw_artist(line)
         canvas.blit(self.movieCanvas.ax.bbox)
@@ -5690,14 +5842,42 @@ class KymographNavigator(QMainWindow):
             color='#7da1ff', linewidth=1.5, linestyle='--'
         )
 
-        # 2) Immediately draw it so the user sees it now
-        canvas = self.movieCanvas.figure.canvas
-        canvas.draw()                       # full redraw, shows the new line
-
-        # 3) Store a “clean” background without the animated portion (if you still want to blit later)
-        self.movieCanvas._bg = canvas.copy_from_bbox(self.movieCanvas.ax.bbox)
+        self.temp_movie_analysis_line.set_animated(True)
+        self._rebuild_movie_blit_background()
 
         # NB: NO draw_idle() here — we’ll blit in on_movie_motion
+
+    def _rebuild_movie_blit_background(self):
+        """Rebuild the MovieCanvas blit background.
+
+        We treat `temp_movie_analysis_line` as an animated artist. The cached background
+        must be captured *without* that line, otherwise restore_region() can wipe or
+        double-draw overlays.
+        """
+        canvas = self.movieCanvas.figure.canvas
+        line = getattr(self, "temp_movie_analysis_line", None)
+
+        if line is not None:
+            try:
+                line.set_animated(True)
+                line.set_visible(False)
+            except Exception:
+                pass
+
+        # Full draw to make sure all "static" artists (image, overlays, circles, etc.) are baked in.
+        self.movieCanvas.draw()
+
+        # Snapshot background without the animated line.
+        self.movieCanvas._bg = canvas.copy_from_bbox(self.movieCanvas.ax.bbox)
+
+        # Make the line visible again and draw it once so the user sees it immediately.
+        if line is not None:
+            try:
+                line.set_visible(True)
+                self.movieCanvas.ax.draw_artist(line)
+                canvas.blit(self.movieCanvas.ax.bbox)
+            except Exception:
+                pass
 
     def escape_left_click_sequence(self):
         self.cancel_left_click_sequence()
@@ -6144,10 +6324,15 @@ class KymographNavigator(QMainWindow):
             self.contrastControlsWidget.contrastRangeSlider.setRangeValues(settings['vmin'], settings['vmax'])
             self.contrastControlsWidget.contrastRangeSlider.blockSignals(False)
 
-            # Restore the saved view limits to preserve manual zoom.
-            # self.movieCanvas.ax.set_xlim(current_xlim)
-            # self.movieCanvas.ax.set_ylim(current_ylim)
-            self.movieCanvas.draw_idle()
+            # after settings computed and slider updated
+            self.movieCanvas.set_display_range(settings['vmin'], settings['vmax'])
+
+            # base pixels/contrast changed -> invalidate/rebuild bg for blitting
+            self.movieCanvas._bg = None
+            if getattr(self, "temp_movie_analysis_line", None) is not None:
+                self._rebuild_movie_blit_background()
+
+            #self.movieCanvas.draw_idle()
 
         else:
             # ----- Sum mode OFF (restore normal mode) -----
@@ -6189,13 +6374,15 @@ class KymographNavigator(QMainWindow):
             self.contrastControlsWidget.contrastRangeSlider.setRangeValues(settings['vmin'], settings['vmax'])
             self.contrastControlsWidget.contrastRangeSlider.blockSignals(False)
 
-            # For non‐sum mode, update just the image data without resetting the view.
-            # current_xlim = self.movieCanvas.ax.get_xlim()
-            # current_ylim = self.movieCanvas.ax.get_ylim()
             self.movieCanvas.update_image_data(frame)
-            # self.movieCanvas.ax.set_xlim(current_xlim)
-            # self.movieCanvas.ax.set_ylim(current_ylim)
-            self.movieCanvas.draw_idle()
+            self.movieCanvas.set_display_range(settings['vmin'], settings['vmax'])
+
+            self.movieCanvas._bg = None
+            if getattr(self, "temp_movie_analysis_line", None) is not None:
+                self._rebuild_movie_blit_background()
+
+            # self.movieCanvas.update_image_data(frame)
+            # self.movieCanvas.draw_idle()
 
     def overlay_all_rois(self):
         # 1) clear old overlays
@@ -7088,6 +7275,7 @@ class KymographNavigator(QMainWindow):
                 tifffile.imwrite(
                     fname,
                     np.array(corrected_frames),
+                    #bigtiff=True, NEEDS TESTING
                     imagej=True,
                     metadata=getattr(self, "movie_metadata", {})
                 )
@@ -7409,6 +7597,14 @@ class KymographNavigator(QMainWindow):
         col = self.color_by_column
         all_trajs = self.trajectoryCanvas.trajectories
 
+        if col == "motion_state":
+            states = traj.get("motion_state", None)
+            if isinstance(states, (list, tuple)) and states:
+                pts = [self.motion_colours.get(s, "grey") for s in states]
+                return {"c": pts, "zorder": 4}, "#7DA1FF"
+            # fallback if missing
+            return {"color": "grey", "zorder": 4}, "grey"
+
         # fallback: color points magenta if intensity exists, grey if None
         if not col:
             # use per-point intensities to decide color
@@ -7550,6 +7746,13 @@ class KymographNavigator(QMainWindow):
             entries = [(color_map[v], v) for v in seen]
         elif mode == "binary":
             entries = [("#FFC107", col)]
+        elif col == "motion_state":
+            entries = [
+                (self.motion_colours["processive"], "Processive"),
+                (self.motion_colours["diffusive"],  "Diffusive"),
+                (self.motion_colours["paused"],     "Paused"),
+                (self.motion_colours["ambiguous"],  "Ambiguous"),
+            ]
         else:
             entries = []
 
@@ -7741,3 +7944,4 @@ class KymographNavigator(QMainWindow):
             seg_medians.append((start_f, end_f, med))
 
         return step_frames, seg_medians
+

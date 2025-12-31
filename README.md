@@ -68,8 +68,8 @@ tracy &                    # run in the background
 1. Click **Load Movie** (or use **Load » Movie**).
 2. Select a single- or multi-channel TIFF movie.
 3. If necessary, enter pixel size and frame interval when prompted.
-4. Pan with the middle‑button drag (or Ctrl/Cmd + drag), zoom with the mouse wheel.
-5. Switch channels by clicking the channel label (shortcut: `1`, `2`, …).
+4. Pan by holding down the middle button (or Ctrl/Cmd) and dragging, zoom with the mouse wheel.
+5. If available, switch channels by clicking the channel label (shortcut: `1`, `2`, …).
 6. Toggle the maximum projection with the button below the movie (shortcut: `m`).
 7. Adjust the contrast using the slider.
 
@@ -178,6 +178,7 @@ tracy &                    # run in the background
 * Useful for overlaying filaments or guides during kymograph creation.
 * Load via **Load » Reference Image**
 * Toggle with the icon under the movie.
+* While toggled, use shift+arrows to move the reference image if necessary
 
 ### Custom Columns <a name="custom-columns"></a>
 
@@ -197,13 +198,154 @@ tracy &                    # run in the background
 
 ### Save Trajectories <a name="save-trajectories"></a>
 
-* **Save » Trajectories** exports an Excel file with three sheets:
+* **Save » Trajectories** exports an Excel workbook with four sheets:
 
-  1. **Data Points**: all spot measurements.
-  2. **Per‑Trajectory**: summary statistics per trajectory.
-  3. **Per‑Kymograph**: stats grouped by kymograph.
+  1. **Data Points**: per-frame spot measurements along each trajectory.
+  2. **Per‑Trajectory**: one-row summary statistics for each trajectory.
+  3. **Per‑Kymograph**: aggregates grouped by kymograph/ROI (geometry).
+  4. **Aggregate analysis**: a single-row summary across the whole movie.
 
-⚠️ If a trajectory can be found within two kymographs, the per‑kymograph stats will be wrong.
+---
+
+#### Sheet: Data Points
+
+Each row is one frame from one trajectory.
+
+##### Columns
+
+* **Trajectory**: trajectory ID.
+* **Channel**: movie channel the trajectory was tracked in.
+* **Frame**: 1-indexed frame number.
+* **Original Coordinate X / Y**: the original (raw) coordinate for that frame.
+* **Search Center X / Y**: the search center used for tracking in that frame.
+* **Spot Center X / Y**: fitted spot center for that frame (blank if fit failed).
+* **Intensity**: integrated spot intensity (blank if invalid/missing).
+* **Sigma**: fitted spot σ (blank if fit failed).
+* **Peak**: fitted peak amplitude (blank if fit failed).
+* **Background from trajectory**: `Yes` if a fixed background was used for the trajectory, else `No`.
+* **Background**: per-frame background estimate (blank if not computed).
+* **Speed (px/frame)**: frame-to-frame speed in pixels.
+* **Speed (μm/s)** / **Speed (μm/min)**: speed converted using pixel size + frame interval (blank if either is missing).
+
+##### Optional columns: step finding
+
+> Only present if step-finding is enabled and steps exist.
+
+* **Step Number**: step segment index for that frame.
+* **Step Intensity Value**: median intensity for that step segment.
+* **Step Intensity Value (background-adjusted)**: step median minus the per-frame background (when available).
+
+##### Optional columns: colocalization
+
+> Only present for multi-channel movies when colocalization is enabled.
+
+* **Colocalized w/any channel**: `Yes`/`No` per frame (blank if not evaluated).
+* **Colocalized w/ch1**, **Colocalized w/ch2**, …: `Yes`/`No` per frame for each channel (the reference channel column is left blank).
+
+---
+
+#### Sheet: Per‑Trajectory
+
+Each row is one trajectory.
+
+##### Columns
+
+* **Movie**: movie file name.
+* **Trajectory**: trajectory ID.
+* **Channel**: channel the trajectory was tracked in.
+* **Start Frame / End Frame**: 1-indexed start/end frames.
+* **Anchors**: JSON list of anchor points used to define the kymograph track line (frame index + x/y in px; frame index is Tracy’s internal frame index).
+* **ROI**: JSON description of the kymograph ROI geometry.
+* **Total Points**: number of frames in the trajectory.
+* **Valid Points**: number of frames with a valid intensity (>0).
+* **Percent Valid**: `100 * Valid Points / Total Points`.
+* **Search Center X Start / Y Start**: starting search center coordinate.
+* **Search Center X End / Y End**: ending search center coordinate.
+* **Distance (μm)**: straight-line displacement from start→end converted to μm (blank if pixel size missing).
+* **Time (s)**: duration from start→end in seconds (blank if frame interval missing).
+* **Background**: fixed trajectory background value (blank if not used).
+* **Average Intensity**: mean intensity over valid points.
+* **Median Intensity**: median intensity over valid points.
+* **Net Speed (px/frame)**: straight-line displacement / (end-start frames).
+* **Net Speed (μm/s)** / **Net Speed (μm/min)**: net speed converted using pixel size + frame interval (blank if either is missing).
+* **Avg. Speed (px/frame)**: mean of per-frame speeds.
+* **Avg. Speed (μm/s)** / **Avg. Speed (μm/min)**: average speed converted (blank if either is missing).
+
+##### Optional columns: step finding
+
+> Only present if step-finding is enabled and steps exist.
+
+* **Number of Steps**
+* **Average Step Size**: average absolute difference between consecutive step medians.
+* **Average Step Size w/Step to Background**: as above, but also includes the final step-to-background difference when a fixed background exists.
+
+##### Optional columns: custom columns
+
+> Only present if you added custom columns in the UI.
+
+* Custom columns appear as **`<Name> [binary]`** or **`<Name> [value]`** depending on the column type.
+
+##### Optional columns: colocalization summary columns
+
+> Only present for multi-channel movies when colocalization columns exist.
+
+* **Ch. 1 co. %**, **Ch. 2 co. %**, …: percent of frames colocalized with each other channel.
+  * For 2-channel movies, the non-reference channel column is the overall colocalization percent.
+  * For >2 channels, each non-reference column is computed separately per target channel.
+  * The reference channel’s own **Ch. X co. %** cell is left blank.
+
+---
+
+#### Sheet: Per‑Kymograph
+
+Each row is one ROI geometry (kymograph).
+
+##### Columns
+
+* **ROI**: ROI JSON (same format as in Per‑Trajectory).
+* **Total distance (μm)**: total polyline length of the ROI in μm (blank if pixel size missing).
+* **Total time (s)**: total movie duration in seconds (blank if frame interval missing).
+* **Number of trajectories**: trajectories whose ROI matches this ROI JSON.
+* **Events (/min)**: `Number of trajectories / (Total time in minutes)` (blank if frame interval missing).
+* **Events (/μm/min)**: `Events (/min) / Total distance (μm)` (blank if pixel size or frame interval missing).
+* **Average net speed (μm/s)**: mean **Net Speed (μm/s)** across trajectories in this ROI.
+* **Average average speed (μm/s)**: mean **Avg. Speed (μm/s)** across trajectories in this ROI.
+* **Average run length (μm)**: mean **Distance (μm)** across trajectories in this ROI.
+* **Average run time (s)**: mean **Time (s)** across trajectories in this ROI.
+* **Average median intensity**: mean **Median Intensity** across trajectories in this ROI.
+* **Average average intensity**: mean **Average Intensity** across trajectories in this ROI.
+
+---
+
+#### Sheet: Aggregate analysis
+
+A single row summarizing the whole movie.
+
+##### Columns
+
+* **Pixel size (nm/px)**: pixel size used for unit conversions (blank if unknown).
+* **Frame time (ms)**: frame interval used for unit conversions (blank if unknown).
+* **Total movie frames**
+* **Total time (s)**: total movie duration (blank if frame time unknown).
+* **Movie dimensions (px)**: `width, height`.
+* **Movie dimensions (μm)**: `width, height` converted using pixel size (blank if unknown).
+* **Total kymographs**: number of ROI geometries (see multi-channel caveat below).
+* **Total kymograph distance (μm)**: sum of all ROI lengths (includes empty ROIs; blank if pixel size unknown).
+* **Empty kymographs**: ROIs with zero trajectories.
+* **Number of trajectories**
+* **Number of events (/min)**: total trajectories per total movie time in minutes (blank if frame time unknown).
+* **Number of events (/μm/min)**: events per minute divided by total kymograph distance (blank if pixel size or frame time unknown).
+* **Average net speed (μm/s)**, **Average average speed (μm/s)**, **Average run length (μm)**, **Average run time (s)**,
+  **Average median intensity**, **Average average intensity**: means across all trajectories, regardless of ROI.
+
+---
+
+#### Caveats (especially important for multi-channel movies)
+
+* **Per‑Kymograph and Aggregate “kymograph” counts are ROI-based, not per-channel.** In multi-channel movies, Tracy draws a kymograph for each channel from the same ROI geometry, but the export currently groups by ROI geometry only. That means:
+  * **Total kymographs** counts ROI geometries (not `ROI × channels`).
+  * **Per‑Kymograph** rows are ROI geometries (not separate rows per channel).
+* **Overlapping ROIs / shared trajectories:** if the same trajectory is associated with multiple ROIs/kymographs, the **Per‑Kymograph** sheet can double-count trajectories and bias the averages.
 
 ### Load Trajectories <a name="load-trajectories"></a>
 

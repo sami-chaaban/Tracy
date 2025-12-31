@@ -882,7 +882,11 @@ class MovieCanvas(ImageCanvas):
             self.draw()
             # …then recapture blit backgrounds so hover/blit won’t restore an old frame
             canvas = self.figure.canvas
-            self._bg     = canvas.copy_from_bbox(self.ax.bbox)
+            # If navigator is running a blitted temp line, let navigator rebuild a clean bg
+            if getattr(self.navigator, "temp_movie_analysis_line", None) is not None:
+                self._bg = None
+            else:
+                self._bg = canvas.copy_from_bbox(self.ax.bbox)
             self._roi_bg = canvas.copy_from_bbox(self.ax.bbox)
 
     def update_view(self):
@@ -904,7 +908,11 @@ class MovieCanvas(ImageCanvas):
         # 3) **then** grab a fresh clean background  
         #    (no animated artists in place because you haven’t drawn them yet)
         canvas = self.figure.canvas
-        self._bg       = canvas.copy_from_bbox(self.ax.bbox)
+        # If navigator is running a blitted temp line, let navigator rebuild a clean bg
+        if getattr(self.navigator, "temp_movie_analysis_line", None) is not None:
+            self._bg = None
+        else:
+            self._bg = canvas.copy_from_bbox(self.ax.bbox)
         self._roi_bbox = self.ax.bbox
         self._roi_bg   = canvas.copy_from_bbox(self._roi_bbox)
 
@@ -1603,7 +1611,11 @@ class MovieCanvas(ImageCanvas):
 
         # ── recapture blit backgrounds so future blits use the sum‐mode image ──
         canvas = self.figure.canvas
-        self._bg     = canvas.copy_from_bbox(self.ax.bbox)
+        # If navigator is running a blitted temp line, let navigator rebuild a clean bg
+        if getattr(self.navigator, "temp_movie_analysis_line", None) is not None:
+            self._bg = None
+        else:
+            self._bg = canvas.copy_from_bbox(self.ax.bbox)
         self._roi_bg = canvas.copy_from_bbox(self.ax.bbox)
 
     def clear_sum_cache(self, channel=None):
@@ -2919,12 +2931,13 @@ class TrajectoryCanvas(QWidget):
                     grp = df_roi[df_roi['ROI'] == roi_json]
                     n_trajs = len(grp)
                     events_per_min = (n_trajs / (total_time_s / 60.0)) if total_time_s else float('nan')
-                    events_per_um_per_min = (events_per_min / pixel_size_um) if (pixel_size_um and total_time_s) else float('nan')
                     total_distance_um = None
+                    events_per_um_per_min = float('nan')
                     if pixel_size_um:
                         roi_dict = json.loads(roi_json)
                         xs, ys = np.array(roi_dict['x'], float), np.array(roi_dict['y'], float)
                         total_distance_um = np.sum(np.hypot(np.diff(xs), np.diff(ys))) * pixel_size_um
+                        events_per_um_per_min = (events_per_min / total_distance_um) if total_time_s else float('nan')
 
                     per_roi_list.append({
                         'ROI': roi_json,
@@ -2987,11 +3000,138 @@ class TrajectoryCanvas(QWidget):
 
             df_per_roi = pd.DataFrame(per_roi_list)
 
+            # ─────────────────────────────────────────────────────────────
+            # Aggregate analysis (across ALL trajectories + ALL kymographs)
+            # ─────────────────────────────────────────────────────────────
+
+            # movie dims (use navigator's 2D frame getter if available)
+            try:
+                frame0 = self.navigator.get_movie_frame(0)
+            except Exception:
+                # fallback: best-effort from raw movie array
+                if self.navigator.movie.ndim == 3:
+                    frame0 = self.navigator.movie[0]
+                else:
+                    frame0 = self.navigator.movie[0, ...]  # may still be multi-d; best-effort
+
+            # Ensure 2D
+            if hasattr(frame0, "ndim") and frame0.ndim > 2:
+                # last-resort squeeze
+                frame0 = np.squeeze(frame0)
+
+            height_px = int(frame0.shape[0])
+            width_px  = int(frame0.shape[1])
+            movie_dims_px_txt = f"{width_px}, {height_px}"
+
+            px_nm = self.navigator.pixel_size  # nm/px or None
+            ft_ms = self.navigator.frame_interval  # ms or None
+            n_frames = int(self.navigator.movie.shape[0])
+
+            total_time_s = ""
+            if ft_ms is not None:
+                total_time_s = (n_frames * (ft_ms / 1000.0))
+
+            movie_dims_um_txt = ""
+            if px_nm is not None:
+                px_um = px_nm / 1000.0
+                movie_dims_um_txt = f"{width_px * px_um:.2f}, {height_px * px_um:.2f}"
+
+            total_kymographs = len(self.navigator.rois or {})
+
+            # total kymograph distance (sum over ALL rois, including empty ones)
+            total_kymo_distance_um = ""
+            if px_nm is not None:
+                pixel_size_um = px_nm / 1000.0
+                total_um = 0.0
+                for roi_dict in (self.navigator.rois or {}).values():
+                    try:
+                        xs = np.array(roi_dict.get("x", []), float)
+                        ys = np.array(roi_dict.get("y", []), float)
+                        if len(xs) >= 2 and len(ys) >= 2:
+                            total_um += float(np.sum(np.hypot(np.diff(xs), np.diff(ys))) * pixel_size_um)
+                    except Exception:
+                        pass
+                total_kymo_distance_um = total_um
+
+            # how many empty kymographs? (ROIs with zero trajectories)
+            all_jsons = {json.dumps(roi_dict) for roi_dict in (self.navigator.rois or {}).values()}
+
+            if not df_summary.empty and "ROI" in df_summary.columns:
+                seen_jsons = {
+                    roi for roi in df_summary["ROI"]
+                    if isinstance(roi, str) and roi.strip()
+                }
+            else:
+                seen_jsons = set()
+
+            empty_kymographs = len(all_jsons - seen_jsons)
+
+            n_trajs = 0 if df_summary.empty else int(len(df_summary))
+
+            events_per_min = ""
+            events_per_um_per_min = ""
+            if ft_ms is not None and total_time_s and total_time_s > 0:
+                events_per_min = n_trajs / (total_time_s / 60.0)
+                if px_nm is not None and isinstance(total_kymo_distance_um, (int, float)) and total_kymo_distance_um > 0:
+                    events_per_um_per_min = events_per_min / total_kymo_distance_um
+
+            # trajectory-wise averages (across ALL trajectories)
+            avg_net_speed = ""
+            avg_avg_speed = ""
+            avg_run_length = ""
+            avg_run_time = ""
+            avg_med_int = ""
+            avg_avg_int = ""
+
+            if not df_summary.empty:
+                df_all = df_summary.copy()
+                for col in ["Distance (μm)", "Time (s)", "Net Speed (μm/s)",
+                            "Avg. Speed (μm/s)", "Average Intensity", "Median Intensity"]:
+                    if col in df_all.columns:
+                        df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
+
+                if "Net Speed (μm/s)" in df_all:
+                    avg_net_speed = df_all["Net Speed (μm/s)"].mean()
+                if "Avg. Speed (μm/s)" in df_all:
+                    avg_avg_speed = df_all["Avg. Speed (μm/s)"].mean()
+                if "Distance (μm)" in df_all:
+                    avg_run_length = df_all["Distance (μm)"].mean()
+                if "Time (s)" in df_all:
+                    avg_run_time = df_all["Time (s)"].mean()
+                if "Median Intensity" in df_all:
+                    avg_med_int = df_all["Median Intensity"].mean()
+                if "Average Intensity" in df_all:
+                    avg_avg_int = df_all["Average Intensity"].mean()
+
+            # one-row dataframe for the new sheet
+            agg_row = {
+                "Pixel size (nm/px)": px_nm if px_nm is not None else "",
+                "Frame time (ms)": ft_ms if ft_ms is not None else "",
+                "Total movie frames": n_frames,
+                "Total time (s)": total_time_s if total_time_s != "" else "",
+                "Movie dimensions (px)": movie_dims_px_txt,
+                "Movie dimensions (μm)": movie_dims_um_txt,
+                "Total kymographs": total_kymographs,
+                "Summed kymograph distances (μm)": total_kymo_distance_um,
+                "Empty kymographs": empty_kymographs,
+                "Number of trajectories": n_trajs,
+                "Number of events (/min)": events_per_min,
+                "Number of events (/um/min)": events_per_um_per_min,
+                "Average net speed (μm/s)": avg_net_speed,
+                "Average average speed (μm/s)": avg_avg_speed,
+                "Average run length (μm)": avg_run_length,
+                "Average run time (s)": avg_run_time,
+                "Average median intensity": avg_med_int,
+                "Average average intensity": avg_avg_int,
+            }
+            df_aggregate = pd.DataFrame([agg_row])
+
             # Write to Excel
             with pd.ExcelWriter(filename) as writer:
                 df_data.to_excel(writer, sheet_name="Data Points", index=False)
                 df_summary.to_excel(writer, sheet_name="Per-trajectory", index=False)
                 df_per_roi.to_excel(writer, sheet_name="Per-kymograph", index=False)
+                df_aggregate.to_excel(writer, sheet_name="Aggregate analysis", index=False)
 
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save trajectories: {e}")
@@ -3190,6 +3330,17 @@ class TrajectoryCanvas(QWidget):
             for ch, flags in self.navigator.analysis_colocalized_by_ch.items()
         }
 
+        traj_data["motion_state"] = (
+            list(getattr(self.navigator, "analysis_motion_state", []))
+            if getattr(self.navigator, "analysis_motion_state", None) is not None
+            else None
+        )
+        traj_data["motion_segments"] = (
+            list(getattr(self.navigator, "analysis_motion_segments", []))
+            if getattr(self.navigator, "analysis_motion_segments", None) is not None
+            else None
+        )
+
         traj_data["custom_fields"] = {}
     
         new = [
@@ -3345,6 +3496,74 @@ class TrajectoryCanvas(QWidget):
             if "Data Points" not in xls.sheet_names:
                 QMessageBox.critical(self, "Error", "Sheet 'Data Points' not found.")
                 return
+
+            # --- Optionally load scale calibration from the workbook ---
+            # If present, "Aggregate analysis" contains pixel size (nm/px) and frame time (ms).
+            if "Aggregate analysis" in xls.sheet_names:
+                try:
+                    agg_df = pd.read_excel(xls, sheet_name="Aggregate analysis", nrows=1)
+                    if not agg_df.empty:
+                        row0 = agg_df.iloc[0]
+
+                        def _num_or_none(v):
+                            if v is None:
+                                return None
+                            if isinstance(v, str) and not v.strip():
+                                return None
+                            try:
+                                if pd.isna(v):
+                                    return None
+                            except Exception:
+                                pass
+                            try:
+                                return float(v)
+                            except Exception:
+                                return None
+
+                        loaded_px = _num_or_none(row0.get("Pixel size (nm/px)", None))
+                        loaded_ft = _num_or_none(row0.get("Frame time (ms)", None))
+
+                        # Only prompt if the file actually provides at least one value.
+                        if loaded_px is not None or loaded_ft is not None:
+                            cur_px = self.navigator.pixel_size
+                            cur_ft = self.navigator.frame_interval
+
+                            def _different(a, b):
+                                if a is None and b is None:
+                                    return False
+                                if a is None or b is None:
+                                    return True
+                                try:
+                                    return not math.isclose(float(a), float(b), rel_tol=1e-6, abs_tol=1e-6)
+                                except Exception:
+                                    return True
+
+                            if _different(loaded_px, cur_px) or _different(loaded_ft, cur_ft):
+                                msg = (
+                                    "This file contains scale calibration:\n\n"
+                                    f"Pixel size: {loaded_px if loaded_px is not None else '—'} nm/px\n"
+                                    f"Frame time: {loaded_ft if loaded_ft is not None else '—'} ms\n\n"
+                                    "Current scale:\n\n"
+                                    f"Pixel size: {cur_px if cur_px is not None else '—'} nm/px\n"
+                                    f"Frame time: {cur_ft if cur_ft is not None else '—'} ms\n\n"
+                                    "Apply the file's scale calibration?"
+                                )
+                                reply = QMessageBox.question(
+                                    self,
+                                    "Apply scale from file?",
+                                    msg,
+                                    QMessageBox.Yes | QMessageBox.No,
+                                    QMessageBox.Yes
+                                )
+                                if reply == QMessageBox.Yes:
+                                    if loaded_px is not None:
+                                        self.navigator.pixel_size = loaded_px
+                                    if loaded_ft is not None:
+                                        self.navigator.frame_interval = loaded_ft
+                                    self.navigator.update_scale_label()
+                except Exception:
+                    # Ignore parse errors and continue loading.
+                    pass
 
             if "Per-trajectory" in xls.sheet_names:
                 summary_df = pd.read_excel(xls, sheet_name="Per-trajectory")

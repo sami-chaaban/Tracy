@@ -3,7 +3,7 @@ Holds the 2D Gaussian fitting function used by curve_fit.
 """
 
 import numpy as np
-from scipy.optimize import curve_fit
+from scipy.optimize import curve_fit, least_squares
 
 def gaussian2d_flat(coords, A, x0, y0, sigma_x, sigma_y, offset):
     """
@@ -48,17 +48,14 @@ def perform_gaussian_fit(frame_image,
         return (None, None, None, None, None)
     # Prepare min/max sigma
     """
-    250nm is the assumed full width at half maximum (FWHM) of your optical PSF
-    (i.e. the diameter of the blur spot produced by diffraction in your microscope,
-    which is often on the order of 200–300 nm for visible light).
     A Gaussian’s FWHM is related to its standard deviation σ by:
     FWHM = 2 sqrt(2ln(2))*sigma
-    The leading factor of 2 enforces a minimum width of twice the PSF σ (so ~212 nm),
+    The leading factor of 2 enforces a minimum width of twice the PSF σ,
     to guard against spuriously sharp fits that would be smaller than what optics can actually resolve
     """
     sigma_min = 1.0
     if pixelsize is not None:
-        sigma_min = 2*(250/2.355)/pixelsize
+        sigma_min = 2*(200/2.355)/pixelsize
     sigma_max = crop_size/4.0
 
     # Cache grids & sigma_arr keyed by crop_size
