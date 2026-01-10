@@ -693,13 +693,71 @@ class RecalcWorker(QObject):
         total = sum(len(self._trajectories[r]["frames"]) for r in self._rows)
         count = 0
         results = []
+        # If diffusion is enabled, require scale to be set (nm/px and ms)
+        if getattr(self._navigator, "show_diffusion", False):
+            if getattr(self._navigator, "pixel_size", None) is None or getattr(self._navigator, "frame_interval", None) is None:
+                raise ValueError(
+                    "Diffusion requires scale: set Pixel size (nm) and Frame interval (ms) before recalculating."
+                )
         for row in self._rows:
             if self._is_canceled:
                 self.canceled.emit()
                 return
-
             old = self._trajectories[row]
-            new_traj = self._navigator. _rebuild_one_trajectory(old, self._navigator)
+            new_traj = self._navigator._rebuild_one_trajectory(old, self._navigator)
+
+            # Preserve / merge custom_fields
+            if "custom_fields" not in new_traj:
+                new_traj["custom_fields"] = old.get("custom_fields", {}).copy()
+            else:
+                merged = old.get("custom_fields", {}).copy()
+                merged.update(new_traj.get("custom_fields") or {})
+                new_traj["custom_fields"] = merged
+
+            # Optionally recompute diffusion (D, alpha) and store into custom_fields
+            if getattr(self._navigator, "show_diffusion", False):
+                try:
+                    D, alpha = self._navigator.compute_diffusion_for_data(
+                        new_traj.get("frames", []),
+                        new_traj.get("spot_centers", [])
+                    )
+                except Exception:
+                    D, alpha = (None, None)
+
+                cf = new_traj.setdefault("custom_fields", {})
+
+                # Prefer explicit navigator-provided column names if present
+                d_key = (
+                    getattr(self._navigator, "_DIFF_D_COL", None)
+                    or getattr(self._navigator, "diffusion_D_col", None)
+                    or getattr(self._navigator, "diffusion_d_col", None)
+                )
+                a_key = (
+                    getattr(self._navigator, "_DIFF_A_COL", None)
+                    or getattr(self._navigator, "diffusion_alpha_col", None)
+                    or getattr(self._navigator, "diffusion_a_col", None)
+                )
+
+                # Fall back to existing custom_fields keys if they already exist
+                if d_key is None or a_key is None:
+                    for k in list(cf.keys()):
+                        lk = k.lower()
+                        if a_key is None and ("alpha" in lk or "α" in k):
+                            a_key = k
+                        if d_key is None and (lk.strip() == "d" or "diffusion" in lk):
+                            if "alpha" not in lk and "α" not in k:
+                                d_key = k
+
+                # Final fallbacks
+                if d_key is None:
+                    d_key = "D"
+                if a_key is None:
+                    a_key = "alpha"
+
+                # Formatting: keep D compact (4 significant figures) and alpha consistent (4 decimals)
+                cf[d_key] = "" if D is None else f"{float(D):.4f}"
+                cf[a_key] = "" if alpha is None else f"{float(alpha):.3f}"
+
             results.append((row, new_traj))
 
             count += len(old["frames"])
@@ -727,6 +785,12 @@ class RecalcAllWorker(QObject):
         # print("▶ run() entered; initial _is_canceled =", self._navigator._is_canceled)
         processed = 0
         results = {}
+        # If diffusion is enabled, require scale to be set (nm/px and ms)
+        if getattr(self._navigator, "show_diffusion", False):
+            if getattr(self._navigator, "pixel_size", None) is None or getattr(self._navigator, "frame_interval", None) is None:
+                raise ValueError(
+                    "Diffusion requires scale: set Pixel size (nm) and Frame interval (ms) before recalculating."
+                )
 
         for row_index, old in enumerate(self._backup):
             # print(f"worker (top of loop) _is_canceled = {self._navigator._is_canceled}")
@@ -895,6 +959,49 @@ class RecalcAllWorker(QObject):
 
             # 9) Preserve custom_fields
             new_traj["custom_fields"] = old.get("custom_fields", {}).copy()
+            # Optionally recompute diffusion (D, alpha) and store into custom_fields
+            if getattr(self._navigator, "show_diffusion", False):
+                try:
+                    D, alpha = self._navigator.compute_diffusion_for_data(
+                        new_traj.get("frames", []),
+                        new_traj.get("spot_centers", [])
+                    )
+                except Exception:
+                    D, alpha = (None, None)
+
+                cf = new_traj.setdefault("custom_fields", {})
+
+                # Prefer explicit navigator-provided column names if present
+                d_key = (
+                    getattr(self._navigator, "_DIFF_D_COL", None)
+                    or getattr(self._navigator, "diffusion_D_col", None)
+                    or getattr(self._navigator, "diffusion_d_col", None)
+                )
+                a_key = (
+                    getattr(self._navigator, "_DIFF_A_COL", None)
+                    or getattr(self._navigator, "diffusion_alpha_col", None)
+                    or getattr(self._navigator, "diffusion_a_col", None)
+                )
+
+                # Fall back to existing custom_fields keys if they already exist
+                if d_key is None or a_key is None:
+                    for k in list(cf.keys()):
+                        lk = k.lower()
+                        if a_key is None and ("alpha" in lk or "α" in k):
+                            a_key = k
+                        if d_key is None and (lk.strip() == "d" or "diffusion" in lk):
+                            if "alpha" not in lk and "α" not in k:
+                                d_key = k
+
+                # Final fallbacks
+                if d_key is None:
+                    d_key = "D"
+                if a_key is None:
+                    a_key = "alpha"
+
+                # Formatting: keep D compact (4 significant figures) and alpha consistent (4 decimals)
+                cf[d_key] = "" if D is None else f"{float(D):.4f}"
+                cf[a_key] = "" if alpha is None else f"{float(alpha):.3f}"
 
             # 10) Store in results and bump progress
             results[row_index] = new_traj
@@ -902,7 +1009,7 @@ class RecalcAllWorker(QObject):
             self.progress.emit(processed)
 
         # 11) Finished without cancellation
-        print("▶ run() finished all trajectories without seeing a cancel")
+        #print("▶ run() finished all trajectories without seeing a cancel")
         self.finished.emit(results)
 
     def cancel(self):
@@ -1685,5 +1792,59 @@ class StepSettingsDialog(QDialog):
     def _on_setall(self):
         self.new_W        = self.win_spin.value()
         self.new_min_step = self.step_spin.value()
+        self.calculate_all = True
+        self.accept()
+
+class DiffusionSettingsDialog(QDialog):
+    def __init__(self, current_max_lag, current_min_pairs, can_calculate_all: bool, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Diffusion fit parameters")
+        self.new_max_lag = current_max_lag
+        self.new_min_pairs = current_min_pairs
+        self.calculate_all = False
+
+        layout = QVBoxLayout(self)
+        self.setStyleSheet(QApplication.instance().styleSheet())
+
+        lag_layout = QHBoxLayout()
+        lag_label = QLabel("Max lag (frames):")
+        lag_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.lag_spin = QSpinBox()
+        self.lag_spin.setRange(2, 999)
+        self.lag_spin.setValue(current_max_lag)
+        lag_layout.addWidget(lag_label)
+        lag_layout.addWidget(self.lag_spin)
+        layout.addLayout(lag_layout)
+
+        pair_layout = QHBoxLayout()
+        pair_label = QLabel("Min pairs per lag:")
+        pair_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.pair_spin = QSpinBox()
+        self.pair_spin.setRange(1, 9999)
+        self.pair_spin.setValue(current_min_pairs)
+        pair_layout.addWidget(pair_label)
+        pair_layout.addWidget(self.pair_spin)
+        layout.addLayout(pair_layout)
+
+        btns = QHBoxLayout()
+        btns.addWidget(QPushButton("Cancel", clicked=self.reject))
+        btn_set = QPushButton("Set", clicked=self._on_set)
+        btn_set.setDefault(True)
+        btns.addWidget(btn_set)
+
+        if can_calculate_all:
+            btns.addWidget(QPushButton("Set and Calculate", clicked=self._on_setall))
+
+        layout.addLayout(btns)
+
+    def _on_set(self):
+        self.new_max_lag = self.lag_spin.value()
+        self.new_min_pairs = self.pair_spin.value()
+        self.calculate_all = False
+        self.accept()
+
+    def _on_setall(self):
+        self.new_max_lag = self.lag_spin.value()
+        self.new_min_pairs = self.pair_spin.value()
         self.calculate_all = True
         self.accept()

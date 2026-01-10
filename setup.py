@@ -6,8 +6,8 @@ long_description = (this_dir / "README.md").read_text(encoding="utf-8")
 
 setup(
     name='tracyspot',
-    version='1.1.0',
-    description='Spot navigator',
+    version='1.1.1',
+    description='Fluorescence spot analysis suite',
     long_description=long_description,
     long_description_content_type="text/markdown",
     author='Sami Chaaban',

@@ -24,6 +24,7 @@ import matplotlib.patheffects as pe
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import tifffile
+import math
 from scipy.ndimage import shift, gaussian_filter
 from scipy.signal import savgol_filter
 import zipfile
@@ -45,7 +46,8 @@ from .canvas_tools import (
     RoundedFrame, AxesRectAnimator, SaveKymographDialog,
     ClickableLabel, RadiusDialog, BubbleTipFilter,
     CenteredBubbleFilter, AnimatedIconButton,
-    StepSettingsDialog, KymoContrastControlsWidget
+    StepSettingsDialog, KymoContrastControlsWidget,
+    DiffusionSettingsDialog
 )
 from tracy import __version__
 from .gaussian_tools import perform_gaussian_fit, filterX, find_minima, find_maxima
@@ -251,8 +253,21 @@ class KymographNavigator(QMainWindow):
         self.check_colocalization = False
         self.colocalization_threshold = 4
 
-        self.calc_diffusion = True
+        self.categorize_diffusion = True
         self._EPS = 1e-12
+
+        # diffusion toggle + settings
+        self.show_diffusion = False
+        self.diffusion_max_lag = 10     # lags used for MSD fit (1..max_lag)
+        self.diffusion_min_pairs = 5    # minimum pairs per lag to accept that lag
+
+        # optional: keep latest-analysis values, like steps
+        self.analysis_diffusion_D = None
+        self.analysis_diffusion_alpha = None
+
+        # column names (use consistent headers for save/load)
+        self._DIFF_D_COL = "D (μm²/s)"
+        self._DIFF_A_COL = "α"
 
         self.connect_all_spots = False
 
@@ -1506,6 +1521,30 @@ class KymographNavigator(QMainWindow):
             traj["step_indices"] = None
             traj["step_medians"] = None
 
+        # ── 7.6) Diffusion (D, α) ──
+        if getattr(self, "show_diffusion", False):
+            centers = [p for p,_,_ in self.analysis_fit_params]
+            D, alpha = self.compute_diffusion_for_data(self.analysis_frames, centers)
+
+            D_COL = self._DIFF_D_COL
+            A_COL = self._DIFF_A_COL
+            traj.setdefault("custom_fields", {})
+            traj["custom_fields"][D_COL] = "" if D is None else f"{D:.4g}"
+            traj["custom_fields"][A_COL] = "" if alpha is None else f"{alpha:.3f}"
+
+            # update table cells (no canvas refresh needed)
+            if D_COL in self.trajectoryCanvas.custom_columns:
+                self.trajectoryCanvas.writeToTable(row, D_COL, traj["custom_fields"][D_COL])
+            if A_COL in self.trajectoryCanvas.custom_columns:
+                self.trajectoryCanvas.writeToTable(row, A_COL, traj["custom_fields"][A_COL])
+        else:
+            # optional: blank them
+            D_COL = self._DIFF_D_COL
+            A_COL = self._DIFF_A_COL
+            traj.setdefault("custom_fields", {})
+            traj["custom_fields"][D_COL] = ""
+            traj["custom_fields"][A_COL] = ""
+
         # ── 8) Refresh all canvases ──
         self.kymoCanvas.update_view()
         self.kymoCanvas.clear_kymo_trajectory_markers()
@@ -1699,6 +1738,11 @@ class KymographNavigator(QMainWindow):
         self.showStepsAction.setChecked(False)
         self.showStepsAction.toggled.connect(self.on_show_steps_toggled)
         trajMenu.addAction(self.showStepsAction)
+
+        self.showDiffusionAction = QAction("Calculate Diffusion (D, α)", self, checkable=True)
+        self.showDiffusionAction.setChecked(False)
+        self.showDiffusionAction.toggled.connect(self.on_show_diffusion_toggled)
+        trajMenu.addAction(self.showDiffusionAction)
 
         self._colorBySeparator = trajMenu.addSeparator()
         self._colorByActions   = []
@@ -4293,6 +4337,14 @@ class KymographNavigator(QMainWindow):
             self.analysis_step_indices = None
             self.analysis_step_medians = None
 
+        if getattr(self, "show_diffusion", False):
+            D, alpha = self.compute_diffusion_for_data(self.analysis_frames, spot_centers)
+            self.analysis_diffusion_D = D
+            self.analysis_diffusion_alpha = alpha
+        else:
+            self.analysis_diffusion_D = None
+            self.analysis_diffusion_alpha = None
+
         # slider
         if hasattr(self, 'analysisSlider'):
             s = self.analysisSlider
@@ -4303,7 +4355,7 @@ class KymographNavigator(QMainWindow):
 
         self.trajectoryCanvas.hide_empty_columns()
 
-        if getattr(self, "calc_diffusion", False):
+        if getattr(self, "categorize_diffusion", False):
             try:
                 cfg = MotionClassificationConfig(
                     min_valid_points=getattr(self, "min_track_points", 10),
@@ -7629,6 +7681,14 @@ class KymographNavigator(QMainWindow):
         else:
             mode, tgt = self.trajectoryCanvas._column_types.get(col), None
 
+        spec = self._range_spec_for_column(col)
+        if spec is not None:
+            raw = traj.get("custom_fields", {}).get(col)
+            v = self._safe_float(raw)
+            c, _label = self._color_for_binned_value(v, spec)
+            # One color per trajectory (D/alpha are per-trajectory)
+            return {"color": c, "zorder": 4}, c
+
         # binary / value modes need a global map for "value"
         if mode == "value":
             # collect unique vals
@@ -7704,57 +7764,70 @@ class KymographNavigator(QMainWindow):
 
         if self.movie is None:
             return
-        
+
         # clear both layouts
         for layout in (self.kymoLegendLayout,
                        self.movieLegendLayout):
             for i in reversed(range(layout.count())):
                 w = layout.itemAt(i).widget()
-                if w: w.setParent(None)
+                if w:
+                    w.setParent(None)
 
-        # detect channel count & color_mode/target
+        # detect channel count
         n_chan = (self.movie.shape[self._channel_axis]
                   if (self.movie.ndim == 4 and
                       self._channel_axis is not None)
                   else 1)
-        col = self.color_by_column
-        if n_chan == 2 and col == "colocalization":
-            mode, tgt = "coloc", None
-        elif n_chan > 2 and col and col.startswith("coloc_ch"):
-            mode, tgt = "coloc_multi", int(col.split("coloc_ch",1)[1])
-        else:
-            mode, tgt = (self.trajectoryCanvas._column_types.get(col), None)
 
-        # build a small list of (color, label) entries for this mode
-        if mode == "coloc":
-            entries = [("#FFC107", "Colocalized")]
-        elif mode == "coloc_multi":
-            entries = [("#FFC107", f"Ch. {tgt} coloc.")]
-        elif mode == "value":
-            # collect unique vals & map them
-            seen = []
-            for t in self.trajectoryCanvas.trajectories:
-                v = t.get("custom_fields", {}).get(col)
-                if v and v not in seen:
-                    seen.append(v)
-            # build palette
-            def cmap_hex(name):
-                cmap = cm.get_cmap(name)
-                return [mcolors.to_hex(cmap(i)) for i in range(cmap.N)]
-            palette = cmap_hex("Accent") + cmap_hex("tab10") + cmap_hex("tab20")
-            color_map = {v: palette[i % len(palette)] for i, v in enumerate(seen)}
-            entries = [(color_map[v], v) for v in seen]
-        elif mode == "binary":
-            entries = [("#FFC107", col)]
-        elif col == "motion_state":
-            entries = [
-                (self.motion_colours["processive"], "Processive"),
-                (self.motion_colours["diffusive"],  "Diffusive"),
-                (self.motion_colours["paused"],     "Paused"),
-                (self.motion_colours["ambiguous"],  "Ambiguous"),
-            ]
+        col = self.color_by_column
+
+        # --- NEW: build legend entries robustly (avoid UnboundLocalError) ---
+        entries = []
+        spec = self._range_spec_for_column(col)
+        if spec is not None:
+            # Range-binned legend (e.g. diffusion D / alpha)
+            entries = [(color, label) for (_lo, _hi, color, label) in spec]
         else:
-            entries = []
+            # determine color mode/target
+            if n_chan == 2 and col == "colocalization":
+                mode, tgt = "coloc", None
+            elif n_chan > 2 and col and col.startswith("coloc_ch"):
+                mode, tgt = "coloc_multi", int(col.split("coloc_ch", 1)[1])
+            else:
+                mode, tgt = (self.trajectoryCanvas._column_types.get(col), None)
+
+            # build a small list of (color, label) entries for this mode
+            if mode == "coloc":
+                entries = [("#FFC107", "Colocalized")]
+            elif mode == "coloc_multi":
+                entries = [("#FFC107", f"Ch. {tgt} coloc.")]
+            elif mode == "value":
+                # collect unique vals & map them
+                seen = []
+                for t in self.trajectoryCanvas.trajectories:
+                    v = t.get("custom_fields", {}).get(col)
+                    if v and v not in seen:
+                        seen.append(v)
+
+                # build palette
+                def cmap_hex(name):
+                    cmap = cm.get_cmap(name)
+                    return [mcolors.to_hex(cmap(i)) for i in range(cmap.N)]
+
+                palette = cmap_hex("Accent") + cmap_hex("tab10") + cmap_hex("tab20")
+                color_map = {v: palette[i % len(palette)] for i, v in enumerate(seen)}
+                entries = [(color_map[v], v) for v in seen]
+            elif mode == "binary":
+                entries = [("#FFC107", col)]
+            elif col == "motion_state":
+                entries = [
+                    (self.motion_colours["processive"], "Processive"),
+                    (self.motion_colours["diffusive"],  "Diffusive"),
+                    (self.motion_colours["paused"],     "Paused"),
+                    (self.motion_colours["ambiguous"],  "Ambiguous"),
+                ]
+            else:
+                entries = []
 
         # populate both legend widgets
         if entries:
@@ -7764,15 +7837,19 @@ class KymographNavigator(QMainWindow):
                     (self.movieLegendWidget, self.movieLegendLayout)
                 ):
                     sw = QLabel(widget)
-                    sw.setFixedSize(12,12)
-                    sw.setStyleSheet(f"background-color:{sw_color};"
-                                     "border:1px solid #333;"
-                                     "border-radius:2px")
+                    sw.setFixedSize(12, 12)
+                    sw.setStyleSheet(
+                        f"background-color:{sw_color};"
+                        "border:1px solid #333;"
+                        "border-radius:2px"
+                    )
                     lbl = QLabel(label, widget)
-                    lbl.setStyleSheet("color:#222;font-size:14px;"
-                                      "background: transparent;")
+                    lbl.setStyleSheet(
+                        "color:#222;font-size:14px;"
+                        "background: transparent;"
+                    )
                     layout.addWidget(sw, 0, Qt.AlignVCenter)
-                    layout.addWidget(lbl,0, Qt.AlignVCenter)
+                    layout.addWidget(lbl, 0, Qt.AlignVCenter)
 
             # show & adjust both
             for widget in (self.kymoLegendWidget,
@@ -7945,3 +8022,254 @@ class KymographNavigator(QMainWindow):
 
         return step_frames, seg_medians
 
+    def compute_diffusion_for_data(self, frames, spot_centers):
+        """
+        Estimate anomalous diffusion parameters from MSD:
+            MSD(dt) = 4 * D * dt^alpha   (2D)
+        Returns (D, alpha).
+
+        Requires calibration (pixel size + frame interval). If scale is not set,
+        this function raises a ValueError.
+        """
+
+        if self.pixel_size is None or self.frame_interval is None:
+            raise ValueError(
+                "Scale not set: please set pixel size and frame interval (Movie > Set Scale) before computing diffusion."
+            )
+
+        # gather valid points: (frame, x_px, y_px)
+        pts = [
+            (int(f), float(c[0]), float(c[1]))
+            for f, c in zip(frames, spot_centers)
+            if isinstance(c, (tuple, list)) and c[0] is not None and c[1] is not None
+        ]
+        if len(pts) < 3:
+            return None, None
+
+        pts.sort(key=lambda t: t[0])
+        fr = np.array([p[0] for p in pts], dtype=int)
+        xy = np.array([[p[1], p[2]] for p in pts], dtype=float)
+
+        max_lag = int(getattr(self, "diffusion_max_lag", 10))
+        min_pairs = int(getattr(self, "diffusion_min_pairs", 5))
+        eps = float(getattr(self, "_EPS", 1e-12))
+
+        n = len(xy)
+        msd = []
+        dts = []
+
+        # Use actual frame deltas, not "lag * dt" blindly
+        for lag in range(1, min(max_lag, n - 1) + 1):
+            disp = xy[lag:] - xy[:-lag]
+            sq = disp[:, 0] ** 2 + disp[:, 1] ** 2
+            if sq.size < min_pairs:
+                continue
+
+            m = float(np.nanmean(sq))
+            if not np.isfinite(m):
+                continue
+
+            # Clamp instead of dropping; helps keep >=2 points for the fit
+            m = max(m, eps)
+
+            # dt in "frames" from actual frame indices
+            dt_frames = fr[lag:] - fr[:-lag]
+            if dt_frames.size < min_pairs:
+                continue
+            dt = float(np.nanmean(dt_frames))  # average frame delta for this lag
+            if not np.isfinite(dt) or dt <= 0:
+                continue
+
+            msd.append(m)
+            dts.append(dt)
+
+        if len(msd) < 2:
+            return None, None
+
+        msd = np.array(msd, float)
+        dts = np.array(dts, float)
+
+        # Fit log(MSD) = log(4D) + alpha*log(dt)
+        x = np.log(np.maximum(dts, eps))
+        y = np.log(np.maximum(msd, eps))
+
+        A = np.vstack([np.ones_like(x), x]).T
+        coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+        intercept, alpha = float(coef[0]), float(coef[1])
+
+        if not np.isfinite(alpha):
+            return None, None
+
+        # Prefactor in px^2 / frame^alpha
+        D = float(np.exp(intercept) / 4.0)
+        if not np.isfinite(D):
+            return None, alpha
+
+        # Convert to um^2 / s^alpha if possible
+        if self.pixel_size is not None:
+            px_um = float(self.pixel_size) / 1000.0
+            D *= (px_um ** 2)
+
+        if self.frame_interval is not None:
+            dt_frame_s = float(self.frame_interval) / 1000.0
+            # since dt was in frames, convert time base: (frames)^alpha -> (seconds)^alpha
+            D /= (dt_frame_s ** alpha)
+
+        return D, alpha
+
+    def on_show_diffusion_toggled(self, checked: bool):
+        self.show_diffusion = checked
+
+        # Ensure columns exist (as VALUE custom columns → auto-save/load)
+        D_COL = self._DIFF_D_COL
+        A_COL = self._DIFF_A_COL
+        tc = self.trajectoryCanvas
+
+        if checked:
+            # Require calibration for diffusion parameters
+            if self.pixel_size is None or self.frame_interval is None:
+                QMessageBox.warning(
+                    self,
+                    "Scale not set",
+                    "Please set pixel size and frame interval (Set Scale) before computing diffusion."
+                )
+                self.show_diffusion = False
+                if isinstance(self.sender(), QAction):
+                    self.sender().setChecked(False)
+                return
+            # add columns once
+            if D_COL not in tc.custom_columns:
+                tc._add_custom_column(D_COL, col_type="value")
+            if A_COL not in tc.custom_columns:
+                tc._add_custom_column(A_COL, col_type="value")
+
+            has_any = bool(tc.trajectories)
+            dlg = DiffusionSettingsDialog(
+                current_max_lag=self.diffusion_max_lag,
+                current_min_pairs=self.diffusion_min_pairs,
+                can_calculate_all=has_any,
+                parent=self
+            )
+            if dlg.exec_() != QDialog.Accepted:
+                # undo toggle
+                self.show_diffusion = False
+                if isinstance(self.sender(), QAction):
+                    self.sender().setChecked(False)
+                return
+
+            self.diffusion_max_lag = dlg.new_max_lag
+            self.diffusion_min_pairs = dlg.new_min_pairs
+
+            if dlg.calculate_all:
+                self._compute_diffusion_for_all_trajectories()
+        else:
+            # Turning off diffusion should NOT erase existing values.
+            # It only stops future diffusion (re)calculation.
+            # Keep any previously computed D/alpha in custom_fields and keep them visible in the table.
+            pass
+
+        tc.hide_empty_columns()
+
+    def _compute_diffusion_for_all_trajectories(self):
+        tc = self.trajectoryCanvas
+        D_COL = self._DIFF_D_COL
+        A_COL = self._DIFF_A_COL
+
+        if not tc.trajectories:
+            return
+
+        progress = QProgressDialog("Computing diffusion…", "Cancel", 0, len(tc.trajectories), self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+
+        for i, traj in enumerate(tc.trajectories):
+            progress.setValue(i)
+            QApplication.processEvents()
+            if progress.wasCanceled():
+                break
+
+            try:
+                D, alpha = self.compute_diffusion_for_data(
+                    traj["frames"],
+                    traj.get("spot_centers", [])
+                )
+            except ValueError as e:
+                progress.close()
+                QMessageBox.critical(self, "Diffusion Error", str(e))
+                return
+            cf = traj.setdefault("custom_fields", {})
+            cf[D_COL] = "" if D is None else f"{D:.4g}"
+            cf[A_COL] = "" if alpha is None else f"{alpha:.3f}"
+            tc.updateTableRow(i, traj)
+
+        progress.setValue(len(tc.trajectories))
+        progress.close()
+
+    def _safe_float(self, x):
+        """Parse float from strings like '0.123', return None if empty/invalid."""
+        if x is None:
+            return None
+        if isinstance(x, (int, float)) and math.isfinite(x):
+            return float(x)
+        if isinstance(x, str):
+            s = x.strip()
+            if not s:
+                return None
+            try:
+                v = float(s)
+                return v if math.isfinite(v) else None
+            except Exception:
+                return None
+        return None
+
+    def _range_spec_for_column(self, col: str):
+        """Return a list of (lo, hi, color, label) or None."""
+        if not col:
+            return None
+
+        d_col = getattr(self, "_DIFF_D_COL", "D")
+        a_col = getattr(self, "_DIFF_A_COL", "alpha")
+
+        lk = col.lower().strip()
+
+        # Treat "α" and case variants too
+        if col == a_col or lk in ("alpha", "α"):
+            return getattr(self, "_ALPHA_RANGES", None)
+
+        # For D: allow exact match and some common variants
+        if col == d_col or lk in ("d", "diffusion", "diffusion d", "diffusion_d"):
+            return getattr(self, "_D_RANGES", None)
+
+        return None
+
+    def _color_for_binned_value(self, v, spec):
+        """
+        spec: list of (lo, hi, color, label). lo inclusive, hi exclusive.
+        Returns (color, label) or (grey, 'N/A') if missing/out-of-range.
+        """
+        if v is None or spec is None:
+            return ("grey", "N/A")
+        for lo, hi, color, label in spec:
+            if (lo is None or v >= lo) and (hi is None or v < hi):
+                return (color, label)
+        return ("grey", "N/A")
+
+    # ---- defaults (you can tune these) ----
+    # Alpha bins (dimensionless)
+    _ALPHA_RANGES = [
+        (None, 0.5,  "#4C78A8", "α < 0.5  (confined)"),
+        (0.5,  0.9,  "#72B7B2", "0.5–0.9  (subdiff.)"),
+        (0.9,  1.1,  "#54A24B", "0.9–1.1  (Brownian)"),
+        (1.1,  1.5,  "#F58518", "1.1–1.5  (superdiff.)"),
+        (1.5,  None, "#E45756", "α ≥ 1.5  (directed)"),
+    ]
+
+    # D bins (units: μm²/s)
+    # These are generic “order of magnitude” bins; adjust if your D distribution is different.
+    _D_RANGES = [
+        (None, 0.01, "#4C78A8", "D < 0.01 μm²/s"),
+        (0.01, 0.1,  "#72B7B2", "0.01–0.1 μm²/s"),
+        (0.1,  1.0,  "#F58518", "0.1–1 μm²/s"),
+        (1.0,  None, "#E45756", "D ≥ 1 μm²/s"),
+    ]

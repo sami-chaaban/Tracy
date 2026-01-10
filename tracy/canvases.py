@@ -2765,13 +2765,17 @@ class TrajectoryCanvas(QWidget):
 
                     summary_rows.append(row)
 
+                    D_COL = getattr(self.navigator, "_DIFF_D_COL", None)
+                    A_COL = getattr(self.navigator, "_DIFF_A_COL", None)
+                    diff_cols = {c for c in (D_COL, A_COL) if c}
+
                     for col in self.custom_columns:
                         col_type = self._column_types.get(col, "binary")
 
-                        # print(col, col_type)
-
-                        # >>> special‐case coloc columns so they get no “[value]” suffix:
-                        if col.startswith("Ch.") and col.endswith("co. %"):
+                        # Special cases that should be saved without a "[type]" suffix
+                        if col in diff_cols:
+                            header = col
+                        elif col.startswith("Ch.") and col.endswith("co. %"):
                             header = col
                         else:
                             header = f"{col} [{col_type}]"
@@ -3343,6 +3347,18 @@ class TrajectoryCanvas(QWidget):
 
         traj_data["custom_fields"] = {}
     
+        # diffusion: store if toggled
+        D_COL = self.navigator._DIFF_D_COL
+        A_COL = self.navigator._DIFF_A_COL
+        if getattr(self.navigator, "show_diffusion", False):
+            D = getattr(self.navigator, "analysis_diffusion_D", None)
+            alpha = getattr(self.navigator, "analysis_diffusion_alpha", None)
+            traj_data["custom_fields"][D_COL] = "" if D is None else f"{D:.4f}"
+            traj_data["custom_fields"][A_COL] = "" if alpha is None else f"{alpha:.3f}"
+        else:
+            traj_data["custom_fields"][D_COL] = ""
+            traj_data["custom_fields"][A_COL] = ""
+
         new = [
             (f, cx, cy)
             for f, c in zip(frames, spot_centers)
@@ -3403,6 +3419,11 @@ class TrajectoryCanvas(QWidget):
         median_text = "" if median_intensity is None else f"{median_intensity:.2f}"
         avg_text = "" if avg_intensity is None else f"{avg_intensity:.2f}"
         self.writeToTable(row, "medintensity", median_text)
+
+        if D_COL in self.custom_columns:
+            self.writeToTable(row, D_COL, traj_data["custom_fields"].get(D_COL, ""))
+        if A_COL in self.custom_columns:
+            self.writeToTable(row, A_COL, traj_data["custom_fields"].get(A_COL, ""))
 
         # 3) Fill in the Channel X co. % custom columns
         # Compute your one-per-trajectory % from self.analysis_colocalized:
@@ -3690,14 +3711,18 @@ class TrajectoryCanvas(QWidget):
                 self.table_widget.setHorizontalHeaderLabels(self._headers)
 
                 # parse off “[binary]” or “[value]”
+                D_COL = getattr(self.navigator, "_DIFF_D_COL", None)
+                A_COL = getattr(self.navigator, "_DIFF_A_COL", None)
+                diff_cols = {c for c in (D_COL, A_COL) if c}
+
                 parsed = []
                 for full in full_extra:
                     m = re.match(r"(.+)\s\[(binary|value)\]$", full)
                     if m:
                         name, typ = m.group(1), m.group(2)
                     else:
-                        # no suffix → assume binary
-                        name, typ = full, "binary"
+                        # no suffix → assume binary, except diffusion columns which are values
+                        name, typ = full, ("value" if full in diff_cols else "binary")
                     parsed.append(name)
                     self._column_types[name] = typ
 
@@ -4591,6 +4616,7 @@ class TrajectoryCanvas(QWidget):
         thread.finished.connect(thread.deleteLater)
         thread.start()
 
+    @staticmethod
     def _rebuild_one_trajectory(old: dict, navigator) -> dict:
         """
         Given an existing trajectory‐dict `old`, recompute everything (fits, intensities,
@@ -4730,9 +4756,28 @@ class TrajectoryCanvas(QWidget):
             traj_data["step_indices"] = None
             traj_data["step_medians"] = None
 
+        if getattr(navigator, "show_diffusion", False):
+            # Require physical scale for diffusion (no px/frame outputs).
+            if navigator.pixel_size is None or navigator.frame_interval is None:
+                raise ValueError(
+                    "Diffusion requires scale: set Pixel size (nm) and Frame interval (ms) before recalculating."
+                )
+
+            D, alpha = navigator.compute_diffusion_for_data(
+                traj_data["frames"],
+                traj_data["spot_centers"],
+            )
+
+            cf = traj_data.setdefault("custom_fields", {})
+            d_col = getattr(navigator, "_DIFF_D_COL", "Diffusion D (µm²/s)")
+            a_col = getattr(navigator, "_DIFF_A_COL", "Diffusion α")
+            cf[d_col] = "" if D is None else f"{D:.4f}"
+            cf[a_col] = "" if alpha is None else f"{alpha:.3f}"
+        # If diffusion display is off, do NOT overwrite any existing saved values.
+
         return traj_data
 
-    def recalculate_trajectory(self, prompt=True):
+    def _recalculate_trajectory_legacy(self, prompt=True):
         # 1) gather selection
         rows = [idx.row() for idx in self.table_widget.selectionModel().selectedRows()]
         if not rows:
@@ -5329,7 +5374,13 @@ class TrajectoryCanvas(QWidget):
         if self.custom_columns:
             menu.addSeparator()
             seen = set()
+            # Don’t offer manual setters for computed diffusion columns
+            d_col = getattr(self.navigator, "_DIFF_D_COL", "Diffusion D (µm²/s)")
+            a_col = getattr(self.navigator, "_DIFF_A_COL", "Diffusion α")
+            _computed_cols = {d_col, a_col}
             for col_name in self.custom_columns:
+                if col_name in _computed_cols:
+                    continue
                 col_type = self._column_types.get(col_name, "binary")
                 if col_type == "binary":
                     marked_flags = [
@@ -5395,6 +5446,13 @@ class TrajectoryCanvas(QWidget):
         """
         Pop up a styled dialog to get a new value, then set it on every row in `rows`.
         """
+        # Prevent manual editing of computed diffusion columns
+        d_col = getattr(self.navigator, "_DIFF_D_COL", "Diffusion D (µm²/s)")
+        a_col = getattr(self.navigator, "_DIFF_A_COL", "Diffusion α")
+        if col_name in (d_col, a_col):
+            QMessageBox.information(self, "", f"{col_name} is computed and cannot be set manually.")
+            return
+
         prompt = f"Enter value for {col_name}:"
         # 1) Create your own QInputDialog instance
         dlg = QInputDialog(self)
@@ -5562,7 +5620,7 @@ class TrajectoryCanvas(QWidget):
         # 4) give it a reasonable default width & make it resizable
         self.table_widget.horizontalHeader().setSectionResizeMode(
             idx, QHeaderView.Interactive)
-        self.table_widget.setColumnWidth(idx, 100)
+        self.table_widget.setColumnWidth(idx, 80)
 
         # 5) initialize existing rows to empty string *and* store in data model
         default = "" if col_type=="binary" else ""
@@ -5579,8 +5637,8 @@ class TrajectoryCanvas(QWidget):
 
         # 7) final layout tweaks
         self.table_widget.viewport().update()
-        self.table_widget.horizontalHeader().resizeSections(
-            QHeaderView.ResizeToContents)
+        # self.table_widget.horizontalHeader().resizeSections(
+        #     QHeaderView.ResizeToContents)
 
         self.navigator._rebuild_color_by_actions()
 

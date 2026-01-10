@@ -22,6 +22,7 @@
    * [Drift Correction](#drift-correction)
    * [Colocalization](#colocalization)
    * [Step Finding](#step-finding)
+   * [Diffusion](#diffusion)
    * [Reference Image](#reference-image)
    * [Custom Columns](#custom-columns)
    * [Color by Value](#color-by-value)
@@ -168,10 +169,29 @@ tracy &                    # run in the background
 
 * Calculates steps in the intensity profile.
 * Enable **Trajectory » Calculate Steps**.
-* Adjust rolling‑average window and minimum step size.
+* Adjust rolling‑average window and minimum step size:
+
+  * **Rolling average window**: the smoothing window size (**W**) applied to the intensity trace before detecting steps. Larger values smooth noise more strongly but can blur short-lived steps; smaller values preserve fast changes but may be noisier. The window is in **data points/frames** (after invalid points are removed).
+  * **Minimum step size**: the **minimum intensity change** required to accept a step edge. Increase this to ignore small/noisy fluctuations; decrease it to detect smaller steps. This threshold uses the same units as the intensity values shown in the plot.
 * Existing trajectories prompt analysis.
 * Results appear as steps in the **Intensity Plot**.
 * Detected steps and sizes are saved in **Per‑Trajectory** sheet; each point’s step ID in **Data Points**.
+
+### Diffusion <a name="diffusion"></a>
+
+* Estimates **anomalous diffusion** parameters from the trajectory’s mean-squared displacement (MSD):
+
+  * **MSD(Δt) = 4D · (Δt)^α** (2D)
+
+* Enable via **Trajectory » Calculate Diffusion**.
+* Two analysis parameters control the MSD fit window:
+
+  * **Max lag:** the largest time separation (Δt) included when computing MSD points and fitting **D** and **α**. Larger values include longer time scales but use fewer displacement pairs (and can be noisier).
+  * **Min pairs per lag:** the minimum number of displacement pairs required to accept a given lag. If fewer pairs are available (e.g. short tracks or many invalid points), that lag is skipped.
+* Requires **pixel size** and **frame interval** to be set (units: **μm²/s** for **D**, unitless for **α**). If either is missing, diffusion cannot be computed.
+* Existing trajectories prompt analysis.
+* Results appear as new trajectory table columns (e.g. **D (μm²/s)** and **α**).
+* You can also **Color By** diffusion outputs (e.g. by **α** ranges) under **Trajectories » Color By**.
 
 ### Reference Image <a name="reference-image"></a>
 
@@ -278,6 +298,13 @@ Each row is one trajectory.
 * **Number of Steps**
 * **Average Step Size**: average absolute difference between consecutive step medians.
 * **Average Step Size w/Step to Background**: as above, but also includes the final step-to-background difference when a fixed background exists.
+
+##### Optional columns: diffusion
+
+> Only present if diffusion is enabled and could be computed (requires pixel size + frame interval).
+
+* **D (μm²/s)**: diffusion coefficient from MSD fit.
+* **α**: anomalous diffusion exponent from MSD fit.
 
 ##### Optional columns: custom columns
 
