@@ -91,9 +91,8 @@ def convert_roi_to_binary(roi):
     # which is appropriate for a segmented line.
     imagej_roi.roitype = ROI_TYPE.POLYLINE
 
-    # Optionally, if your points have subpixel precision,
-    # the frompoints method will set the SUB_PIXEL_RESOLUTION option.
-    # You could also manually set options here if needed:
+    # If points have subpixel precision, frompoints sets SUB_PIXEL_RESOLUTION.
+    # Options can also be set manually if needed.
     # imagej_roi.options |= ROI_OPTIONS.SUB_PIXEL_RESOLUTION
 
     # Return the binary representation of the ROI.

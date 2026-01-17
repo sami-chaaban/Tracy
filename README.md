@@ -311,6 +311,7 @@ Each row is one trajectory.
 > Only present if you added custom columns in the UI.
 
 * Custom columns appear as **`<Name> [binary]`** or **`<Name> [value]`** depending on the column type.
+* You can also add custom columns directly in the **Per‑trajectory** sheet using the same **`<Name> [binary]`** or **`<Name> [value]`** header format.
 
 ##### Optional columns: colocalization summary columns
 

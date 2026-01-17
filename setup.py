@@ -1,12 +1,20 @@
 from setuptools import setup, find_packages
 from pathlib import Path
+import re
 
 this_dir = Path(__file__).parent
 long_description = (this_dir / "README.md").read_text(encoding="utf-8")
 
+def read_version():
+    text = (this_dir / "tracy" / "__init__.py").read_text(encoding="utf-8")
+    match = re.search(r'^__version__\s*=\s*[\'"]([^\'"]+)[\'"]', text, re.M)
+    if not match:
+        raise RuntimeError("Unable to find __version__ in tracy/__init__.py")
+    return match.group(1)
+
 setup(
     name='tracyspot',
-    version='1.1.1',
+    version=read_version(),
     description='Fluorescence spot analysis suite',
     long_description=long_description,
     long_description_content_type="text/markdown",

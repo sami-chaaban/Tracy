@@ -1,0 +1,706 @@
+from ._shared import *
+
+class NavigatorKymoMixin:
+    def on_kymo_click(self, event):
+
+        if event.button == 3 and self._skip_next_right:
+            # we just showed the menu for a label—don’t do live updates
+            self._skip_next_right = False
+            return
+
+        if event.button == 1 and event.inaxes is self.kymoCanvas.ax and self.traj_overlay_button.isChecked() and len(self.analysis_points) == 0:
+            current_row = self.trajectoryCanvas.table_widget.currentRow()
+            for scatter in self.kymoCanvas.scatter_objs_traj:
+                hit, info = scatter.contains(event)
+                if not hit:
+                    continue
+
+                if self.looping:
+                    self.stoploop()
+
+                traj_idx  = scatter.traj_idx  # or lookup from dict
+                point_idx = info["ind"][0]
+
+                # 1) If we clicked a different trajectory:
+                if traj_idx != current_row:
+                    tbl = self.trajectoryCanvas.table_widget
+                    # block signals so we don’t re‐enter on_trajectory_selected_by_table
+                    tbl.blockSignals(True)
+                    tbl.selectRow(traj_idx)  # or tbl.setCurrentCell(traj_idx, 0)
+                    tbl.blockSignals(False)
+
+                    # now update everything else
+                    self.trajectoryCanvas.on_trajectory_selected_by_index(traj_idx)
+
+                # 2) Same trajectory → pick the point:
+                self.jump_to_analysis_point(point_idx)
+                if self.sumBtn.isChecked():
+                    self.sumBtn.setChecked(False)
+                self.intensityCanvas.current_index = point_idx
+                self.intensityCanvas.highlight_current_point()
+                return
+        
+        if self.looping:
+            self.stoploop()
+
+        self.kymoCanvas.manual_zoom = False
+
+        # — only if click was inside the image —
+        if (self.kymoCanvas.image is None or 
+            event.xdata is None or event.ydata is None):
+            return
+        H, W = self.kymoCanvas.image.shape[:2]
+        if not (0 <= event.xdata <= W and 0 <= event.ydata <= H):
+            return
+        
+        # 1) if we just picked a label, consume this click and reset the flag
+        if self._ignore_next_kymo_click:
+            self._ignore_next_kymo_click = False
+            return
+
+        # 2) standard early-outs
+        if self.kymoCanvas.image is None or event.xdata is None or event.ydata is None:
+            return
+
+        if event.button == 3:
+            # normal right-click away from a label
+            self.live_update_mode = True
+            self.on_kymo_right_click(event)
+        elif event.button == 1:
+            self.on_kymo_left_click(event)
+
+
+    def on_kymo_left_click(self, event):
+        # — ensure we have focus on the kymo canvas —
+        self.kymoCanvas.setFocus(Qt.MouseFocusReason)
+        if not self.kymoCanvas.hasFocus() or self.movie is None:
+            return
+
+        if event.button != 1:  # left‐button only
+            return
+
+        # — start a fresh sequence? clear everything —
+        if getattr(self, "new_sequence_start", False):
+            self.clear_temporary_analysis_markers()
+            self.analysis_markers = []
+            self.analysis_points  = []
+            self.analysis_anchors = []
+            # reset both line‐lists
+            self.permanent_analysis_lines = []
+            self.temp_analysis_line      = None
+            self.analysis_roi = None
+            self.new_sequence_start = False
+
+        # — if we’d finished last trajectory, reset —
+        if getattr(self, "trajectory_finalized", False):
+            self.analysis_points  = []
+            self.analysis_anchors = []
+            self.permanent_analysis_lines = []
+            self.temp_analysis_line      = None
+            self.trajectory_finalized = False
+
+        # — map y to frame index —
+        num_frames = self.movie.shape[0]
+        frame_idx = (num_frames - 1) - int(round(event.ydata))
+        if frame_idx < 0 or frame_idx >= num_frames:
+            return
+
+        # — look up ROI →
+        kymoName = self.kymoCombo.currentText()
+        if not kymoName:
+            return
+        roi_key = (self.roiCombo.currentText()
+                   if self.roiCombo.count() else kymoName)
+        roi = self.rois.get(roi_key)
+        if not roi or "x" not in roi or "y" not in roi:
+            return
+
+        # — convert to movie coords & update slider —
+        x_orig, y_orig = self.compute_roi_point(roi, event.xdata)
+        # if self.get_movie_frame(frame_idx) is not None:
+        #     self.frameSlider.blockSignals(True)
+        #     self.frameSlider.setValue(frame_idx)
+        #     self.frameSlider.blockSignals(False)
+        #     self.frameNumberLabel.setText(f"{frame_idx+1}")
+
+        # — record the anchor in both kymo‐space & movie‐space —
+        self.analysis_anchors.append((frame_idx, event.xdata, event.ydata))
+        self.analysis_points.append((frame_idx, x_orig, y_orig))
+
+        # — draw a small circle there —
+        marker = self.kymoCanvas.temporary_circle(event.xdata, event.ydata,
+                                              size=8, color='#7da1ff')
+        self.analysis_markers.append(marker)
+
+        # — initialize the live temp line once —
+        if self.temp_analysis_line is None:
+            # last anchor in kymo‐coords
+            _, x0, y0 = self.analysis_anchors[-1]
+
+            # 1) create the animated temp‐line artist
+            self.temp_analysis_line, = self.kymoCanvas.ax.plot(
+                [x0, x0], [y0, y0],
+                color='#7da1ff', linewidth=1.5, linestyle='--'
+            )
+            self.temp_analysis_line.set_animated(True)
+
+            # 2) do one full draw & grab the background
+            canvas = self.kymoCanvas.figure.canvas
+            canvas.draw()  
+            self._kymo_bg = canvas.copy_from_bbox(self.kymoCanvas.ax.bbox)
+
+            # 3) set up a simple throttle
+            self._last_kymo_motion = 0.0
+
+        # — add a permanent dotted segment if we have ≥2 anchors —
+        if len(self.analysis_anchors) > 1:
+            # get the last two anchors
+            _, x_prev, y_prev = self.analysis_anchors[-2]
+            _, x_curr, y_curr = self.analysis_anchors[-1]
+            seg, = self.kymoCanvas.ax.plot(
+                [x_prev, x_curr], [y_prev, y_curr],
+                color='#7da1ff', linewidth=1.5, linestyle='--'
+            )
+            self.permanent_analysis_lines.append(seg)
+            # now redraw so this new segment is baked into the blit-background
+            canvas = self.kymoCanvas.figure.canvas
+            canvas.draw()
+            self._kymo_bg = canvas.copy_from_bbox(self.kymoCanvas.ax.bbox)
+
+        # we’ll keep permanent lines in self.permanent_analysis_lines; clear them later.
+        self.trajectory_finalized = False
+
+        if event.dblclick:
+            self.trajectory_finalized = True
+            self.analysis_roi = roi
+            self.endKymoClickSequence()
+            # reset background snapshot (no more blit)
+            # self._bg = None
+            # self.kymoCanvas.draw_idle()
+            
+            # — remove the live temp line —
+            if self.temp_analysis_line is not None:
+                try:
+                    self.temp_analysis_line.remove()
+                except Exception:
+                    pass
+                self.temp_analysis_line = None
+
+            # — remove all permanent dotted segments —
+            for seg in getattr(self, 'permanent_analysis_lines', []):
+                try:
+                    seg.remove()
+                except Exception:
+                    pass
+            self.permanent_analysis_lines = []
+
+            # — clear any circle markers or other temp overlays —
+            self.clear_temporary_analysis_markers()
+
+            # — force a full redraw so canvas is clean —
+            self.kymoCanvas.draw_idle()
+
+
+    def on_kymo_release(self, event):
+        H, W = self.kymoCanvas.image.shape[:2]
+
+        x, y = event.xdata, event.ydata
+        # 1) bail out if click wasn’t over the image at all
+        if x is None or y is None:
+            return
+
+        # 2) bail out if click is outside bounds
+        if not (0 <= x <= W and 0 <= y <= H):
+            return
+
+        # now it’s safe to use x,y
+        if event.button == 3:
+            self.on_kymo_right_release(event)
+
+        self.live_update_mode = False
+
+        if event.button == 2:
+            canvas = self.kymoCanvas.figure.canvas
+            # 1) ensure the view is fully redrawn
+            self.kymoCanvas.draw()
+            # 2) capture a fresh background for our blit‐loop
+            self._kymo_bg = canvas.copy_from_bbox(self.kymoCanvas.ax.bbox)
+
+    def on_kymo_right_click(self, event):
+
+        if getattr(self, "_skip_next_right", False):
+            self._skip_next_right = False
+            return
+    
+        for lbl, bbox in self.kymoCanvas._kymo_label_bboxes.items():
+            if bbox.contains(event.x, event.y):
+                # it’s a label: get its trajectory row
+                row = self._kymo_label_to_row.get(lbl, -1)
+                if row < 0:
+                    return
+
+                # build the menu of *value* columns only
+                menu = QMenu(self.kymoCanvas)
+                for col_name, typ in self.trajectoryCanvas._column_types.items():
+                    if typ == "value":
+                        act = menu.addAction(f"Add {col_name} value")
+                        # capture both col_name and row
+                        act.triggered.connect(
+                            lambda _, c=col_name, r=row: 
+                                self._prompt_and_add_kymo_value(c, r)
+                        )
+
+                # show it at the mouse pointer
+                menu.exec_(QCursor.pos())
+                # skip the rest of this handler
+                return
+
+        # If panning or insufficient event data, exit.
+        if self.kymoCanvas._is_panning:
+            return
+        if self.kymoCanvas.image is None or event.xdata is None or event.ydata is None:
+            return
+
+        self.cancel_left_click_sequence()
+        self.clear_temporary_analysis_markers()
+        self.movieCanvas.manual_zoom = True
+        self.intensityCanvas.clear_highlight()
+
+        # Compute the frame index from the kymograph y coordinate.
+        num_frames = self.movie.shape[0]
+        frame_idx = (num_frames - 1) - int(round(event.ydata))
+        self.last_frame_index = frame_idx
+        if self.movie is None:
+            return
+
+        # Even if the frame hasn't changed, force an update.
+        self.set_current_frame(frame_idx)
+        frame_image = self.get_movie_frame(frame_idx)
+        if frame_image is None:
+            return
+
+        # Get the ROI key from the current selections.
+        kymoName = self.kymoCombo.currentText()
+        if not kymoName:
+            return
+        roi_key = self.roiCombo.currentText() if self.roiCombo.count() > 0 else kymoName
+        if roi_key not in self.rois:
+            return
+        roi = self.rois[roi_key]
+        if "x" not in roi or "y" not in roi:
+            return
+
+        # Compute the ROI point from the kymograph click.
+        x_orig, y_orig = self.compute_roi_point(roi, event.xdata)
+
+        # Compute crop sizes from UI spinboxes.
+        search_crop_size = int(2 * self.searchWindowSpin.value())
+        zoom_crop_size = int(self.insetViewSize.value())
+
+        # then also clear any magenta gaussian circle on the movie canvas
+        removed = self.movieCanvas.remove_gaussian_circle()
+        if removed:
+            self.movieCanvas.draw_idle()
+
+        # Update the MovieCanvas overlay for visual feedback.
+        frame_number = frame_idx+1
+        self.movieCanvas.overlay_rectangle(x_orig, y_orig, search_crop_size)
+
+        self.zoomInsetFrame.setVisible(True)
+        self.movieCanvas.update_inset(frame_image, (x_orig, y_orig), zoom_crop_size, zoom_factor=2)
+
+        self.analysis_peak = None
+        self.analysis_sigma = None
+        if hasattr(self, "histogramCanvas"):
+            self.histogramCanvas.update_histogram(frame_image, (x_orig, y_orig), search_crop_size)
+
+        # Optionally re-center the MovieCanvas view if manual zoom is not active.
+        current_xlim = self.movieCanvas.ax.get_xlim()
+        current_ylim = self.movieCanvas.ax.get_ylim()
+        width = current_xlim[1] - current_xlim[0]
+        height = current_ylim[1] - current_ylim[0]
+        if not getattr(self.movieCanvas, "manual_zoom", False):
+            new_xlim = (x_orig - width/2, x_orig + width/2)
+            new_ylim = (y_orig - height/2, y_orig + height/2)
+            self.movieCanvas.ax.set_xlim(new_xlim)
+            self.movieCanvas.ax.set_ylim(new_ylim)
+            cx_new = (new_xlim[0] + new_xlim[1]) / 2.0
+            cy_new = (new_ylim[0] + new_ylim[1]) / 2.0
+            self.movieCanvas.zoom_center = (cx_new, cy_new)
+
+        self.movieCanvas.draw_idle()
+
+        # Prepare kymoCanvas for blit: redraw static overlays and cache background
+        self.kymoCanvas.draw_trajectories_on_kymo()
+        # Remove any existing marker patch
+        if getattr(self.kymoCanvas, "_marker", None) is not None:
+            try:
+                self.kymoCanvas._marker.remove()
+            except Exception:
+                pass
+            self.kymoCanvas._marker = None
+        # Cache the clean background for blitting
+        self.kymoCanvas.update_view()
+        # Now blit the new marker
+        self.kymoCanvas.add_circle(event.xdata, event.ydata, color='#7da1ff')
+
+    def on_kymo_right_release(self, event):
+        # Check for valid event data.
+        if self.kymoCanvas.image is None or event.xdata is None or event.ydata is None:
+            return
+        if self.movie is None:
+            return
+
+        # Clear the histogram first (which removes any magenta-colored bin centers)
+        # self.histogramCanvas.ax.clear()
+        # self.histogramCanvas.draw_idle()
+
+        # On release: fully redraw kymo static overlays to clear blitted marker
+        # self.kymoCanvas.draw_trajectories_on_kymo()
+        # self.kymoCanvas.draw_idle()
+
+        # Now perform the analysis (which will recompute the histogram based on the current spot analysis)
+        self.analyze_spot_at_event(event)
+
+
+    def _on_kymo_label_pick(self, event):
+        # whenever any label is picked—left *or* right
+        if getattr(self, "analysis_anchors", None) and not getattr(self, "trajectory_finalized", False):
+            return
+        artist = event.artist
+        if artist in self._kymo_label_to_row:
+            # if it was a left click, select the row immediately
+            if event.mouseevent.button == 1:
+                row = self._kymo_label_to_row[artist]
+                tbl = self.trajectoryCanvas.table_widget
+                tbl.setCurrentCell(row, 0)
+                tbl.scrollToItem(tbl.item(row, 0))
+                self._ignore_next_kymo_click = True
+
+        if event.mouseevent.button == 3:
+            self._last_kymo_artist = event.artist
+            self._skip_next_right = True
+            gui_evt = getattr(event.mouseevent, "guiEvent", None)
+            if isinstance(gui_evt, QMouseEvent):
+                # use the real global position
+                self._show_kymo_context_menu(gui_evt.globalPos())
+            else:
+                # fallback for non‐Qt backends
+                local = QPoint(int(event.mouseevent.x), int(event.mouseevent.y))
+                self._show_kymo_context_menu(self.kymoCanvas.mapToGlobal(local))
+            return
+
+    def on_kymo_hover(self, event):
+        # Debug output
+        #print("on_kymo_hover called. xdata:", event.xdata, "ydata:", event.ydata)
+        
+        # Check that the event is in the kymograph canvas and has valid data
+        if event.inaxes != self.kymoCanvas.ax or event.xdata is None or event.ydata is None:
+            #self.pixelValueLabel.setText("No hover data")
+            return
+
+        kymograph = self.kymoCanvas.image
+        if kymograph is None:
+            #self.pixelValueLabel.setText("No kymograph loaded")
+            return
+
+        if self.looping:
+            self.pixelValueLabel.setText("")
+            return
+        
+        # Convert floating point coordinates to integer indices for the kymograph
+        x = event.xdata
+        y = event.ydata
+        #print("Computed kymo pixel indices: x =", x, "y =", y)
+        
+        # Check if the computed indices are within image bounds
+        if not (0 <= x < kymograph.shape[1] and 0 <= y < kymograph.shape[0]):
+            #self.pixelValueLabel.setText("Coordinates out of bounds")
+            return
+
+        # For a vertically flipped kymograph, the frame index is computed as below:
+        num_frames = kymograph.shape[0]
+        frame_val = num_frames - y
+
+        # If an ROI exists, compute the corresponding movie coordinate based on the ROI.
+        if self.roiCombo.count() > 0:
+            roi_key = self.roiCombo.currentText()
+            if roi_key in self.rois:
+                roi = self.rois[roi_key]
+                # Compute movie coordinate with compute_roi_point().
+                movie_coord = self.compute_roi_point(roi, event.xdata)
+            else:
+                movie_coord = (x, y)
+        else:
+            movie_coord = (x, y)
+
+        pixel_val = ""
+
+        real_x = int(movie_coord[0])
+        real_y = int(movie_coord[1])
+
+        real_x_fortxt = movie_coord[0]
+        real_y_fortxt = movie_coord[1]
+
+        image = self.movieCanvas.image
+        if image is not None and 0 <= real_x < image.shape[1] and 0 <= real_y < image.shape[0]:
+            pixel_val = image[real_y, real_x]
+
+        # Build the display string (without intensity)
+        display_text = f"F: {int(frame_val)} X: {real_x_fortxt:.1f} Y: {real_y_fortxt:.1f} I: {pixel_val}"
+        #print("Setting label text to:", display_text)
+        
+        # Update the label.
+        self.pixelValueLabel.setText(display_text)
+        self.pixelValueLabel.update()
+
+    def _prompt_and_add_kymo_value(self, col_name, row):
+        # 1) get the existing value (may be "")
+        existing = self.trajectoryCanvas.trajectories[row]\
+                    .get("custom_fields", {}).get(col_name, "")
+
+        # 2) build & configure a styled QInputDialog
+        dlg = QInputDialog(self)
+        dlg.setWindowTitle(f"Edit {col_name} value")
+        dlg.setLabelText(f"{col_name}:")
+        dlg.setInputMode(QInputDialog.TextInput)
+        dlg.setOkButtonText("OK")
+        dlg.setCancelButtonText("Cancel")
+        dlg.setTextValue(existing)
+
+        # 3) find its QLineEdit and make it white
+        line = dlg.findChild(QLineEdit)
+        if line:
+            line.setStyleSheet("background-color: white;")
+
+        # 4) exec and grab the result
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        val = dlg.textValue()
+
+        # 5) update model & UI
+        self.trajectoryCanvas.trajectories[row]\
+            .setdefault("custom_fields", {})[col_name] = val
+        self.trajectoryCanvas.writeToTable(row, col_name, val)
+        self._update_legends()
+        self.kymoCanvas.draw_trajectories_on_kymo()
+        self.kymoCanvas.draw()
+        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw()
+
+    # def update_analysis_line(self):
+    #     """
+    #     Draw a permanent dashed line connecting the user‑clicked kymo anchors in order.
+    #     """
+    #     # Must have at least two anchors
+    #     if not hasattr(self, "analysis_anchors") or len(self.analysis_anchors) < 2:
+    #         return
+
+    #     # Get display parameters
+    #     kymoName = self.kymoCombo.currentText()
+    #     if not kymoName:
+    #         return
+
+    #     roi_key = (
+    #         self.roiCombo.currentText()
+    #         if self.roiCombo.count() > 0
+    #         else kymoName
+    #     )
+    #     roi = self.rois.get(roi_key, None)
+    #     kymo = self.kymographs.get(kymoName, None)
+    #     if kymo is None:
+    #         return
+
+    #     # How many frames tall is the movie?
+    #     max_frame = self.movie.shape[0]
+
+    #     # Build the lists of display coords directly from anchors:
+    #     disp_xs = []
+    #     disp_ys = []
+    #     for (frame_idx, kx, ky) in self.analysis_anchors:
+    #         disp_xs.append(kx)
+    #         disp_ys.append(ky)
+
+    #     # Remove any old permanent line
+    #     if hasattr(self, "permanent_analysis_line") and self.permanent_analysis_line is not None:
+    #         try:
+    #             self.permanent_analysis_line.remove()
+    #         except Exception:
+    #             pass
+
+    #     # Draw a simple dashed line through the anchors
+    #     (self.permanent_analysis_line,) = self.kymoCanvas.ax.plot(
+    #         disp_xs,
+    #         disp_ys,
+    #         color='#7da1ff',
+    #         linewidth=1.5,
+    #         linestyle='--'
+    #     )
+    #     self.kymoCanvas.draw_idle()
+
+    def on_kymo_motion(self, event):
+        if self.live_update_mode:
+            self.on_kymo_right_click(event)
+        elif (hasattr(self, "analysis_anchors")
+            and self.analysis_anchors
+            and not getattr(self, "trajectory_finalized", False)
+            and event.xdata is not None
+            and event.ydata is not None):
+
+            kymoName = self.kymoCombo.currentText()
+            if not kymoName:
+                return
+            kymo = self.kymographs.get(kymoName)
+            if kymo is None:
+                return
+
+        if not getattr(self, "analysis_anchors", None) or len(self.analysis_anchors) == 0:
+            return
+
+        # Only update if we’re in the middle of a sequence and temp line exists
+        if (self.temp_analysis_line is None or
+            event.inaxes != self.kymoCanvas.ax or
+            getattr(self, "trajectory_finalized", False)):
+            return
+
+        # Throttle to ~50 Hz
+        now = time.perf_counter()
+        if now - self._last_kymo_motion < 0.02:
+            return
+        self._last_kymo_motion = now
+
+        # Build full preview line through all anchors and current cursor
+        pts = [(ax, ay) for (_, ax, ay) in self.analysis_anchors] + [(event.xdata, event.ydata)]
+        xs, ys = zip(*pts)
+        self.temp_analysis_line.set_data(xs, ys)
+
+        # If the user is panning/zooming, fall back to a one‐off full redraw
+        if self.kymoCanvas._is_panning or self.kymoCanvas.manual_zoom:
+            # 1) full redraw to apply the new pan/zoom
+            self.kymoCanvas.draw()
+            # 2) re-snapshot the updated background
+            canvas = self.kymoCanvas.figure.canvas
+            self._kymo_bg = canvas.copy_from_bbox(self.kymoCanvas.ax.bbox)
+            # 3) clear flags so subsequent moves use fast blit
+            self.kymoCanvas.manual_zoom = False
+            return
+
+        # Otherwise do the fast blit loop
+        canvas = self.kymoCanvas.figure.canvas
+        canvas.restore_region(self._kymo_bg)
+        self.kymoCanvas.ax.draw_artist(self.temp_analysis_line)
+        canvas.blit(self.kymoCanvas.ax.bbox)
+
+    def enter_roi_mode(self):
+        # Initialize on ROI mode entry.
+        if self.temp_analysis_line is None:
+            # create an invisible 2-point line initially
+            self.temp_analysis_line, = self.kymoCanvas.ax.plot(
+                [0, 0], [0, 0],
+                color='#7da1ff', linewidth=1.5, linestyle='--'
+            )
+        # draw it once so we can grab the background
+        self.kymoCanvas.draw()
+        # grab the clean background:
+        self._bg = self.kymoCanvas.copy_from_bbox(self.kymoCanvas.ax.bbox)
+
+    def on_kymo_leave(self, event):
+        """Callback for when the mouse leaves the kymograph axes.
+        This removes the blue X marker from the movie canvas."""
+        if self.movieCanvas is not None:
+            self.movieCanvas.draw_idle()
+
+    def on_tracking_mode_changed(self, mode):
+        # mode is the string from the dropdown ("Independent" or "Tracked")
+        self.tracking_mode = mode
+        print(f"Tracking mode set to: {self.tracking_mode}")
+
+    # def update_overlay_button_style(self, checked):
+    #     if checked:
+    #         self.traj_overlay_button.setStyleSheet("background-color: #497ce2;")
+    #     else:
+    #         self.traj_overlay_button.setStyleSheet("")
+
+    def _show_kymo_context_menu(self, global_pos: QPoint):
+        # must have at least one custom column
+        if not self.trajectoryCanvas.custom_columns:
+            self._last_kymo_artist = None
+            return
+
+        artist = self._last_kymo_artist
+        if artist is None:
+            return
+
+        row = self._kymo_label_to_row.get(artist)
+        if row is None:
+            return
+
+        traj = self.trajectoryCanvas.trajectories[row]
+        cf   = traj.get("custom_fields", {})
+
+        # --- build the menu ---
+        menu = QMenu(self.kymoCanvas)
+        menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint)
+        menu.setAttribute(Qt.WA_TranslucentBackground)
+
+        # --- optional “Check colocalization” entry ---
+        if getattr(self, "check_colocalization", False) and self.movie.ndim == 4:
+            ref_ch = traj["channel"]
+            # find at least one missing co. % for other channels
+            missing = any(
+                col.endswith(" co. %") and
+                not col.endswith(f"{ref_ch} co. %") and
+                not cf.get(col, "").strip()
+                for col in self.trajectoryCanvas.custom_columns
+            )
+            if missing:
+                act = menu.addAction("Check colocalization")
+                act.triggered.connect(lambda _chk=False, r=row: 
+                                        self._compute_colocalization_for_row(r))
+                menu.addSeparator()
+
+        # --- now the normal binary/value columns ---
+        # filter+dedupe
+        cols = [
+            c for c in self.trajectoryCanvas.custom_columns
+            if self.trajectoryCanvas._column_types.get(c) in ("binary","value")
+        ]
+        unique_cols = []
+        for c in cols:
+            if c not in unique_cols:
+                unique_cols.append(c)
+
+        tbl = self.trajectoryCanvas.table_widget
+        for col in unique_cols:
+            col_type = self.trajectoryCanvas._column_types.get(col, "binary")
+            table_col_index = self.trajectoryCanvas._col_index[col]
+            item = tbl.item(row, table_col_index)
+            text = item.text().strip() if item else ""
+
+            if col_type == "binary":
+                marked = (text.lower() == "yes")
+                if marked:
+                    action_text = f"Unmark as {col}"
+                    callback    = lambda _chk=False, r=row, c=col: \
+                                self.trajectoryCanvas._unmark_custom(r, c)
+                else:
+                    action_text = f"Mark as {col}"
+                    callback    = lambda _chk=False, r=row, c=col: \
+                                self.trajectoryCanvas._mark_custom(r, c)
+            else:  # value column
+                if text:
+                    action_text = f"Edit {col} value"
+                else:
+                    action_text = f"Add {col} value"
+                callback = lambda _chk=False, r=row, c=col: \
+                        self._prompt_and_add_kymo_value(c, r)
+
+            menu.addAction(action_text, callback)
+
+        # --- show it, then reset state & redraw ---
+        menu.exec_(global_pos)
+        self._last_kymo_artist = None
+
+        self._update_legends()
+        self.kymoCanvas.draw_trajectories_on_kymo()
+        self.kymoCanvas.draw_idle()
