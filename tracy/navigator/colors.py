@@ -38,6 +38,37 @@ class NavigatorColorMixin:
         if self.intensityCanvas.point_highlighted and self.intensityCanvas._last_plot_args is not None:
             self.jump_to_analysis_point(self.intensityCanvas.current_index)
 
+    def refresh_color_by(self):
+        """
+        Re-apply the current color-by without touching menu check states.
+        Use after mutating custom fields while a color-by is active.
+        """
+        # redraw the trajectories
+        self.kymoCanvas.remove_circle()
+        self.kymoCanvas.clear_kymo_trajectory_markers()
+        self.kymoCanvas.draw_trajectories_on_kymo()
+        self.movieCanvas.remove_gaussian_circle()
+        self.movieCanvas.clear_movie_trajectory_markers()
+        self.movieCanvas.draw_trajectories_on_movie()
+
+        self.kymoCanvas.draw()
+        self.movieCanvas.draw()
+
+        # update legends
+        self._update_legends()
+
+        if self.intensityCanvas._last_plot_args:
+            idx = self.trajectoryCanvas.table_widget.currentRow()
+            if idx >= 0:
+                traj = self.trajectoryCanvas.trajectories[idx]
+                scatter_kwargs, _ = self._get_traj_colors(traj)
+                args = dict(self.intensityCanvas._last_plot_args)
+                args["colors"] = scatter_kwargs
+                self.intensityCanvas.plot_intensity(**args)
+
+        if self.intensityCanvas.point_highlighted and self.intensityCanvas._last_plot_args is not None:
+            self.jump_to_analysis_point(self.intensityCanvas.current_index, animate="discrete", zoom=False)
+
     def _get_traj_colors(self, traj):
         """
         Decide how to color one trajectory.  
@@ -54,6 +85,62 @@ class NavigatorColorMixin:
                 return {"c": pts, "zorder": 4}, "#7DA1FF"
             # fallback if missing
             return {"color": "grey", "zorder": 4}, "grey"
+
+        seg_suffix = " (per segment)"
+        if isinstance(col, str) and col.endswith(seg_suffix):
+            base = col[:-len(seg_suffix)].strip()
+            spec = self._range_spec_for_column(base)
+            if spec is None:
+                return {"color": "grey", "zorder": 4}, "grey"
+
+            d_col = getattr(self, "_DIFF_D_COL", "D")
+            a_col = getattr(self, "_DIFF_A_COL", "alpha")
+            base_lk = base.lower().strip()
+            value_key = "alpha" if (base == a_col or base_lk in ("alpha", "α")) else "D"
+
+            seg_values = {}
+            for entry in (traj.get("segment_diffusion") or []):
+                if not isinstance(entry, dict):
+                    continue
+                seg_idx = entry.get("segment")
+                if seg_idx is None:
+                    continue
+                try:
+                    seg_values[int(seg_idx)] = entry.get(value_key)
+                except Exception:
+                    continue
+
+            nodes = traj.get("nodes", []) or []
+            anchor_frames = sorted({
+                int(n[0]) for n in nodes
+                if isinstance(n, (list, tuple)) and len(n) >= 1
+            })
+            if len(anchor_frames) < 2:
+                anchors = traj.get("anchors", []) or []
+                anchor_frames = sorted({
+                    int(f) for f, _xk, _yk in anchors
+                    if isinstance(f, (int, float))
+                })
+            if len(anchor_frames) < 2:
+                return {"color": "grey", "zorder": 4}, "grey"
+
+            def _segment_for_frame(frame):
+                for idx in range(len(anchor_frames) - 1):
+                    if frame <= anchor_frames[idx + 1]:
+                        return idx + 1
+                return len(anchor_frames) - 1
+
+            frames = traj.get("frames", [])
+            colors = []
+            for f in frames:
+                seg_idx = _segment_for_frame(f)
+                v = seg_values.get(seg_idx)
+                c, _label = self._color_for_binned_value(v, spec)
+                colors.append(c)
+
+            if not colors:
+                return {"color": "grey", "zorder": 4}, "grey"
+            return {"c": colors, "zorder": 4}, colors[0]
 
         # fallback: color points magenta if intensity exists, grey if None
         if not col:
@@ -418,6 +505,10 @@ class NavigatorColorMixin:
         """Return a list of (lo, hi, color, label) or None."""
         if not col:
             return None
+
+        seg_suffix = " (per segment)"
+        if isinstance(col, str) and col.endswith(seg_suffix):
+            col = col[:-len(seg_suffix)].strip()
 
         d_col = getattr(self, "_DIFF_D_COL", "D")
         a_col = getattr(self, "_DIFF_A_COL", "alpha")

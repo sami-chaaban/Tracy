@@ -382,6 +382,28 @@ class NavigatorMovieMixin:
 
     def on_movie_click(self, event):
         if (
+            event.button == 3
+            and event.inaxes == self.movieCanvas.ax
+            and self.traj_overlay_button.isChecked()
+        ):
+            for artist in getattr(self.movieCanvas, "movie_trajectory_markers", []):
+                hit, _info = artist.contains(event)
+                if not hit:
+                    continue
+                traj_idx = getattr(artist, "traj_idx", None)
+                if traj_idx is None:
+                    continue
+                if not hasattr(artist, "get_text"):
+                    continue
+                gui_evt = getattr(event, "guiEvent", None)
+                if isinstance(gui_evt, QMouseEvent):
+                    global_pos = gui_evt.globalPos()
+                else:
+                    global_pos = QCursor.pos()
+                self._show_movie_context_menu(traj_idx, global_pos)
+                return
+
+        if (
             event.button == 1
             and event.inaxes == self.movieCanvas.ax
             and self.traj_overlay_button.isChecked()
@@ -557,7 +579,7 @@ class NavigatorMovieMixin:
             if image is not None and 0 <= x < image.shape[1] and 0 <= y < image.shape[0]:
                 pixel_val = image[y, x]
                 current_frame = self.frameSlider.value() + 1
-                text = f"F: {current_frame} X: {x} Y: {y} V: {pixel_val}"
+                text = f"F: {current_frame} X: {x} Y: {y} I: {pixel_val}"
                 # Use the label's font metrics to elide the text if it exceeds the label's width.
                 fm = self.pixelValueLabel.fontMetrics()
                 elided_text = fm.elidedText(text, Qt.ElideRight, self.pixelValueLabel.width())
@@ -719,6 +741,86 @@ class NavigatorMovieMixin:
                 canvas.blit(self.movieCanvas.ax.bbox)
             except Exception:
                 pass
+
+    def _show_movie_context_menu(self, row, global_pos: QPoint):
+        if not self.trajectoryCanvas.custom_columns:
+            return
+        if row is None or row < 0 or row >= len(self.trajectoryCanvas.trajectories):
+            return
+
+        traj = self.trajectoryCanvas.trajectories[row]
+        cf = traj.get("custom_fields", {})
+        refresh_needed = {"value": False}
+
+        def _mark_binary(r, c):
+            self.trajectoryCanvas._mark_custom(r, c)
+            if self.color_by_column == c:
+                refresh_needed["value"] = True
+
+        def _unmark_binary(r, c):
+            self.trajectoryCanvas._unmark_custom(r, c)
+            if self.color_by_column == c:
+                refresh_needed["value"] = True
+
+        menu = QMenu(self.movieCanvas)
+        menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint)
+        menu.setAttribute(Qt.WA_TranslucentBackground)
+
+        if getattr(self, "check_colocalization", False) and self.movie is not None and self.movie.ndim == 4:
+            ref_ch = traj.get("channel")
+            missing = any(
+                col.endswith(" co. %") and
+                not col.endswith(f"{ref_ch} co. %") and
+                not cf.get(col, "").strip()
+                for col in self.trajectoryCanvas.custom_columns
+            )
+            if missing:
+                act = menu.addAction("Check colocalization")
+                act.triggered.connect(lambda _chk=False, r=row:
+                                      self._compute_colocalization_for_row(r))
+                menu.addSeparator()
+
+        cols = [
+            c for c in self.trajectoryCanvas.custom_columns
+            if self.trajectoryCanvas._column_types.get(c) in ("binary", "value")
+        ]
+        unique_cols = []
+        for c in cols:
+            if c not in unique_cols:
+                unique_cols.append(c)
+
+        tbl = self.trajectoryCanvas.table_widget
+        for col in unique_cols:
+            col_type = self.trajectoryCanvas._column_types.get(col, "binary")
+            table_col_index = self.trajectoryCanvas._col_index[col]
+            item = tbl.item(row, table_col_index)
+            text = item.text().strip() if item else ""
+
+            if col_type == "binary":
+                marked = (text.lower() == "yes")
+                if marked:
+                    action_text = f"Unmark as {col}"
+                    callback = lambda _chk=False, r=row, c=col: _unmark_binary(r, c)
+                else:
+                    action_text = f"Mark as {col}"
+                    callback = lambda _chk=False, r=row, c=col: _mark_binary(r, c)
+            else:
+                action_text = f"Edit {col} value" if text else f"Add {col} value"
+                callback = lambda _chk=False, r=row, c=col: self._prompt_and_add_kymo_value(c, r)
+
+            menu.addAction(action_text, callback)
+
+        menu.exec_(global_pos)
+
+        if refresh_needed["value"]:
+            self.refresh_color_by()
+            return
+
+        self._update_legends()
+        self.kymoCanvas.draw_trajectories_on_kymo()
+        self.kymoCanvas.draw_idle()
+        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw_idle()
 
     def escape_left_click_sequence(self):
         self.cancel_left_click_sequence()

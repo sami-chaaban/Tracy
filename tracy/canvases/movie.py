@@ -658,7 +658,7 @@ class MovieCanvas(ImageCanvas):
             # blit only the axes region
             canvas.blit(self._roi_bbox)
 
-    def finalize_roi(self):
+    def finalize_roi(self, suppress_display: bool = False):
         # Make sure we have at least two pointsf
         if not self.roiPoints or len(self.roiPoints) < 2:
             print("Not enough points to finalize ROI.")
@@ -701,7 +701,8 @@ class MovieCanvas(ImageCanvas):
         self.navigator.rois[name] = roi
         self.navigator.roiCombo.addItem(name)
         self.navigator.roiCombo.setEnabled(True)
-        self.navigator.roiCombo.setCurrentText(name)
+        if not suppress_display:
+            self.navigator.roiCombo.setCurrentText(name)
         self.navigator.update_roilist_visibility()
 
         if self.navigator.movie.ndim == 4:
@@ -719,11 +720,9 @@ class MovieCanvas(ImageCanvas):
                 "orphaned": False
             }
 
-            # self.navigator.last_kymo_by_channel[ch+1] = kymo_name
+        # self.navigator.last_kymo_by_channel[ch+1] = kymo_name
 
         self.navigator._last_roi = name
-        self.navigator.update_kymo_list_for_channel()
-        self.navigator.kymo_changed()
         self.navigator.kymoCombo.setEnabled(True)
 
 
@@ -736,10 +735,14 @@ class MovieCanvas(ImageCanvas):
                 pass
             self.tempRoiLine = None
 
-        self.navigator.update_kymo_visibility()
-        self.navigator.update_kymo_list_for_channel()
+        if not suppress_display:
+            self.navigator.update_kymo_list_for_channel()
+            self.navigator.kymo_changed()
+            self.navigator.update_kymo_visibility()
+            self.navigator.update_kymo_list_for_channel()
 
-        self.draw()
+        if not suppress_display:
+            self.draw()
 
     def generate_kymograph(self, roi, channel_override=None):
         # --- Compute the ROI sample positions along the drawn line ---
@@ -1171,18 +1174,40 @@ class MovieCanvas(ImageCanvas):
             alpha_line = (0.9 if is_hl else 0.7)
             z_line = (6 if is_hl else 3)
 
-            line, = self.ax.plot(
-                xs_pts, ys_pts,
-                linestyle='-',
-                color=(line_color),
-                linewidth=lw_line,
-                alpha=alpha_line,
-                zorder=z_line
-            )
+            line = None
+            pts_colors = scatter_kwargs.get("c")
+            if isinstance(pts_colors, (list, tuple, np.ndarray)) and len(pts_colors) == len(xs_pts):
+                segs = []
+                seg_colors = []
+                for i in range(len(xs_pts) - 1):
+                    if (np.isnan(xs_pts[i]) or np.isnan(ys_pts[i])
+                            or np.isnan(xs_pts[i + 1]) or np.isnan(ys_pts[i + 1])):
+                        continue
+                    segs.append([[xs_pts[i], ys_pts[i]], [xs_pts[i + 1], ys_pts[i + 1]]])
+                    seg_colors.append(pts_colors[i])
+                if segs:
+                    line = LineCollection(
+                        segs,
+                        colors=seg_colors,
+                        linewidths=lw_line,
+                        alpha=alpha_line,
+                        zorder=z_line
+                    )
+                    self.ax.add_collection(line)
+
+            if line is None:
+                line, = self.ax.plot(
+                    xs_pts, ys_pts,
+                    linestyle='-',
+                    color=(line_color),
+                    linewidth=lw_line,
+                    alpha=alpha_line,
+                    zorder=z_line
+                )
             self.movie_trajectory_markers.append(line)
 
-            # 5e) Draw scatter points ONLY for the highlighted trajectory
-            if is_hl:
+        # 5e) Draw scatter points ONLY for the highlighted trajectory
+            if is_hl and not getattr(self.navigator, "kymo_anchor_edit_mode", False):
                 # Bump size and add black edge
                 scatter_kwargs.update(s=15, edgecolors='black', linewidths=0.5)
                 z_scatter = 6

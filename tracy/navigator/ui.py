@@ -1059,8 +1059,25 @@ class NavigatorUiMixin:
         except Exception:
             pass
 
+        if event.key() == Qt.Key_Shift:
+            try:
+                self.cancel_left_click_sequence()
+                self._set_kymo_anchor_edit_mode(True)
+            except Exception:
+                pass
+
         # Preserve existing key handling.
         super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        if event.key() == Qt.Key_Shift:
+            try:
+                self._finish_kymo_anchor_edit(force_recalc=False)
+            except Exception:
+                pass
+            super().keyReleaseEvent(event)
+            return
+        super().keyReleaseEvent(event)
 
     def _showRadiusDialog(self):
         # don’t open if it’s already up
@@ -1252,6 +1269,14 @@ class NavigatorUiMixin:
                 self.trajectoryCanvas.writeToTable(row, D_COL, traj["custom_fields"][D_COL])
             if A_COL in self.trajectoryCanvas.custom_columns:
                 self.trajectoryCanvas.writeToTable(row, A_COL, traj["custom_fields"][A_COL])
+
+            if self.pixel_size is not None and self.frame_interval is not None:
+                try:
+                    traj["segment_diffusion"] = self.trajectoryCanvas._compute_segment_diffusion(
+                        traj, self
+                    )
+                except Exception:
+                    traj["segment_diffusion"] = []
         else:
             # optional: blank them
             D_COL = self._DIFF_D_COL
@@ -1341,10 +1366,6 @@ class NavigatorUiMixin:
         loadMovieAction.triggered.connect(self.handle_movie_load)
         loadMenu.addAction(loadMovieAction)
 
-        loadKymosAction = QAction("Kymographs", self)
-        loadKymosAction.triggered.connect(self.load_kymographs)
-        loadMenu.addAction(loadKymosAction)
-        
         loadROIsAction = QAction("Line ROIs", self)
         loadROIsAction.triggered.connect(self.load_roi)
         loadMenu.addAction(loadROIsAction)
@@ -1394,6 +1415,8 @@ class NavigatorUiMixin:
 
         channelAxisAction = QAction("Change Channel Axis", self)
         channelAxisAction.triggered.connect(self.show_channel_axis_dialog)
+        channelAxisAction.setEnabled(False)
+        self.channelAxisAction = channelAxisAction
         movieMenu.addAction(channelAxisAction)
 
         self.spotMenu = menubar.addMenu("Spot")
@@ -1442,25 +1465,19 @@ class NavigatorUiMixin:
         recalcAction.triggered.connect(self.trajectoryCanvas.recalculate_all_trajectories)
         trajMenu.addAction(recalcAction)
 
-        binColumnAct = QAction("Add binary column", self)
+        binColumnAct = QAction("Add Binary column", self)
         trajMenu.addAction(binColumnAct)
         binColumnAct.triggered.connect(self.trajectoryCanvas._add_binary_column_dialog)
         
-        valColumnAct = QAction("Add value column", self)
+        valColumnAct = QAction("Add Value column", self)
         trajMenu.addAction(valColumnAct)
         valColumnAct.triggered.connect(self.trajectoryCanvas._add_value_column_dialog)
 
-        self.showStepsAction = QAction("Calculate Steps", self, checkable=True)
-        self.showStepsAction.setChecked(False)
-        self.showStepsAction.toggled.connect(self.on_show_steps_toggled)
-        trajMenu.addAction(self.showStepsAction)
-
-        self.showDiffusionAction = QAction("Calculate Diffusion (D, α)", self, checkable=True)
-        self.showDiffusionAction.setChecked(False)
-        self.showDiffusionAction.toggled.connect(self.on_show_diffusion_toggled)
-        trajMenu.addAction(self.showDiffusionAction)
+        self._add_extra_calc_actions(trajMenu)
 
         self._colorBySeparator = trajMenu.addSeparator()
+        self.colorByMenu = QMenu("Color By", self)
+        trajMenu.addMenu(self.colorByMenu)
         self._colorByActions   = []
         self.trajMenu          = trajMenu
 
@@ -1474,10 +1491,41 @@ class NavigatorUiMixin:
         zoomAction.triggered.connect(self.open_zoom_dialog)
         viewMenu.addAction(zoomAction)
 
+        shortcutsAction = QAction("Shortcuts", self)
+        shortcutsAction.triggered.connect(self.open_shortcuts_dialog)
+        viewMenu.addAction(shortcutsAction)
+
+    def _add_extra_calc_actions(self, traj_menu):
+        self._extra_calc_actions = {}
+        for spec in self._extra_calc_specs():
+            action = QAction(spec.label, self, checkable=True)
+            action.setChecked(False)
+            handler = getattr(self, spec.toggle_handler)
+            action.toggled.connect(handler)
+
+            if spec.has_popup or spec.checks_existing:
+                tips = []
+                if spec.has_popup:
+                    tips.append("Opens settings")
+                if spec.checks_existing:
+                    tips.append("Can prompt to compute missing values")
+                action.setStatusTip(". ".join(tips))
+
+            if spec.key == "colocalization":
+                action.setEnabled(False)
+
+            setattr(self, spec.action_attr, action)
+            traj_menu.addAction(action)
+            self._extra_calc_actions[spec.key] = action
+
+    def open_shortcuts_dialog(self):
+        dialog = ShortcutsDialog(self)
+        dialog.exec_()
+
     def _rebuild_color_by_actions(self):
         # 1) clear old
         for act in self._colorByActions:
-            self.trajMenu.removeAction(act)
+            self.colorByMenu.removeAction(act)
         self._colorByActions.clear()
 
         # 2) add custom columns (binary/value)
@@ -1493,11 +1541,37 @@ class NavigatorUiMixin:
                 if self.color_by_column == col:
                     act.setChecked(True)
 
-                self.trajMenu.insertAction(self._colorBySeparator, act)
+                self.colorByMenu.addAction(act)
                 self._colorByActions.append(act)
 
         if self.movie is None:
+            has_actions = bool(self._colorByActions)
+            self.colorByMenu.menuAction().setVisible(has_actions)
+            self.colorByMenu.setEnabled(has_actions)
             return
+
+        has_seg_diff = any(
+            isinstance(t.get("segment_diffusion"), (list, tuple)) and t.get("segment_diffusion")
+            for t in self.trajectoryCanvas.trajectories
+        )
+        if getattr(self, "show_diffusion", False) or has_seg_diff:
+            d_col = getattr(self, "_DIFF_D_COL", "D (μm²/s)")
+            a_col = getattr(self, "_DIFF_A_COL", "α")
+            for base in (d_col, a_col):
+                key = f"{base} (per segment)"
+                act = QAction(f"Color by {key}", self, checkable=True)
+                act.setData(key)
+                act.toggled.connect(lambda on, a=act: 
+                    self._on_color_by_toggled(a.data(), a, on)
+                )
+                if self.color_by_column == key:
+                    act.setChecked(True)
+                self.colorByMenu.addAction(act)
+                self._colorByActions.append(act)
+
+        has_actions = bool(self._colorByActions)
+        self.colorByMenu.menuAction().setVisible(has_actions)
+        self.colorByMenu.setEnabled(has_actions)
         
         # 3) count channels
         if self.movie.ndim == 4 and self._channel_axis is not None:
@@ -1505,32 +1579,33 @@ class NavigatorUiMixin:
         else:
             n_chan = 1
 
-        # 4) add colocalization actions
-        if n_chan == 2:
-            key = "colocalization"
-            act = QAction("Color by Colocalization", self, checkable=True)
-            act.setData(key)
-            act.toggled.connect(lambda on, a=act: 
-                self._on_color_by_toggled(a.data(), a, on)
-            )
-            if self.color_by_column == key:
-                act.setChecked(True)
-            self.trajMenu.insertAction(self._colorBySeparator, act)
-            self._colorByActions.append(act)
-
-        elif n_chan > 2:
-            for tgt in range(1, n_chan+1):
-                key  = f"coloc_ch{tgt}"
-                text = f"Color by Ch. {tgt} coloc"
-                act = QAction(text, self, checkable=True)
+        # 4) add colocalization actions (only when enabled)
+        if getattr(self, "check_colocalization", False):
+            if n_chan == 2:
+                key = "colocalization"
+                act = QAction("Color by Colocalization", self, checkable=True)
                 act.setData(key)
                 act.toggled.connect(lambda on, a=act: 
                     self._on_color_by_toggled(a.data(), a, on)
                 )
                 if self.color_by_column == key:
                     act.setChecked(True)
-                self.trajMenu.insertAction(self._colorBySeparator, act)
+                self.colorByMenu.addAction(act)
                 self._colorByActions.append(act)
+
+            elif n_chan > 2:
+                for tgt in range(1, n_chan+1):
+                    key  = f"coloc_ch{tgt}"
+                    text = f"Color by Ch. {tgt} coloc"
+                    act = QAction(text, self, checkable=True)
+                    act.setData(key)
+                    act.toggled.connect(lambda on, a=act: 
+                        self._on_color_by_toggled(a.data(), a, on)
+                    )
+                    if self.color_by_column == key:
+                        act.setChecked(True)
+                    self.colorByMenu.addAction(act)
+                    self._colorByActions.append(act)
 
     def _on_color_by_toggled(self, column_name, action, checked):
         if checked and (column_name == "colocalization" or column_name.startswith("coloc_ch")):
@@ -1674,112 +1749,28 @@ class NavigatorUiMixin:
         self.applylogfilter = checked
 
     def on_colocalization_toggled(self, checked: bool):
-        if self.movie.ndim != 4:
+        if self.movie is None or self.movie.ndim != 4:
+            self.check_colocalization = False
+            self._rebuild_color_by_actions()
             return
 
         self.check_colocalization = checked
         if not checked:
+            if self.color_by_column in ("colocalization",) or str(self.color_by_column).startswith("coloc_ch"):
+                self.set_color_by(None)
+            self._rebuild_color_by_actions()
             return
         
-        orig_channel = getattr(self, "analysis_channel", None)
-
-        # Figure out how many channels and the custom‐field names
-        n_chan    = self.movie.shape[self._channel_axis]
-        coloc_cols = [f"Ch. {ch} co. %" for ch in range(1, n_chan+1)]
-        missing   = []
-
-        # Find all trajectories that have at least one missing co‐% field
-        for r, traj in enumerate(self.trajectoryCanvas.trajectories):
-            ch_ref = traj["channel"]
-            cf     = traj.get("custom_fields", {})
-            for col in coloc_cols:
-                # skip the reference‐channel column entirely
-                if col.endswith(f"{ch_ref} co. %"):
-                    continue
-                if not cf.get(col, "").strip():
-                    missing.append(r)
-                    break
-
+        missing = self._find_missing_colocalization()
         if not missing:
+            self._rebuild_color_by_actions()
             return
 
-        # Ask user
-        cnt = len(missing)
-        msg = f"{cnt} trajector{'ies are' if cnt>1 else 'y is'} missing colocalization data, calculate {'them' if cnt>1 else 'it'}?"
-        yn  = QMessageBox.question(self, "Compute Colocalization", msg,
-                                QMessageBox.Yes|QMessageBox.No,
-                                QMessageBox.Yes)
-        if yn != QMessageBox.Yes:
+        if not self._confirm_missing_calculation("colocalization", len(missing)):
+            self._rebuild_color_by_actions()
             return
 
-        progress = QProgressDialog("Computing colocalization…", "Cancel", 0, len(missing), self)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.show()
-
-        for idx, r in enumerate(missing):
-            progress.setValue(idx)
-            QApplication.processEvents()
-            if progress.wasCanceled():
-                break
-
-            traj = self.trajectoryCanvas.trajectories[r]
-            ch_ref = traj["channel"]
-            n_chan = self.movie.shape[self._channel_axis]
-
-            # 1) set up frames & fit params as before
-            self.analysis_frames     = traj["frames"]
-            self.analysis_fit_params = list(zip(
-                traj["spot_centers"],
-                traj["sigmas"],
-                traj["peaks"]
-            ))
-
-            # 2) run exactly one colocalization pass in the ref channel
-            ch_ref = traj["channel"]
-            self.analysis_channel = ch_ref
-            self._compute_colocalization(showprogress=False)
-
-            # 3) grab the “any” list and the per‐channel dict
-            any_flags = list(self.analysis_colocalized)
-            by_ch     = {
-                tgt: list(flags)
-                for tgt, flags in self.analysis_colocalized_by_ch.items()
-            }
-
-            traj["colocalization_any"]    = any_flags
-            traj["colocalization_by_ch"]  = by_ch
-
-            # 4) write into custom_fields
-            cf = traj.setdefault("custom_fields", {})
-            # overall‐any (only meaningful for two-channel movies)
-            valid_any = [s for s in any_flags if s is not None]
-            pct_any   = (f"{100*sum(1 for s in valid_any if s=='Yes')/len(valid_any):.1f}"
-                        if valid_any else "")
-
-            for ch in range(1, n_chan+1):
-                col_name = f"Ch. {ch} co. %"
-                if ch == ch_ref:
-                    cf[col_name] = ""
-                elif n_chan == 2:
-                    cf[col_name] = pct_any
-                else:
-                    flags = by_ch.get(ch, [])
-                    valid = [s for s in flags if s is not None]
-                    cf[col_name] = (
-                        f"{100*sum(1 for s in valid if s=='Yes')/len(valid):.1f}"
-                        if valid else ""
-                    )
-
-            # now write them back into the table
-            for ch in range(1, n_chan+1):
-                self.trajectoryCanvas._mark_custom(r, f"Ch. {ch} co. %", cf[f"Ch. {ch} co. %"])
-
-        progress.setValue(len(missing))
-        progress.close()
-
-        if orig_channel is not None:
-            self.analysis_channel = orig_channel
+        self._compute_colocalization_for_indices(missing)
 
         # finally redraw
         self.kymoCanvas.draw_trajectories_on_kymo()
@@ -1788,6 +1779,7 @@ class NavigatorUiMixin:
         self.movieCanvas.draw()
 
         self.trajectoryCanvas.hide_empty_columns()
+        self._rebuild_color_by_actions()
 
     def _schedule_update_check(self):
         if getattr(self, "_update_check_started", False):

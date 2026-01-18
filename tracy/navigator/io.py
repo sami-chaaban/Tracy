@@ -225,6 +225,9 @@ class NavigatorIOMixin:
                 self.update_movie_channel_combo()
                 first_frame = self.movie[0]
 
+            if hasattr(self, "channelAxisAction"):
+                self.channelAxisAction.setEnabled(self.movie.ndim == 4)
+
             max_frame = self.movie.shape[0]
             self.frameSlider.setMinimum(0)
             self.frameSlider.setMaximum(max_frame - 1)
@@ -314,12 +317,9 @@ class NavigatorIOMixin:
 
                 # print("load_movie custom_columns, after add_custom_column", self.trajectoryCanvas.custom_columns)
 
-                if not hasattr(self, 'colocalizationAction'):
-                    self.colocalizationAction = QAction("Check colocalization", self, checkable=True)
+                if hasattr(self, 'colocalizationAction'):
+                    self.colocalizationAction.setEnabled(True)
                     self.colocalizationAction.setChecked(False)
-                    self.colocalizationAction.toggled.connect(self.on_colocalization_toggled)
-                    # spotMenu must be the original QMenu.
-                    self.spotMenu.addAction(self.colocalizationAction)
 
             else:
                 # single-channel: ensure no stray co. % columns remain
@@ -329,19 +329,10 @@ class NavigatorIOMixin:
                         self.trajectoryCanvas._remove_custom_column(idx, name)
 
                 self.check_colocalization = False
-                # if we previously added the colocalization action, uncheck & remove it
+                # if we previously enabled colocalization, disable it
                 if hasattr(self, 'colocalizationAction'):
-                    # 1) uncheck so UI state is clean
                     self.colocalizationAction.setChecked(False)
-                    # 2) disconnect its signal to avoid any stray callbacks
-                    try:
-                        self.colocalizationAction.toggled.disconnect(self.on_colocalization_toggled)
-                    except TypeError:
-                        pass
-                    # 3) remove it from the spot‐menu
-                    self.spotMenu.removeAction(self.colocalizationAction)
-                    # 4) delete the attribute so next time we know it’s gone
-                    del self.colocalizationAction
+                    self.colocalizationAction.setEnabled(False)
 
             # Always untoggle any active “Color by …” before we potentially reload columns
             self.set_color_by(None)
@@ -1211,6 +1202,7 @@ class NavigatorIOMixin:
             c = self.kymoCanvas
             c.scale       = scale
             c.zoom_center = center
+            c.manual_zoom = True
             c.update_view()
 
     def kymo_changed(self):

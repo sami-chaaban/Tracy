@@ -12,6 +12,7 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Circle, Rectangle
 from matplotlib.ticker import MaxNLocator
 from matplotlib.lines import Line2D
+from matplotlib.collections import LineCollection
 from matplotlib.text import Text
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors

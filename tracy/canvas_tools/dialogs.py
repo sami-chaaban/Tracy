@@ -534,22 +534,12 @@ class StepSettingsDialog(QDialog):
         btn_set.setDefault(True)
         btns.addWidget(btn_set)
 
-        # only add the extra button if there's at least one trajectory
-        if can_calculate_all:
-            btns.addWidget(QPushButton("Set and Calculate", clicked=self._on_setall))
-
         layout.addLayout(btns)
 
     def _on_set(self):
         self.new_W        = self.win_spin.value()
         self.new_min_step = self.step_spin.value()
         self.calculate_all = False
-        self.accept()
-
-    def _on_setall(self):
-        self.new_W        = self.win_spin.value()
-        self.new_min_step = self.step_spin.value()
-        self.calculate_all = True
         self.accept()
 
 class DiffusionSettingsDialog(QDialog):
@@ -589,9 +579,6 @@ class DiffusionSettingsDialog(QDialog):
         btn_set.setDefault(True)
         btns.addWidget(btn_set)
 
-        if can_calculate_all:
-            btns.addWidget(QPushButton("Set and Calculate", clicked=self._on_setall))
-
         layout.addLayout(btns)
 
     def _on_set(self):
@@ -600,8 +587,123 @@ class DiffusionSettingsDialog(QDialog):
         self.calculate_all = False
         self.accept()
 
-    def _on_setall(self):
-        self.new_max_lag = self.lag_spin.value()
-        self.new_min_pairs = self.pair_spin.value()
-        self.calculate_all = True
-        self.accept()
+
+class ShortcutsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Shortcuts")
+        self.setMinimumWidth(560)
+        self.setMinimumHeight(520)
+        self.setStyleSheet(QApplication.instance().styleSheet())
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        header = QLabel(
+            "<div style='font-size:16px;'><b>Keyboard and Mouse Shortcuts</b></div>"
+            "<div style='color:#5b6776;'>"
+            "Shortcuts depend on the current view and selection."
+            "</div>"
+        )
+        header.setWordWrap(True)
+        header.setTextFormat(Qt.RichText)
+        layout.addWidget(header)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        layout.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(12)
+
+        sections = [
+            ("Navigation", [
+                ("Left / Right", "Step through points on the current trajectory."),
+                ("Up / Down", "Select previous/next trajectory in the table."),
+                ("J / L", "Previous/next frame."),
+                (", / .", "Previous/next kymograph."),
+                ("1-8", "Switch active movie channel (multi-channel movies)."),
+            ]),
+            ("Trajectory", [
+                ("Enter", "Add trajectory (if drawing) or recalculate selected."),
+                ("X", "Invalidate/revalidate highlighted point."),
+                ("Space", "Toggle looping through the trajectory."),
+                ("T", "Cycle tracking mode."),
+                ("Backspace", "Delete selected trajectory."),
+                ("O", "Toggle trajectory overlay."),
+            ]),
+            ("Kymograph / ROI", [
+                ("N", "Toggle line ROI mode."),
+                ("Shift (hold)", "Anchor edit mode for selected trajectory in the current kymograph."),
+                ("Esc", "Cancel active click sequence."),
+            ]),
+            ("Movie / View", [
+                ("M", "Toggle maximum projection."),
+                ("R", "Open the search radius popup."),
+                ("Ctrl/Cmd+S", "Save trajectories."),
+                ("Ctrl+drag or Middle-drag", "Pan movie or kymograph."),
+                ("Mouse wheel", "Zoom movie or kymograph."),
+                ("W/A/S/D", "Move the manual marker."),
+                ("K", "Simulate click at marker or cursor."),
+                ("Shift+Arrows", "Nudge reference image (when visible)."),
+            ]),
+        ]
+
+        for title, rows in sections:
+            section = QFrame()
+            section.setStyleSheet(
+                "QFrame {"
+                "  background: #f7f9fc;"
+                "  border: 1px solid #e1e7ef;"
+                "  border-radius: 10px;"
+                "}"
+            )
+            section_layout = QVBoxLayout(section)
+            section_layout.setContentsMargins(12, 10, 12, 12)
+            section_layout.setSpacing(8)
+
+            title_label = QLabel(title)
+            title_label.setStyleSheet("font-weight: 600; color: #2a2f36;")
+            section_layout.addWidget(title_label)
+
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(12)
+            grid.setVerticalSpacing(8)
+            grid.setColumnStretch(1, 1)
+
+            for row_idx, (keys, desc) in enumerate(rows):
+                key_label = QLabel(keys)
+                key_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                key_label.setStyleSheet(
+                    "QLabel {"
+                    "  background: #eef2f7;"
+                    "  border: 1px solid #d6dde7;"
+                    "  border-radius: 6px;"
+                    "  padding: 4px 8px;"
+                    "  color: #1f2d3d;"
+                    "  font-family: Menlo, Courier, monospace;"
+                    "}"
+                )
+                desc_label = QLabel(desc)
+                desc_label.setWordWrap(True)
+                desc_label.setStyleSheet("color: #2f3742;")
+
+                grid.addWidget(key_label, row_idx, 0)
+                grid.addWidget(desc_label, row_idx, 1)
+
+            section_layout.addLayout(grid)
+            content_layout.addWidget(section)
+
+        content_layout.addStretch(1)
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+        close_button = QPushButton("Close", self)
+        close_button.clicked.connect(self.accept)
+        button_layout.addWidget(close_button)
+        layout.addLayout(button_layout)

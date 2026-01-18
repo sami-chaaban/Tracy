@@ -152,8 +152,18 @@ class NavigatorRoiMixin:
             )
             return
 
+        progress = QProgressDialog("Generating kymographs…", "Cancel", 0, len(unique_rois), self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+
         # 2) for each ROI dict...
-        for roi in unique_rois:
+        for idx, roi in enumerate(unique_rois):
+            progress.setValue(idx)
+            QApplication.processEvents()
+            if progress.wasCanceled():
+                break
+
             # 2a) find its name key in self.rois
             roi_name = None
             for name, roi_data in self.rois.items():
@@ -174,8 +184,21 @@ class NavigatorRoiMixin:
 
             # 2c) replay the ROI
             self.movieCanvas.roiPoints = roi["points"]
-            self.movieCanvas.finalize_roi()
-            
+            self.movieCanvas.finalize_roi(suppress_display=True)
+
+        progress.setValue(len(unique_rois))
+        progress.close()
+
+        self._last_roi = None
+        self.kymoCanvas.manual_zoom = False
+        self.update_kymo_list_for_channel()
+        if self.kymoCombo.count() > 0:
+            self.kymoCombo.blockSignals(True)
+            self.kymoCombo.setCurrentIndex(0)
+            self.kymoCombo.blockSignals(False)
+            self.kymo_changed()
+        self.update_kymo_visibility()
+
         self.kymoCanvas.draw_trajectories_on_kymo()
         self.kymoCanvas.draw_idle()
 
@@ -274,4 +297,3 @@ class NavigatorRoiMixin:
     #                 disp_frame = (self.movie.shape[0] - 1) - frame
     #                 color = self.get_point_color() if fc is not None else "grey"
     #                 self.kymoCanvas.add_circle(xk, disp_frame, color=color)
-

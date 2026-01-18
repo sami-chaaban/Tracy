@@ -8,9 +8,25 @@ class ImageCanvas(FigureCanvas):
         self.ax.axis("off")
         super().__init__(self.fig)
         self.setParent(parent)
+        self._draw_deferred = False
         # self.setAttribute(Qt.WA_OpaquePaintEvent)
         # self.setAttribute(Qt.WA_NoSystemBackground)
         self.image = None
+
+    def draw(self, *args, **kwargs):
+        if self.width() <= 1 or self.height() <= 1:
+            if not self._draw_deferred:
+                self._draw_deferred = True
+                QTimer.singleShot(0, self._retry_draw)
+            return
+        self._draw_deferred = False
+        return super().draw(*args, **kwargs)
+
+    def _retry_draw(self):
+        self._draw_deferred = False
+        if self.width() <= 1 or self.height() <= 1:
+            return
+        super().draw()
 
     def paintEvent(self, event):
         painter = QPainter(self)

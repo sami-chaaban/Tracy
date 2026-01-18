@@ -2,6 +2,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QComboBox, QSpinBox, QSplitter,
     QAbstractButton, QFrame, QDialogButtonBox,
+    QScrollArea, QGridLayout,
     QLineEdit, QFormLayout, QSplitterHandle, QDialog,
     QApplication, QCheckBox, QListWidget, QFileDialog,
     QListWidgetItem, QAbstractItemView, QStackedWidget

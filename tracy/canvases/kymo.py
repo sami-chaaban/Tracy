@@ -88,6 +88,23 @@ class KymoCanvas(ImageCanvas):
         else:
             super().mouseReleaseEvent(event)
 
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Shift:
+            try:
+                self.navigator.cancel_left_click_sequence()
+                self.navigator._set_kymo_anchor_edit_mode(True)
+            except Exception:
+                pass
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        if event.key() == Qt.Key_Shift:
+            try:
+                self.navigator._finish_kymo_anchor_edit(force_recalc=False)
+            except Exception:
+                pass
+        super().keyReleaseEvent(event)
+
     def reset_canvas(self):
         self.ax.cla()
         self._im = None
@@ -266,10 +283,15 @@ class KymoCanvas(ImageCanvas):
         # Recompute max_scale on resize so zoom-out still fills the new widget size
         if self.image is not None:
             h, w = self.image.shape[:2]
-            widget_w = self.width() if self.width() > 0 else w
-            widget_h = self.height() if self.height() > 0 else h
-            base = max(w / widget_w, h / widget_h)
-            self.max_scale = base * self.padding
+            widget_w = self.width()
+            widget_h = self.height()
+            if widget_w > 1 and widget_h > 1:
+                base = max(w / widget_w, h / widget_h)
+                self.max_scale = base * self.padding
+                if not self.manual_zoom:
+                    # Auto-fit when not in a manual zoom/pan state.
+                    self.scale = base
+                    self.zoom_center = (w / 2, h / 2)
         # When resizing, update the view so that the zoom_center and scale are maintained.
         self.update_view()
 
@@ -371,6 +393,53 @@ class KymoCanvas(ImageCanvas):
         markers = []
         self.kymo_trajectory_markers = markers
 
+        if getattr(self.navigator, "kymo_anchor_edit_mode", False):
+            if selected_idx < 0 or selected_idx >= len(self.navigator.trajectoryCanvas.trajectories):
+                return
+            traj = self.navigator.trajectoryCanvas.trajectories[selected_idx]
+            ch = traj.get("channel")
+            if ch is not None and ch != current_kymo_ch:
+                return
+            if not self.navigator._traj_matches_current_kymo(traj, roi):
+                return
+
+            anchors = traj.get("anchors", []) or []
+            xs_disp, ys_disp = [], []
+            if anchors:
+                xs_disp = [xk for _f, xk, _yk in anchors]
+                ys_disp = [num_frames_m1 - f for f, _xk, _yk in anchors]
+            else:
+                nodes = traj.get("nodes", []) or []
+                for f, x, y in nodes:
+                    xk = compute_x_roi(roi, x, y, kymo_w)
+                    if xk is None:
+                        continue
+                    xs_disp.append(xk)
+                    ys_disp.append(num_frames_m1 - f)
+
+            if not xs_disp or not ys_disp:
+                return
+
+            if showsearchline:
+                dotted, = ax.plot(
+                    xs_disp, ys_disp,
+                    color="#7da1ff", linestyle="--", linewidth=2,
+                    alpha=0.8, zorder=2,
+                    solid_capstyle='round', dash_capstyle='round'
+                )
+                markers.append(dotted)
+
+            anchor_scatter = ax.scatter(
+                xs_disp, ys_disp,
+                s=(8**2),
+                c="#4f6bdc",
+                alpha=0.7,
+                linewidths=0,
+                zorder=6
+            )
+            markers.append(anchor_scatter)
+            return
+
         # 5) loop once
         for idx, traj in enumerate(self.navigator.trajectoryCanvas.trajectories):
             ch = traj.get("channel")
@@ -411,11 +480,16 @@ class KymoCanvas(ImageCanvas):
 
 
             if showsearchline:
-                disp = [
-                    (compute_x_roi(roi, x, y, kymo_w), num_frames_m1 - f)
-                    for f, (x, y) in zip(frames, orig)
-                ]
-                xs_disp, ys_disp = zip(*disp)
+                anchors = traj.get("anchors", []) or []
+                if anchors:
+                    xs_disp = [xk for _f, xk, _yk in anchors]
+                    ys_disp = [num_frames_m1 - f for f, _xk, _yk in anchors]
+                else:
+                    disp = [
+                        (compute_x_roi(roi, x, y, kymo_w), num_frames_m1 - f)
+                        for f, (x, y) in zip(frames, orig)
+                    ]
+                    xs_disp, ys_disp = zip(*disp)
 
                 # 5a) dotted start/end connector
                 dotted, = ax.plot(
@@ -441,8 +515,30 @@ class KymoCanvas(ImageCanvas):
 
             scatter_kwargs, line_color = self.navigator._get_traj_colors(traj)
 
-            line, = ax.plot(xs_pts, ys_pts, linestyle='-', color=line_color,
-                            linewidth=linesize, alpha=0.8, zorder=3)
+            line = None
+            pts_colors = scatter_kwargs.get("c")
+            if isinstance(pts_colors, (list, tuple, np.ndarray)) and len(pts_colors) == len(xs_pts):
+                segs = []
+                seg_colors = []
+                for i in range(len(xs_pts) - 1):
+                    if (np.isnan(xs_pts[i]) or np.isnan(ys_pts[i])
+                            or np.isnan(xs_pts[i + 1]) or np.isnan(ys_pts[i + 1])):
+                        continue
+                    segs.append([[xs_pts[i], ys_pts[i]], [xs_pts[i + 1], ys_pts[i + 1]]])
+                    seg_colors.append(pts_colors[i])
+                if segs:
+                    line = LineCollection(
+                        segs,
+                        colors=seg_colors,
+                        linewidths=linesize,
+                        alpha=0.8,
+                        zorder=3
+                    )
+                    ax.add_collection(line)
+
+            if line is None:
+                line, = ax.plot(xs_pts, ys_pts, linestyle='-', color=line_color,
+                                linewidth=linesize, alpha=0.8, zorder=3)
 
             markers.append(line)
 
@@ -504,6 +600,32 @@ class KymoCanvas(ImageCanvas):
             scatter.traj_idx = idx
             markers.append(scatter)
             self.scatter_objs_traj.append(scatter)
+
+            if is_hl:
+                anchors = traj.get("anchors", []) or []
+                ax_xs, ax_ys = [], []
+                if anchors:
+                    ax_xs = [xk for _f, xk, _yk in anchors]
+                    ax_ys = [yk for _f, _xk, yk in anchors]
+                else:
+                    nodes = traj.get("nodes", []) or []
+                    for frame, x, y in nodes:
+                        try:
+                            ax_xs.append(compute_x_roi(roi, x, y, kymo_w))
+                            ax_ys.append(num_frames_m1 - frame)
+                        except Exception:
+                            continue
+
+                if ax_xs and ax_ys:
+                    anchor_scatter = ax.scatter(
+                        ax_xs, ax_ys,
+                        s=(8**2),
+                        c="#4f6bdc",
+                        alpha=0.7,
+                        linewidths=0,
+                        zorder=6
+                    )
+                    markers.append(anchor_scatter)
 
             # 5c) optional halo behind
             if is_hl and halo_lw:

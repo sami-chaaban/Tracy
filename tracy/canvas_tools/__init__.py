@@ -15,6 +15,7 @@ from .dialogs import (
     SaveKymographDialog,
     StepSettingsDialog,
     DiffusionSettingsDialog,
+    ShortcutsDialog,
 )
 from .layout import CustomSplitter, CustomSplitterHandle, RoundedFrame
 from .animators import AxesRectAnimator
@@ -40,6 +41,7 @@ __all__ = [
     "SaveKymographDialog",
     "StepSettingsDialog",
     "DiffusionSettingsDialog",
+    "ShortcutsDialog",
     "CustomSplitter",
     "CustomSplitterHandle",
     "RoundedFrame",

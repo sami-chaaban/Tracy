@@ -90,7 +90,6 @@ class TrajectoryCanvas(QWidget):
 
         self.table_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table_widget.customContextMenuRequested.connect(self.open_context_menu)
-        self.table_widget.viewport().installEventFilter(self)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -238,7 +237,100 @@ class TrajectoryCanvas(QWidget):
         try:
 
                 # Build summary and data rows if any trajectories
-            summary_rows, data_rows = [], []
+            summary_rows, data_rows, per_node_rows = [], [], []
+
+            def _infer_nodes_and_clicks(traj):
+                nodes = traj.get("nodes") or []
+                click_source = str(traj.get("click_source") or "").strip()
+                anchors = traj.get("anchors") or []
+                roi = traj.get("roi", None)
+
+                def _dedupe_nodes(raw_nodes):
+                    deduped = []
+                    last_key = None
+                    for item in raw_nodes:
+                        if not isinstance(item, (list, tuple)) or len(item) < 3:
+                            continue
+                        frame, x, y = item[0], item[1], item[2]
+                        try:
+                            key = (int(frame), float(x), float(y))
+                        except Exception:
+                            continue
+                        if key == last_key:
+                            continue
+                        deduped.append((key[0], key[1], key[2]))
+                        last_key = key
+                    return deduped
+
+                if nodes:
+                    if not click_source:
+                        click_source = "kymograph" if (anchors and roi is not None) else "movie"
+                    return _dedupe_nodes(nodes), click_source
+
+                if anchors and roi is not None:
+                    nodes = []
+                    for frame_idx, xk, _yk in anchors:
+                        mx, my = self.navigator.compute_roi_point(roi, xk)
+                        nodes.append((int(frame_idx), float(mx), float(my)))
+                    if not click_source:
+                        click_source = "kymograph"
+                return _dedupe_nodes(nodes), click_source
+
+            def _anchor_index_for_frame(frame, anchor_frames):
+                if not anchor_frames:
+                    return ""
+                if len(anchor_frames) < 2:
+                    return 1
+                for idx in range(len(anchor_frames) - 1):
+                    if frame <= anchor_frames[idx + 1]:
+                        return idx + 1
+                return len(anchor_frames) - 1
+
+            def _percent_yes(flags):
+                valid = [s for s in flags if s is not None]
+                if not valid:
+                    return ""
+                return f"{100 * sum(1 for s in valid if s == 'Yes') / len(valid):.1f}"
+
+            def _round4(value):
+                if value in ("", None):
+                    return ""
+                try:
+                    return round(float(value), 4)
+                except Exception:
+                    return value
+
+            def _autosize_worksheet(writer, sheet_name, df, max_width=60):
+                try:
+                    from openpyxl.utils import get_column_letter
+                    from openpyxl.styles import Alignment
+                except Exception:
+                    return
+                ws = writer.sheets.get(sheet_name)
+                if ws is None or df is None:
+                    return
+                left_align = Alignment(horizontal="left", vertical="center")
+                format_cols = {
+                    idx for idx, col in enumerate(df.columns, start=1)
+                    if col is not None and (
+                        str(col).startswith("Percent Valid")
+                        or str(col).startswith("Search Center")
+                        or str(col).startswith("Original Coordinate")
+                        or "Intensity" in str(col)
+                        or str(col).startswith("Sigma")
+                        or str(col).startswith("Peak")
+                        or "Speed" in str(col)
+                    )
+                }
+                for idx, col in enumerate(df.columns, start=1):
+                    header_len = len(str(col)) if col is not None else 0
+                    width = min(max_width, header_len + 2)
+                    ws.column_dimensions[get_column_letter(idx)].width = width
+                for row_idx, row in enumerate(ws.iter_rows(), start=1):
+                    for col_idx, cell in enumerate(row, start=1):
+                        cell.alignment = left_align
+                        if row_idx > 1 and col_idx in format_cols:
+                            cell.number_format = "0.0000"
             if traj_list:
                 for traj in traj_list:
                     channel = int(traj["channel"])
@@ -247,24 +339,26 @@ class TrajectoryCanvas(QWidget):
                     save_end_frame = int(traj["end"][0]) + 1
 
                     # step data
-                    step_meds = traj.get("step_medians") or []
-                    num_steps = len(step_meds)
+                    step_meds = traj.get("step_medians")
+                    steps_available = step_meds is not None
+                    step_meds_list = step_meds or []
+                    num_steps = len(step_meds_list) if steps_available else 0
 
                     # placeholders
                     avg_step_size = ""
                     avg_step_size_bg = ""
 
-                    if num_steps > 1:
+                    if steps_available and num_steps > 1:
                         # 1) pairwise diffs between medians
                         diffs = [
-                            abs(step_meds[i][2] - step_meds[i-1][2])
+                            abs(step_meds_list[i][2] - step_meds_list[i-1][2])
                             for i in range(1, num_steps)
                         ]
                         avg_step_size = round(sum(diffs) / len(diffs), 1)
 
                         # 2) include difference from last median → background
                         if fixed_background is not None:
-                            last_med = step_meds[-1][2]
+                            last_med = step_meds_list[-1][2]
                             diff_bg = abs(last_med - fixed_background)
                             diffs_with_bg = diffs + [diff_bg]
                             avg_step_size_bg = round(sum(diffs_with_bg) / len(diffs_with_bg), 1)
@@ -283,10 +377,10 @@ class TrajectoryCanvas(QWidget):
                     avg_vel_um_s_txt = ""
                     avg_vel_um_min_txt = ""
                     if self.navigator.pixel_size is not None and self.navigator.frame_interval is not None and traj['average_velocity'] is not None:
-                        avg_vel_px_fr_txt = f"{traj['average_velocity']:.2f}"
+                        avg_vel_px_fr_txt = traj["average_velocity"]
                         velocity_nm_per_ms = (traj['average_velocity'] * self.navigator.pixel_size) / self.navigator.frame_interval
-                        avg_vel_um_s_txt = f"{velocity_nm_per_ms:.2f}"
-                        avg_vel_um_min_txt = f"{velocity_nm_per_ms * 60.0:.2f}"
+                        avg_vel_um_s_txt = velocity_nm_per_ms
+                        avg_vel_um_min_txt = velocity_nm_per_ms * 60.0
 
                     def _valid_xy(pt):
                         if not isinstance(pt, (list, tuple)) or len(pt) != 2:
@@ -322,7 +416,7 @@ class TrajectoryCanvas(QWidget):
 
                     if time_fr > 0:
                         overall_vel_px_fr = distance_px / time_fr
-                        overall_vel_px_fr_txt = f"{overall_vel_px_fr:.2f}"
+                        overall_vel_px_fr_txt = overall_vel_px_fr
 
                     if self.navigator.pixel_size is not None:
                         distance_um = distance_px * self.navigator.pixel_size / 1000
@@ -334,10 +428,10 @@ class TrajectoryCanvas(QWidget):
                         if self.navigator.pixel_size is not None and time_s > 0:
                             overall_vel_um_s = distance_um / time_s
                             overall_vel_um_min = overall_vel_um_s * 60.0
-                            overall_vel_um_s_txt = f"{overall_vel_um_s:.2f}"
-                            overall_vel_um_min_txt = f"{overall_vel_um_min:.2f}"
+                            overall_vel_um_s_txt = overall_vel_um_s
+                            overall_vel_um_min_txt = overall_vel_um_min
 
-                    # 1) Serialize anchors
+                    # 1) Serialize kymo anchors
                     anchors = traj.get("anchors", [])
                     if anchors:
                         # convert to pure-Python types
@@ -365,35 +459,52 @@ class TrajectoryCanvas(QWidget):
                     else:
                         roi_str = "" 
 
+                    nodes, click_source = _infer_nodes_and_clicks(traj)
+                    anchor_frames = sorted({
+                        int(n[0])
+                        for n in nodes
+                        if isinstance(n, (list, tuple)) and len(n) >= 3
+                    })
+                    nodes_str = ""
+                    if nodes:
+                        nodes_py = [
+                            (float(x), float(y), int(frame) + 1)
+                            for frame, x, y in nodes
+                        ]
+                        nodes_str = json.dumps(nodes_py)
+
                     row = {
                         "Movie": self.navigator.movieNameLabel.text(),
                         "Trajectory": traj.get("trajectory_number", "?"),
                         "Channel": channel,
                         "Start Frame": save_start_frame,
                         "End Frame": save_end_frame,
-                        "Anchors": anchors_str,
+                        "Segments": max(len(nodes) - 1, 0),
+                        "Kymo-Anchors": anchors_str,
                         "ROI":    roi_str,
+                        "Clicks": click_source,
+                        "Movie-Anchors": nodes_str,
                         "Total Points": num_points,
                         "Valid Points": valid_points,
-                        "Percent Valid": percent_valid,
-                        "Search Center X Start": "" if start_center is None else float(start_center[0]),
-                        "Search Center Y Start": "" if start_center is None else float(start_center[1]),
-                        "Search Center X End": "" if end_center is None else float(end_center[0]),
-                        "Search Center Y End": "" if end_center is None else float(end_center[1]),
+                        "Percent Valid": _round4(percent_valid),
+                        "Search Center X Start": "" if start_center is None else _round4(start_center[0]),
+                        "Search Center Y Start": "" if start_center is None else _round4(start_center[1]),
+                        "Search Center X End": "" if end_center is None else _round4(end_center[0]),
+                        "Search Center Y End": "" if end_center is None else _round4(end_center[1]),
                         "Distance (μm)": distance_um_txt,
                         "Time (s)": time_s_txt,
                         "Background": fixed_background,
                         "Average Intensity": "" if traj["average"] is None else traj["average"],
                         "Median Intensity": "" if traj["median"] is None else traj["median"],
-                        "Net Speed (px/frame)": overall_vel_px_fr_txt,
-                        "Net Speed (μm/s)": overall_vel_um_s_txt,
-                        "Net Speed (μm/min)": overall_vel_um_min_txt,
-                        "Avg. Speed (px/frame)": avg_vel_px_fr_txt,
-                        "Avg. Speed (μm/s)": avg_vel_um_s_txt,
-                        "Avg. Speed (μm/min)": avg_vel_um_min_txt
+                        "Net Speed (px/frame)": _round4(overall_vel_px_fr_txt),
+                        "Net Speed (μm/s)": _round4(overall_vel_um_s_txt),
+                        "Net Speed (μm/min)": _round4(overall_vel_um_min_txt),
+                        "Avg. Speed (px/frame)": _round4(avg_vel_px_fr_txt),
+                        "Avg. Speed (μm/s)": _round4(avg_vel_um_s_txt),
+                        "Avg. Speed (μm/min)": _round4(avg_vel_um_min_txt)
                     }
 
-                    if num_steps > 0:
+                    if steps_available:
                         row["Number of Steps"]    = num_steps
                         row["Average Step Size"]  = avg_step_size
                         row["Average Step Size w/Step to Background"]    = avg_step_size_bg
@@ -420,6 +531,273 @@ class TrajectoryCanvas(QWidget):
                     traj_name = str(traj.get("trajectory_number", "?"))
                     coords_list = traj.get("original_coords", [])
                     centers_list = traj.get("search_centers", [])
+                    spot_centers_list = traj.get("spot_centers", []) or []
+                    coloc_any_list = traj.get("colocalization_any", []) or []
+                    coloc_by_ch = traj.get("colocalization_by_ch", {}) or {}
+                    seg_diff_by_idx = {}
+                    for entry in (traj.get("segment_diffusion") or []):
+                        if isinstance(entry, dict) and entry.get("segment") is not None:
+                            try:
+                                seg_diff_by_idx[int(entry["segment"])] = entry
+                            except Exception:
+                                continue
+                    steps_enabled = steps_available
+                    has_coloc = (
+                        self.navigator.movie is not None
+                        and self.navigator.movie.ndim == 4
+                        and self.navigator._channel_axis is not None
+                    )
+                    n_chan = (
+                        self.navigator.movie.shape[self.navigator._channel_axis]
+                        if has_coloc else 0
+                    )
+                    ch_ref = channel
+                    want_diffusion = bool(diff_cols) and (
+                        getattr(self.navigator, "show_diffusion", False)
+                        or any(c in self.custom_columns for c in diff_cols)
+                    )
+                    can_diffuse = (
+                        want_diffusion
+                        and self.navigator.pixel_size is not None
+                        and self.navigator.frame_interval is not None
+                    )
+
+                    if len(anchor_frames) >= 2:
+                        nodes_sorted = sorted(
+                            [
+                                n for n in nodes
+                                if isinstance(n, (list, tuple)) and len(n) >= 3
+                            ],
+                            key=lambda n: n[0]
+                        )
+
+                        for node_idx in range(len(nodes_sorted) - 1):
+                            start_frame, node_start_x, node_start_y = nodes_sorted[node_idx]
+                            end_frame, node_end_x, node_end_y = nodes_sorted[node_idx + 1]
+                            is_first_pair = (node_idx == 0)
+                            seg_start = start_frame if is_first_pair else (start_frame + 1)
+                            seg_indices = [
+                                idx for idx, f in enumerate(frames_list)
+                                if seg_start <= f <= end_frame
+                            ]
+                            if not seg_indices:
+                                continue
+
+                            seg_frames = [frames_list[idx] for idx in seg_indices]
+                            seg_ints = [intensities_list[idx] for idx in seg_indices]
+                            seg_centers = [
+                                centers_list[idx] if idx < len(centers_list) else None
+                                for idx in seg_indices
+                            ]
+                            seg_spots = [
+                                spot_centers_list[idx] if idx < len(spot_centers_list) else None
+                                for idx in seg_indices
+                            ]
+                            seg_coords = [
+                                coords_list[idx] if idx < len(coords_list) else None
+                                for idx in seg_indices
+                            ]
+
+                            seg_valid_points = sum(
+                                1 for val in seg_ints if val is not None and val > 0
+                            )
+                            seg_percent_valid = (
+                                (100 * seg_valid_points / len(seg_frames))
+                                if seg_frames else 0
+                            )
+
+                            seg_start_center = next(
+                                (pt for pt in seg_centers if _valid_xy(pt)),
+                                None
+                            )
+                            seg_end_center = next(
+                                (pt for pt in reversed(seg_centers) if _valid_xy(pt)),
+                                None
+                            )
+                            if seg_start_center is None and seg_coords:
+                                seg_start_center = seg_coords[0] if _valid_xy(seg_coords[0]) else None
+                            if seg_end_center is None and seg_coords:
+                                seg_end_center = seg_coords[-1] if _valid_xy(seg_coords[-1]) else None
+                            if seg_start_center is None:
+                                seg_start_center = (node_start_x, node_start_y)
+                            if seg_end_center is None:
+                                seg_end_center = (node_end_x, node_end_y)
+
+                            seg_dx = seg_end_center[0] - seg_start_center[0]
+                            seg_dy = seg_end_center[1] - seg_start_center[1]
+                            seg_distance_px = np.hypot(seg_dx, seg_dy)
+                            seg_time_fr = (seg_frames[-1] - seg_frames[0]) if len(seg_frames) > 1 else 0
+
+                            seg_distance_um_txt = ""
+                            seg_time_s_txt = ""
+                            seg_overall_vel_px_fr_txt = ""
+                            seg_overall_vel_um_s_txt = ""
+                            seg_overall_vel_um_min_txt = ""
+
+                            if seg_time_fr > 0:
+                                seg_overall_vel_px_fr = seg_distance_px / seg_time_fr
+                                seg_overall_vel_px_fr_txt = seg_overall_vel_px_fr
+
+                            if self.navigator.pixel_size is not None:
+                                seg_distance_um = seg_distance_px * self.navigator.pixel_size / 1000
+                                seg_distance_um_txt = f"{seg_distance_um:.2f}"
+
+                            if self.navigator.frame_interval is not None and seg_time_fr > 0:
+                                seg_time_s = seg_time_fr * self.navigator.frame_interval / 1000
+                                seg_time_s_txt = f"{seg_time_s:.2f}"
+                                if self.navigator.pixel_size is not None and seg_time_s > 0:
+                                    seg_overall_vel_um_s = seg_distance_um / seg_time_s
+                                    seg_overall_vel_um_min = seg_overall_vel_um_s * 60.0
+                                    seg_overall_vel_um_s_txt = seg_overall_vel_um_s
+                                    seg_overall_vel_um_min_txt = seg_overall_vel_um_min
+
+                            seg_avg_vel_px_fr_txt = ""
+                            seg_avg_vel_um_s_txt = ""
+                            seg_avg_vel_um_min_txt = ""
+                            seg_vels = [
+                                traj["velocities"][idx]
+                                for idx in seg_indices
+                                if idx < len(traj.get("velocities", []))
+                            ]
+                            valid_seg_vels = [v for v in seg_vels if v is not None]
+                            if valid_seg_vels:
+                                seg_avg_vel_px_fr = float(np.mean(valid_seg_vels))
+                                seg_avg_vel_px_fr_txt = seg_avg_vel_px_fr
+                                if self.navigator.pixel_size is not None and self.navigator.frame_interval is not None:
+                                    seg_vel_nm_ms = (seg_avg_vel_px_fr * self.navigator.pixel_size) / self.navigator.frame_interval
+                                    seg_avg_vel_um_s_txt = seg_vel_nm_ms
+                                    seg_avg_vel_um_min_txt = seg_vel_nm_ms * 60.0
+
+                            seg_valid_ints = [v for v in seg_ints if v is not None and v > 0]
+                            seg_avg_int = float(np.mean(seg_valid_ints)) if seg_valid_ints else None
+                            seg_med_int = float(np.median(seg_valid_ints)) if seg_valid_ints else None
+
+                            seg_step_meds = []
+                            seg_num_steps = 0
+                            seg_avg_step_size = ""
+                            seg_avg_step_size_bg = ""
+                            if steps_enabled:
+                                _seg_step_idxs, seg_step_meds = self.navigator.compute_steps_for_data(
+                                    seg_frames, seg_ints
+                                )
+                                seg_num_steps = len(seg_step_meds)
+                                if seg_num_steps > 1:
+                                    seg_diffs = [
+                                        abs(seg_step_meds[i][2] - seg_step_meds[i-1][2])
+                                        for i in range(1, seg_num_steps)
+                                    ]
+                                    seg_avg_step_size = round(sum(seg_diffs) / len(seg_diffs), 1)
+                                    if fixed_background is not None:
+                                        seg_last_med = seg_step_meds[-1][2]
+                                        seg_diff_bg = abs(seg_last_med - fixed_background)
+                                        seg_avg_step_size_bg = round(
+                                            sum(seg_diffs + [seg_diff_bg]) / (len(seg_diffs) + 1), 1
+                                        )
+                                    else:
+                                        seg_avg_step_size_bg = seg_avg_step_size
+
+                            seg_custom_overrides = {}
+                            if want_diffusion:
+                                seg_D = None
+                                seg_alpha = None
+                                cached = seg_diff_by_idx.get(node_idx + 1)
+                                if isinstance(cached, dict):
+                                    seg_D = cached.get("D")
+                                    seg_alpha = cached.get("alpha")
+                                if seg_D is None and seg_alpha is None:
+                                    if can_diffuse:
+                                        try:
+                                            seg_D, seg_alpha = self.navigator.compute_diffusion_for_data(
+                                                seg_frames, seg_spots
+                                            )
+                                        except ValueError:
+                                            seg_D, seg_alpha = (None, None)
+
+                                if D_COL:
+                                    seg_custom_overrides[D_COL] = (
+                                        "" if seg_D is None else f"{seg_D:.4f}"
+                                    )
+                                if A_COL:
+                                    seg_custom_overrides[A_COL] = (
+                                        "" if seg_alpha is None else f"{seg_alpha:.3f}"
+                                    )
+
+                            if has_coloc:
+                                seg_any = [
+                                    coloc_any_list[idx] if idx < len(coloc_any_list) else None
+                                    for idx in seg_indices
+                                ]
+                                pct_any = _percent_yes(seg_any)
+                                pct_by_ch = {}
+                                for ch in range(1, n_chan + 1):
+                                    flags = coloc_by_ch.get(ch, [None] * num_points)
+                                    seg_flags = [
+                                        flags[idx] if idx < len(flags) else None
+                                        for idx in seg_indices
+                                    ]
+                                    pct_by_ch[ch] = _percent_yes(seg_flags)
+
+                                for ch in range(1, n_chan + 1):
+                                    col_name = f"Ch. {ch} co. %"
+                                    if ch == ch_ref:
+                                        val = ""
+                                    elif n_chan == 2:
+                                        val = pct_any
+                                    else:
+                                        val = pct_by_ch.get(ch, "")
+                                    seg_custom_overrides[col_name] = val
+
+                            seg_row = {
+                                "Movie": self.navigator.movieNameLabel.text(),
+                                "Trajectory": traj.get("trajectory_number", "?"),
+                                "Segment": node_idx + 1,
+                                "Channel": channel,
+                                "Clicks": click_source,
+                                "Segment Start X": float(node_start_x),
+                                "Segment Start Y": float(node_start_y),
+                                "Segment Start Frame": int(start_frame) + 1,
+                                "Segment End X": float(node_end_x),
+                                "Segment End Y": float(node_end_y),
+                                "Segment End Frame": int(end_frame) + 1,
+                                "Kymo-Anchors": anchors_str,
+                                "ROI": roi_str,
+                                "Total Points": len(seg_frames),
+                                "Valid Points": seg_valid_points,
+                                "Percent Valid": _round4(seg_percent_valid),
+                                "Distance (μm)": seg_distance_um_txt,
+                                "Time (s)": seg_time_s_txt,
+                                "Background": fixed_background,
+                                "Average Intensity": "" if seg_avg_int is None else seg_avg_int,
+                                "Median Intensity": "" if seg_med_int is None else seg_med_int,
+                                "Net Speed (px/frame)": _round4(seg_overall_vel_px_fr_txt),
+                                "Net Speed (μm/s)": _round4(seg_overall_vel_um_s_txt),
+                                "Net Speed (μm/min)": _round4(seg_overall_vel_um_min_txt),
+                                "Avg. Speed (px/frame)": _round4(seg_avg_vel_px_fr_txt),
+                                "Avg. Speed (μm/s)": _round4(seg_avg_vel_um_s_txt),
+                                "Avg. Speed (μm/min)": _round4(seg_avg_vel_um_min_txt),
+                            }
+
+                            if steps_enabled:
+                                seg_row["Number of Steps"] = seg_num_steps
+                                seg_row["Average Step Size"] = seg_avg_step_size
+                                seg_row["Average Step Size w/Step to Background"] = seg_avg_step_size_bg
+
+                            for col in self.custom_columns:
+                                col_type = self._column_types.get(col, "binary")
+
+                                if col in diff_cols:
+                                    header = col
+                                elif col.startswith("Ch.") and col.endswith("co. %"):
+                                    header = col
+                                else:
+                                    header = f"{col} [{col_type}]"
+
+                                seg_row[header] = seg_custom_overrides.get(
+                                    col,
+                                    traj.get("custom_fields", {}).get(col, "")
+                                )
+
+                            per_node_rows.append(seg_row)
 
                     # Ensure we have the intensities list from above.
                     for i in range(len(frames_list)):
@@ -472,44 +850,47 @@ class TrajectoryCanvas(QWidget):
                             fixedstr = "Yes"
 
                         f = frames_list[i]
+                        node_idx = _anchor_index_for_frame(f, anchor_frames)
 
                         # ——— determine step number & raw step value ———
-                        step_number = 0
-                        step_value  = ""
-                        for sn, (start_f, end_f, median) in enumerate(step_meds):
+                        step_number = None
+                        step_value = None
+                        for sn, (start_f, end_f, median) in enumerate(step_meds_list):
                             if start_f <= f <= end_f:
                                 step_number = sn
                                 step_value  = median
                                 break
 
                         # background_val is the numeric background for this frame (or "" if none)
-                        if step_value != "" and background_val not in ("", None):
+                        if step_value is not None and background_val not in ("", None):
                             # ensure numeric subtraction
                             step_value_bg_adj = step_value - float(background_val)
                         else:
-                            step_value_bg_adj = ""
+                            step_value_bg_adj = None
 
                         base = {
                             "Trajectory": traj_name,
+                            "Segment": node_idx,
                             "Channel": channel,
+                            "Clicks": click_source,
                             "Frame": frames_list[i] + 1,
-                            "Original Coordinate X": coord_x,
-                            "Original Coordinate Y": coord_y,
-                            "Search Center X": search_x,
-                            "Search Center Y": search_y,
+                            "Original Coordinate X": _round4(coord_x),
+                            "Original Coordinate Y": _round4(coord_y),
+                            "Search Center X": _round4(search_x),
+                            "Search Center Y": _round4(search_y),
                             "Spot Center X": spot_x,
                             "Spot Center Y": spot_y,
-                            "Intensity": intensity_val,
-                            "Sigma": sigma_val,
-                            "Peak": peak_val,
+                            "Intensity": _round4(intensity_val),
+                            "Sigma": _round4(sigma_val),
+                            "Peak": _round4(peak_val),
                             "Background from trajectory": fixedstr,
                             "Background": background_val,
-                            "Speed (px/frame)": velocity,
-                            "Speed (μm/s)": vel_nm_per_ms,
-                            "Speed (μm/min)": vel_um_min,
+                            "Speed (px/frame)": _round4(velocity),
+                            "Speed (μm/s)": _round4(vel_nm_per_ms),
+                            "Speed (μm/min)": _round4(vel_um_min),
                         }
 
-                        if step_meds:
+                        if steps_available:
                             base["Step Number"]                             = step_number
                             base["Step Intensity Value"]                    = step_value
                             base["Step Intensity Value (background-adjusted)"] = step_value_bg_adj
@@ -532,6 +913,7 @@ class TrajectoryCanvas(QWidget):
 
             df_summary = pd.DataFrame(summary_rows)
             df_data = pd.DataFrame(data_rows)
+            df_per_node = pd.DataFrame(per_node_rows)
 
             #per-ROI
             pixel_size_um = (
@@ -811,12 +1193,19 @@ class TrajectoryCanvas(QWidget):
 
             # Write to Excel
             with pd.ExcelWriter(filename) as writer:
-                df_data.to_excel(writer, sheet_name="Data Points", index=False)
-                df_summary.to_excel(writer, sheet_name="Per-trajectory", index=False)
-                df_per_roi.to_excel(writer, sheet_name="Per-kymograph", index=False)
                 df_aggregate.to_excel(writer, sheet_name="Aggregate Analysis", index=False)
+                _autosize_worksheet(writer, "Aggregate Analysis", df_aggregate)
+                df_data.to_excel(writer, sheet_name="Data Points", index=False)
+                _autosize_worksheet(writer, "Data Points", df_data)
+                df_summary.to_excel(writer, sheet_name="Per-trajectory", index=False)
+                _autosize_worksheet(writer, "Per-trajectory", df_summary)
+                df_per_node.to_excel(writer, sheet_name="Per-segment", index=False)
+                _autosize_worksheet(writer, "Per-segment", df_per_node)
+                df_per_roi.to_excel(writer, sheet_name="Per-kymograph", index=False)
+                _autosize_worksheet(writer, "Per-kymograph", df_per_roi)
                 for ch, df_ch in per_roi_by_channel.items():
                     df_ch.to_excel(writer, sheet_name=f"Per-kymograph Ch. {ch}", index=False)
+                    _autosize_worksheet(writer, f"Per-kymograph Ch. {ch}", df_ch)
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save trajectories: {e}")
 
@@ -832,12 +1221,23 @@ class TrajectoryCanvas(QWidget):
             "Med. Intensity"
         }
 
+        d_col = getattr(self.navigator, "_DIFF_D_COL", None)
+        a_col = getattr(self.navigator, "_DIFF_A_COL", None)
+        diff_cols = {c for c in (d_col, a_col) if c}
+
         for col in range(self.table_widget.columnCount()):
             hdr = self._headers[col]
 
             # always keep ID, any in always_visible, or any binary/value column
             ctype = self._column_types.get(hdr)
-            if col == 0 or hdr in always_visible or ctype in ("binary", "value"):
+            if col == 0 or hdr in always_visible:
+                self.table_widget.setColumnHidden(col, False)
+                continue
+            if hdr in diff_cols:
+                if getattr(self.navigator, "show_diffusion", False):
+                    self.table_widget.setColumnHidden(col, False)
+                    continue
+            elif ctype in ("binary", "value"):
                 self.table_widget.setColumnHidden(col, False)
                 continue
 
@@ -969,6 +1369,21 @@ class TrajectoryCanvas(QWidget):
         step_indices = self.navigator.analysis_step_indices
         step_medians = self.navigator.analysis_step_medians
 
+        nodes = []
+        click_source = ""
+        if self.navigator.analysis_anchors and self.navigator.analysis_roi is not None:
+            click_source = "kymograph"
+            roi = self.navigator.analysis_roi
+            for frame_idx, xk, _yk in self.navigator.analysis_anchors:
+                mx, my = self.navigator.compute_roi_point(roi, xk)
+                nodes.append((int(frame_idx), float(mx), float(my)))
+        elif getattr(self.navigator, "analysis_points", None):
+            click_source = "movie"
+            for frame_idx, x, y in self.navigator.analysis_points:
+                if frame_idx is None or x is None or y is None:
+                    continue
+                nodes.append((int(frame_idx), float(x), float(y)))
+
         # Store the list of refined spot centers along the trajectory.
         spot_centers = []
         sigmas = []
@@ -1005,7 +1420,9 @@ class TrajectoryCanvas(QWidget):
             "velocities": velocities,
             "average_velocity": average_velocity,
             "step_indices": step_indices,
-            "step_medians": step_medians
+            "step_medians": step_medians,
+            "nodes": nodes,
+            "click_source": click_source
         } 
 
         traj_data["colocalization_any"]    = list(self.navigator.analysis_colocalized)
@@ -1038,6 +1455,15 @@ class TrajectoryCanvas(QWidget):
         else:
             traj_data["custom_fields"][D_COL] = ""
             traj_data["custom_fields"][A_COL] = ""
+
+        traj_data["segment_diffusion"] = []
+        if getattr(self.navigator, "show_diffusion", False):
+            try:
+                traj_data["segment_diffusion"] = self._compute_segment_diffusion(
+                    traj_data, self.navigator
+                )
+            except Exception:
+                traj_data["segment_diffusion"] = []
 
         new = [
             (f, cx, cy)
@@ -1183,6 +1609,9 @@ class TrajectoryCanvas(QWidget):
 
         anchors_map = {}
         roi_map     = {}
+        nodes_map   = {}
+        clicks_map  = {}
+        segment_diff_map = {}
 
         self.clear_trajectories(prompt=False)
         self._custom_load_map = {}
@@ -1236,25 +1665,51 @@ class TrajectoryCanvas(QWidget):
                     # Ignore parse errors and continue loading.
                     pass
 
-            if loaded_px is None:
-                msg = (
-                    "No pixel size was found in this file.\n\n"
-                    "Without a pixel size, distance and speed values may be incorrect.\n\n"
-                    "Press OK to continue without applying a scale, or Cancel to stop loading."
-                )
-                reply = QMessageBox.warning(
-                    self,
-                    "Missing pixel size",
-                    msg,
-                    QMessageBox.Ok | QMessageBox.Cancel,
-                    QMessageBox.Ok
-                )
-                if reply == QMessageBox.Cancel:
-                    return
-            else:
-                cur_px = self.navigator.pixel_size
-                cur_ft = self.navigator.frame_interval
+            cur_px = self.navigator.pixel_size
+            cur_ft = self.navigator.frame_interval
 
+            missing_px = (loaded_px is None)
+            missing_ft = (loaded_ft is None)
+            has_current_scale = (cur_px is not None or cur_ft is not None)
+
+            skip_scale_apply = False
+            if missing_px or missing_ft:
+                if has_current_scale:
+                    msg = (
+                        "No pixel size and/or frame time was found in this file.\n\n"
+                        f"Current pixel size: {cur_px if cur_px is not None else '—'} nm/px\n"
+                        f"Current frame time: {cur_ft if cur_ft is not None else '—'} ms\n\n"
+                        "Press OK to use the current scale, or Cancel to stop loading."
+                    )
+                    reply = QMessageBox.warning(
+                        self,
+                        "Missing scale",
+                        msg,
+                        QMessageBox.Ok | QMessageBox.Cancel,
+                        QMessageBox.Ok
+                    )
+                    if reply == QMessageBox.Cancel:
+                        return
+                    skip_scale_apply = True
+                else:
+                    if missing_px:
+                        msg = (
+                            "No pixel size was found in this file.\n\n"
+                            "Without a pixel size, distance and speed values may be incorrect.\n\n"
+                            "Press OK to continue without applying a scale, or Cancel to stop loading."
+                        )
+                        reply = QMessageBox.warning(
+                            self,
+                            "Missing pixel size",
+                            msg,
+                            QMessageBox.Ok | QMessageBox.Cancel,
+                            QMessageBox.Ok
+                        )
+                        if reply == QMessageBox.Cancel:
+                            return
+                        skip_scale_apply = True
+
+            if not skip_scale_apply:
                 def _different(a, b):
                     if a is None and b is None:
                         return False
@@ -1297,12 +1752,20 @@ class TrajectoryCanvas(QWidget):
                     "Valid_Points":   "Valid Points",
                 }
                 summary_df.rename(columns=rename_map, inplace=True)
+                if "Kymo-Anchors" not in summary_df.columns and "Anchors" in summary_df.columns:
+                    summary_df.rename(columns={"Anchors": "Kymo-Anchors"}, inplace=True)
+                elif "Anchors" in summary_df.columns:
+                    summary_df.drop(columns=["Anchors"], inplace=True)
+                if "Movie-Anchors" not in summary_df.columns and "Nodes" in summary_df.columns:
+                    summary_df.rename(columns={"Nodes": "Movie-Anchors"}, inplace=True)
+                elif "Nodes" in summary_df.columns:
+                    summary_df.drop(columns=["Nodes"], inplace=True)
 
                 for _, row in summary_df.iterrows():
                     traj_id = int(row["Trajectory"])
 
-                    # parse anchors
-                    a = row.get("Anchors", "")
+                    # parse kymo anchors
+                    a = row.get("Kymo-Anchors", "")
                     if isinstance(a, str) and a.strip():
                         try:
                             anchors_py = json.loads(a)
@@ -1327,9 +1790,63 @@ class TrajectoryCanvas(QWidget):
                         roi_clean = None
                     roi_map[traj_id] = roi_clean
 
+                    # parse Movie-Anchors (x, y, frame)
+                    n = row.get("Movie-Anchors", "")
+                    nodes_clean = []
+                    if isinstance(n, str) and n.strip():
+                        try:
+                            nodes_raw = json.loads(n)
+                        except json.JSONDecodeError:
+                            nodes_raw = []
+                        frames_raw = []
+                        for item in nodes_raw:
+                            if not isinstance(item, (list, tuple)) or len(item) != 3:
+                                continue
+                            x, y, f = item
+                            try:
+                                f_int = int(round(float(f)))
+                            except Exception:
+                                continue
+                            frames_raw.append(f_int)
+                            try:
+                                x_f = float(x)
+                                y_f = float(y)
+                            except Exception:
+                                continue
+                            nodes_clean.append((f_int, x_f, y_f))
+
+                        has_zero = any(f == 0 for f in frames_raw)
+                        if nodes_clean:
+                            nodes_clean = [
+                                (int(f - 1) if (f >= 1 and not has_zero) else int(f), x, y)
+                                for f, x, y in nodes_clean
+                            ]
+                    nodes_map[traj_id] = nodes_clean
+
+                    clicks = row.get("Clicks", "")
+                    clicks_map[traj_id] = str(clicks).strip() if pd.notna(clicks) else ""
+
+                # Backfill Movie-Anchors from kymo anchors when missing.
+                for traj_id, anchors_py in anchors_map.items():
+                    if nodes_map.get(traj_id):
+                        continue
+                    roi = roi_map.get(traj_id)
+                    if not anchors_py or roi is None:
+                        continue
+                    backfill = []
+                    for frame_idx, xk, _yk in anchors_py:
+                        try:
+                            mx, my = compute_roi_point(roi, xk)
+                        except Exception:
+                            continue
+                        backfill.append((int(frame_idx), float(mx), float(my)))
+                    if backfill:
+                        nodes_map[traj_id] = backfill
+
                 # — detect any extra columns —
                 known = {"Movie","Trajectory","Channel","Start Frame","End Frame",
-                        "Anchors","ROI","Total Points","Valid Points","Percent Valid",
+                        "Kymo-Anchors","ROI","Clicks","Movie-Anchors","Segments",
+                        "Total Points","Valid Points","Percent Valid",
                         "Search Center X Start","Search Center Y Start",
                         "Search Center X End","Search Center Y End",
                         "Distance (μm)","Time (s)","Background",
@@ -1345,6 +1862,13 @@ class TrajectoryCanvas(QWidget):
                     c for c in summary_df.columns
                     if c not in known and not coloc_rx.match(c)
                 ]
+
+                def _base_name(col_name):
+                    m = re.match(r"(.+)\s\[(?:binary|value)\]$", col_name)
+                    return m.group(1) if m else col_name
+
+                # drop any extras that are actually known columns with a suffix
+                full_extra = [c for c in full_extra if _base_name(c) not in known]
 
                 # build the load-map using the full names
                 custom_map = {}
@@ -1423,8 +1947,8 @@ class TrajectoryCanvas(QWidget):
                     if m:
                         name, typ = m.group(1), m.group(2)
                     else:
-                        # no suffix → assume binary, except diffusion columns which are values
-                        name, typ = full, ("value" if full in diff_cols else "binary")
+                        # no suffix → assume value unless explicitly tagged
+                        name, typ = full, "value"
                     parsed.append(name)
                     self._column_types[name] = typ
 
@@ -1455,6 +1979,47 @@ class TrajectoryCanvas(QWidget):
                 # print("load_trajectories", "custom_columns after adding coloc", self.custom_columns)
 
                 self.navigator._rebuild_color_by_actions()
+
+            if "Per-segment" in xls.sheet_names:
+                try:
+                    seg_df = pd.read_excel(xls, sheet_name="Per-segment")
+                except Exception:
+                    seg_df = None
+
+                if isinstance(seg_df, pd.DataFrame):
+                    d_col = getattr(self.navigator, "_DIFF_D_COL", "D (μm²/s)")
+                    a_col = getattr(self.navigator, "_DIFF_A_COL", "α")
+
+                    def _pick_col(candidates):
+                        for c in candidates:
+                            if c in seg_df.columns:
+                                return c
+                        return None
+
+                    d_col_use = _pick_col([d_col, "D", "Diffusion D", "Diffusion D (µm²/s)", "Diffusion D (μm²/s)"])
+                    a_col_use = _pick_col([a_col, "alpha", "Alpha", "α"])
+
+                    if "Trajectory" in seg_df.columns and "Segment" in seg_df.columns:
+                        for _, row in seg_df.iterrows():
+                            tid = _num_or_none(row.get("Trajectory"))
+                            seg = _num_or_none(row.get("Segment"))
+                            if tid is None or seg is None:
+                                continue
+                            try:
+                                tid = int(round(float(tid)))
+                                seg = int(round(float(seg)))
+                            except Exception:
+                                continue
+                            entry = {"segment": seg}
+                            if d_col_use:
+                                entry["D"] = _num_or_none(row.get(d_col_use))
+                            if a_col_use:
+                                entry["alpha"] = _num_or_none(row.get(a_col_use))
+                            if "Segment Start Frame" in seg_df.columns:
+                                entry["start_frame"] = _num_or_none(row.get("Segment Start Frame"))
+                            if "Segment End Frame" in seg_df.columns:
+                                entry["end_frame"] = _num_or_none(row.get("Segment End Frame"))
+                            segment_diff_map.setdefault(tid, []).append(entry)
 
             # finally read the Data Points sheet
             df = pd.read_excel(xls, sheet_name="Data Points")
@@ -1524,7 +2089,14 @@ class TrajectoryCanvas(QWidget):
         else:
             raise Exception("Unsupported file type.")
 
-        self.load_trajectories_from_df(df, anchors_map=anchors_map, roi_map=roi_map)
+        self.load_trajectories_from_df(
+            df,
+            anchors_map=anchors_map,
+            roi_map=roi_map,
+            nodes_map=nodes_map,
+            clicks_map=clicks_map,
+            segment_diffusion_map=segment_diff_map
+        )
 
         # except Exception as e:
         #     QMessageBox.critical(self, "Load Error", f"Failed to load trajectories: {str(e)}")
@@ -1575,7 +2147,7 @@ class TrajectoryCanvas(QWidget):
                         )
                         return
 
-    def load_trajectories_from_df(self, df, anchors_map=None, roi_map=None, forcerecalc=False):
+    def load_trajectories_from_df(self, df, anchors_map=None, roi_map=None, nodes_map=None, clicks_map=None, segment_diffusion_map=None, forcerecalc=False):
 
         # 1) Always require these two columns
         if "Trajectory" not in df.columns or "Frame" not in df.columns:
@@ -1671,6 +2243,12 @@ class TrajectoryCanvas(QWidget):
             anchors_map = {}
         if roi_map is None:
             roi_map = {}
+        if nodes_map is None:
+            nodes_map = {}
+        if clicks_map is None:
+            clicks_map = {}
+        if segment_diffusion_map is None:
+            segment_diffusion_map = {}
 
         fixed_background = None
 
@@ -1749,7 +2327,13 @@ class TrajectoryCanvas(QWidget):
 
             if "Step Number" in group.columns and "Step Intensity Value" in group.columns:
 
-                step_rows = group.dropna(subset=["Step Number", "Step Intensity Value"])
+                step_rows = group.copy()
+                step_rows["Step Number"] = pd.to_numeric(step_rows["Step Number"], errors="coerce")
+                step_rows["Step Intensity Value"] = pd.to_numeric(
+                    step_rows["Step Intensity Value"],
+                    errors="coerce"
+                )
+                step_rows = step_rows.dropna(subset=["Step Number", "Step Intensity Value"])
                 segs = []
                 for sn, segdf in step_rows.groupby("Step Number"):
                     sn = int(sn)
@@ -1990,7 +2574,10 @@ class TrajectoryCanvas(QWidget):
                 "average_velocity": average_velocity,
                 "step_indices": step_idxs,
                 "step_medians":  segs,
+                "nodes": nodes_map.get(traj_num, []),
+                "click_source": clicks_map.get(traj_num, ""),
             }
+            traj["segment_diffusion"] = segment_diffusion_map.get(int(traj_num), [])
 
             # --- load per-point colocalization flags if present ---
             n_pts = len(frames_used)
@@ -2318,6 +2905,55 @@ class TrajectoryCanvas(QWidget):
         thread.finished.connect(thread.deleteLater)
         thread.start()
 
+    def _compute_segment_diffusion(self, traj: dict, navigator) -> List[dict]:
+        nodes = traj.get("nodes") or []
+        anchors = traj.get("anchors") or []
+        roi = traj.get("roi", None)
+        if not nodes and anchors and roi is not None:
+            for frame, ax_x, _ax_y in anchors:
+                mx, my = navigator.compute_roi_point(roi, ax_x)
+                nodes.append((int(frame), float(mx), float(my)))
+
+        nodes_sorted = [
+            n for n in nodes
+            if isinstance(n, (list, tuple)) and len(n) >= 3
+        ]
+        nodes_sorted.sort(key=lambda n: n[0])
+        if len(nodes_sorted) < 2:
+            return []
+
+        if navigator.pixel_size is None or navigator.frame_interval is None:
+            return []
+
+        frames = traj.get("frames", []) or []
+        spots = traj.get("spot_centers", []) or []
+        out = []
+        for idx in range(len(nodes_sorted) - 1):
+            start_frame = int(nodes_sorted[idx][0])
+            end_frame = int(nodes_sorted[idx + 1][0])
+            seg_start = start_frame if idx == 0 else (start_frame + 1)
+            seg_indices = [
+                i for i, f in enumerate(frames)
+                if seg_start <= f <= end_frame
+            ]
+            seg_frames = [frames[i] for i in seg_indices]
+            seg_spots = [
+                spots[i] if i < len(spots) else None
+                for i in seg_indices
+            ]
+            try:
+                D, alpha = navigator.compute_diffusion_for_data(seg_frames, seg_spots)
+            except ValueError:
+                D, alpha = (None, None)
+            out.append({
+                "segment": idx + 1,
+                "start_frame": start_frame,
+                "end_frame": end_frame,
+                "D": D,
+                "alpha": alpha,
+            })
+        return out
+
     @staticmethod
     def _rebuild_one_trajectory(old: dict, navigator) -> dict:
         """
@@ -2326,6 +2962,7 @@ class TrajectoryCanvas(QWidget):
         """
         # 1) build pts
         anchors, roi = old["anchors"], old["roi"]
+        nodes = old.get("nodes", [])
         if len(anchors) > 1 and roi is not None:
             pts = []
             for i in range(len(anchors) - 1):
@@ -2336,6 +2973,8 @@ class TrajectoryCanvas(QWidget):
                 for j, f in enumerate(seg):
                     mx, my = navigator.compute_roi_point(roi, xs[j])
                     pts.append((f, mx, my))
+        elif len(nodes) > 1:
+            pts = [(f, x, y) for f, x, y in nodes]
         else:
             pts = [(f, x, y) for f, (x, y) in zip(old["frames"], old["original_coords"])]
 
@@ -2344,12 +2983,11 @@ class TrajectoryCanvas(QWidget):
             navigator.get_movie_frame, pts,
             crop_size=int(2 * navigator.searchWindowSpin.value())
         )
-        # showprogress=True is only needed when called from the GUI thread (single row). 
-        # The caller can pass showprogress=False if running in batch.
-        frames, _, centers, ints, fit, background = navigator._compute_analysis(
+        # showprogress=True here; batch recalc suppresses internal progress via _suppress_internal_progress.
+        frames, coords, centers, ints, fit, background = navigator._compute_analysis(
             pts,
             trajectory_background,
-            showprogress=False
+            showprogress=True
         )
 
         # 3) unpack fits → spots, sigmas, peaks; compute avg/med intensities
@@ -2372,11 +3010,21 @@ class TrajectoryCanvas(QWidget):
         avg_vpf   = float(np.mean(good_vels)) if good_vels else None
 
         # 5) assemble the new trajectory dict (colocalization & steps to follow)
+        traj_nodes = list(nodes)
+        if len(anchors) > 1 and roi is not None:
+            traj_nodes = []
+            for frame, ax_x, _ax_y in anchors:
+                mx, my = navigator.compute_roi_point(roi, ax_x)
+                traj_nodes.append((int(frame), float(mx), float(my)))
+
+        start = pts[0] if pts else old["start"]
+        end = pts[-1] if pts else old["end"]
+
         traj_data = {
             "trajectory_number": old["trajectory_number"],
             "channel":           old["channel"],
-            "start":             old["start"],
-            "end":               old["end"],
+            "start":             start,
+            "end":               end,
             "anchors":           anchors,
             "roi":               roi,
             "spot_centers":      spots,
@@ -2384,18 +3032,21 @@ class TrajectoryCanvas(QWidget):
             "peaks":             peaks,
             "fixed_background":  trajectory_background,
             "background":        background,
-            "frames":            old["frames"],
-            "original_coords":   old["original_coords"],
+            "frames":            frames,
+            "original_coords":   coords,
             "search_centers":    centers,
             "intensities":       ints,
             "average":           avg_int,
             "median":            med_int,
             "velocities":        vels,
-            "average_velocity":  avg_vpf
+            "average_velocity":  avg_vpf,
+            "nodes":             traj_nodes,
+            "click_source":      old.get("click_source", "")
         }
 
         # 6) copy over existing custom_fields (so we don’t lose any manual edits)
         traj_data["custom_fields"] = old.get("custom_fields", {}).copy()
+        traj_data["segment_diffusion"] = old.get("segment_diffusion", [])
 
         # 7) colocalization
         N = len(frames)
@@ -2475,6 +3126,12 @@ class TrajectoryCanvas(QWidget):
             a_col = getattr(navigator, "_DIFF_A_COL", "Diffusion α")
             cf[d_col] = "" if D is None else f"{D:.4f}"
             cf[a_col] = "" if alpha is None else f"{alpha:.3f}"
+            try:
+                traj_data["segment_diffusion"] = navigator.trajectoryCanvas._compute_segment_diffusion(
+                    traj_data, navigator
+                )
+            except Exception:
+                traj_data["segment_diffusion"] = []
         # If diffusion display is off, do NOT overwrite any existing saved values.
 
         return traj_data
@@ -2506,6 +3163,7 @@ class TrajectoryCanvas(QWidget):
 
             # — build the (frame,x,y) list as in worker _build_pts_for —
             anchors, roi = old["anchors"], old["roi"]
+            nodes = old.get("nodes", [])
             if len(anchors) > 1 and roi is not None:
                 pts = []
                 for i in range(len(anchors) - 1):
@@ -2516,6 +3174,8 @@ class TrajectoryCanvas(QWidget):
                     for j, f in enumerate(seg):
                         mx, my = compute_roi_point(roi, xs[j])
                         pts.append((f, mx, my))
+            elif len(nodes) > 1:
+                pts = [(f, x, y) for f, x, y in nodes]
             else:
                 pts = [
                     (f, x, y)
@@ -2529,7 +3189,7 @@ class TrajectoryCanvas(QWidget):
                     crop_size=int(2 * self.navigator.searchWindowSpin.value())
                 )
                 # — call compute_analysis on the GUI thread so its own dialog appears —
-                frames, _, centers, ints, fit, background = \
+                frames, coords, centers, ints, fit, background = \
                     self.navigator._compute_analysis(pts, trajectory_background, showprogress=True)
             except Exception as e:
                 print(f"Processing failed: {e}")
@@ -2557,11 +3217,21 @@ class TrajectoryCanvas(QWidget):
             good_vels = [v for v in vels if v is not None]
             avg_vpf   = float(np.mean(good_vels)) if good_vels else None
 
+            traj_nodes = list(nodes)
+            if len(anchors) > 1 and roi is not None:
+                traj_nodes = []
+                for frame, ax_x, _ax_y in anchors:
+                    mx, my = compute_roi_point(roi, ax_x)
+                    traj_nodes.append((int(frame), float(mx), float(my)))
+
+            start = pts[0] if pts else old["start"]
+            end = pts[-1] if pts else old["end"]
+
             traj_data = {
                 "trajectory_number": old["trajectory_number"],
                 "channel": old["channel"],
-                "start":    old["start"],
-                "end":      old["end"],
+                "start":    start,
+                "end":      end,
                 "anchors":  anchors,
                 "roi":      roi,
                 "spot_centers": spots,
@@ -2569,17 +3239,20 @@ class TrajectoryCanvas(QWidget):
                 "peaks":       peaks,
                 "fixed_background": trajectory_background,
                 "background": background,
-                "frames":      old["frames"],
-                "original_coords": old["original_coords"],
+                "frames":      frames,
+                "original_coords": coords,
                 "search_centers":  centers,
                 "intensities":     ints,
                 "average":         avg_int,
                 "median":          med_int,
                 "velocities":      vels,
-                "average_velocity":avg_vpf
+                "average_velocity":avg_vpf,
+                "nodes":            traj_nodes,
+                "click_source":     old.get("click_source", "")
             }
 
             traj_data["custom_fields"] = originals[row].get("custom_fields", {}).copy()
+            traj_data["segment_diffusion"] = originals[row].get("segment_diffusion", [])
 
             new_centers = [
                 (f, cx, cy)
@@ -2652,6 +3325,12 @@ class TrajectoryCanvas(QWidget):
             else:
                 traj_data["step_indices"] = None
                 traj_data["step_medians"] = None
+
+            if getattr(self.navigator, "show_diffusion", False):
+                if self.navigator.pixel_size is not None and self.navigator.frame_interval is not None:
+                    traj_data["segment_diffusion"] = self._compute_segment_diffusion(
+                        traj_data, self.navigator
+                    )
 
             # — swap it in and refresh UI —
             self.updateTableRow(row, traj_data)
@@ -2818,8 +3497,8 @@ class TrajectoryCanvas(QWidget):
         self.navigator._remove_past_centers(all_old)
 
         # 4) Create the dialog but do NOT show yet
-        total_frames = sum(len(t["frames"]) for t in backup)
-        progress_dialog = QProgressDialog("Recalculating all…", "Cancel", 0, total_frames, self)
+        total_trajectories = len(backup)
+        progress_dialog = QProgressDialog("Recalculating all…", "Cancel", 0, total_trajectories, self)
         progress_dialog.setCancelButton(None) #IT DOESNT QUIT OUT OF WHOLE PROGRESS, HAD TO REMOVE
         progress_dialog.setWindowModality(Qt.WindowModal)
         progress_dialog.setMinimumDuration(0)
@@ -2887,6 +3566,11 @@ class TrajectoryCanvas(QWidget):
         
         self.movieCanvas.draw()
         self.kymoCanvas.draw()
+        if self.navigator is not None:
+            try:
+                self.navigator._rebuild_movie_blit_background()
+            except Exception:
+                pass
 
     def delete_selected_trajectory(self):
         # 1) Get all selected rows
@@ -2915,16 +3599,17 @@ class TrajectoryCanvas(QWidget):
         if centers_to_remove and self.navigator is not None:
             self.navigator._remove_past_centers(centers_to_remove)
 
-        # 6) REMOVED Re-select a sensible row in the table
-        # row_count = self.table_widget.rowCount()
-        # if row_count > 0:
-        #     # pick the smallest index of those we deleted, clamped to [0, row_count-1]
-        #     new_row = min(selected_rows)  
-        #     new_row = max(0, min(new_row, row_count - 1))
-        #     self.table_widget.selectRow(new_row)
-
-        self.table_widget.clearSelection()
-        self.current_index = None
+        # 6) Re-select a sensible row in the table
+        row_count = self.table_widget.rowCount()
+        if row_count > 0:
+            # pick the smallest index of those we deleted, clamped to [0, row_count-1]
+            new_row = min(selected_rows)
+            new_row = max(0, min(new_row, row_count - 1))
+            self.table_widget.selectRow(new_row)
+            self.current_index = new_row
+        else:
+            self.table_widget.clearSelection()
+            self.current_index = None
 
         # 7) Recompute trajectory counter:
         #    if none left, reset to 1; otherwise max+1
@@ -2998,13 +3683,6 @@ class TrajectoryCanvas(QWidget):
             total_height = self.navigator.vertSplitter.height()
             self.navigator.vertSplitter.setSizes([int(0.7 * total_height), int(0.3 * total_height)])
 
-    def eventFilter(self, obj, event):
-        if obj is self.table_widget.viewport():
-            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.RightButton:
-                self.open_context_menu(event.pos())
-                return True
-        return super().eventFilter(obj, event)
-
     def open_context_menu(self, pos):
         # 1) Figure out which row was clicked on
         index_under = self.table_widget.indexAt(pos)
@@ -3023,6 +3701,7 @@ class TrajectoryCanvas(QWidget):
         menu  = QMenu(self.table_widget)
         menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint)
         menu.setAttribute(Qt.WA_TranslucentBackground)
+        menu.setAttribute(Qt.WA_NoMouseReplay)
 
         def _add_action(label, callback):
             act = menu.addAction(label)
@@ -3153,6 +3832,10 @@ class TrajectoryCanvas(QWidget):
             else:
                 self._unmark_custom(r, col_name)
 
+        if self.navigator.color_by_column == col_name:
+            self.navigator.refresh_color_by()
+            return
+
         self.kymoCanvas.draw_trajectories_on_kymo()
         self.kymoCanvas.draw()
         self.movieCanvas.draw_trajectories_on_movie()
@@ -3195,6 +3878,10 @@ class TrajectoryCanvas(QWidget):
             self.trajectories[r].setdefault("custom_fields", {})[col_name] = val
             self.writeToTable(r, col_name, val)
 
+        if self.navigator.color_by_column == col_name:
+            self.navigator.refresh_color_by()
+            return
+
         self.kymoCanvas.draw_trajectories_on_kymo()
         self.kymoCanvas.draw()
         self.movieCanvas.draw_trajectories_on_movie()
@@ -3213,14 +3900,15 @@ class TrajectoryCanvas(QWidget):
         # make it frameless + translucent
         menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint)
         menu.setAttribute(Qt.WA_TranslucentBackground)
+        menu.setAttribute(Qt.WA_NoMouseReplay)
 
         # always allow adding a new column
         # 1) Add binary column
-        bin_act = menu.addAction("Add binary column")
+        bin_act = menu.addAction("Add Binary column")
         bin_act.triggered.connect(self._add_binary_column_dialog)
 
         # 2) Add value column
-        val_act = menu.addAction("Add value column")
+        val_act = menu.addAction("Add Value column")
         val_act.triggered.connect(self._add_value_column_dialog)
 
         # if this is one of the custom columns, allow removal

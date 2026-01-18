@@ -154,7 +154,7 @@ class RecalcWorker(QObject):
         self._is_canceled = True
 
 class RecalcAllWorker(QObject):
-    progress = pyqtSignal(int)        # emits number of frames processed so far
+    progress = pyqtSignal(int)        # emits number of trajectories processed so far
     finished = pyqtSignal(dict)       # emits a dict mapping row → new trajectory
     canceled = pyqtSignal()
 
@@ -234,7 +234,7 @@ class RecalcAllWorker(QObject):
                 )
             except Exception:
                 # skip this trajectory but still bump the progress bar
-                processed += len(old["frames"])
+                processed += 1
                 self.progress.emit(processed)
                 continue
 
@@ -390,7 +390,7 @@ class RecalcAllWorker(QObject):
 
             # 10) Store in results and bump progress
             results[row_index] = new_traj
-            processed += len(old["frames"])
+            processed += 1
             self.progress.emit(processed)
 
         # 11) Finished without cancellation
@@ -401,4 +401,3 @@ class RecalcAllWorker(QObject):
         print("cancel() called, setting flag → True")
         # Called when the user clicks “Cancel” on the QProgressDialog:
         self._navigator._is_canceled = True
-

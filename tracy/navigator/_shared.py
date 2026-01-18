@@ -47,7 +47,7 @@ from ..canvas_tools import (
     ClickableLabel, RadiusDialog, BubbleTipFilter,
     CenteredBubbleFilter, AnimatedIconButton,
     StepSettingsDialog, KymoContrastControlsWidget,
-    DiffusionSettingsDialog
+    DiffusionSettingsDialog, ShortcutsDialog
 )
 from tracy import __version__
 from ..tools.gaussian_tools import perform_gaussian_fit, filterX, find_minima, find_maxima

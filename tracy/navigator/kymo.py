@@ -1,11 +1,187 @@
 from ._shared import *
 
 class NavigatorKymoMixin:
+    def _set_kymo_anchor_edit_mode(self, enabled):
+        if getattr(self, "kymo_anchor_edit_mode", False) == enabled:
+            return
+        self.kymo_anchor_edit_mode = enabled
+        self._kymo_anchor_drag = None
+        self._kymo_anchor_drag_dirty = False
+        if enabled:
+            try:
+                self.movieCanvas.remove_gaussian_circle()
+                self.movieCanvas.clear_manual_marker()
+            except Exception:
+                pass
+            try:
+                self.kymoCanvas.remove_circle()
+            except Exception:
+                pass
+        if enabled:
+            table = self.trajectoryCanvas.table_widget
+            if table.currentRow() < 0 and table.rowCount() > 0:
+                row = table.rowCount() - 1
+                table.blockSignals(True)
+                table.selectRow(row)
+                table.blockSignals(False)
+                self.trajectoryCanvas.on_trajectory_selected_by_index(row)
+        if getattr(self, "traj_overlay_button", None) and self.traj_overlay_button.isChecked():
+            self.kymoCanvas.draw_trajectories_on_kymo()
+            self.kymoCanvas.draw_idle()
+            try:
+                self.movieCanvas.draw_trajectories_on_movie()
+                self.movieCanvas.draw_idle()
+            except Exception:
+                pass
+
+    def _finish_kymo_anchor_edit(self, force_recalc=False):
+        if not getattr(self, "kymo_anchor_edit_mode", False):
+            return
+        was_dirty = getattr(self, "_kymo_anchor_drag_dirty", False)
+        self._set_kymo_anchor_edit_mode(False)
+        if force_recalc or was_dirty:
+            self.add_or_recalculate()
+        else:
+            try:
+                idx = getattr(self.intensityCanvas, "current_index", 0)
+                if getattr(self, "analysis_frames", None):
+                    self.jump_to_analysis_point(idx, animate="discrete", zoom=False)
+            except Exception:
+                pass
+
+    def _get_selected_kymo_traj_context(self):
+        if self.kymoCanvas.image is None:
+            return None
+        selected_idx = self.trajectoryCanvas.table_widget.currentRow()
+        if selected_idx < 0 or selected_idx >= len(self.trajectoryCanvas.trajectories):
+            return None
+        kymo_name = self.kymoCombo.currentText()
+        if not kymo_name:
+            return None
+        roi_key = (self.roiCombo.currentText()
+                   if self.roiCombo.count() > 0
+                   else kymo_name)
+        if roi_key not in self.rois:
+            return None
+        roi = self.rois[roi_key]
+        kymo_w = self.kymoCanvas.image.shape[1]
+        num_frames = (self.movie.shape[0] if self.movie is not None else 0)
+        num_frames_m1 = num_frames - 1
+        traj = self.trajectoryCanvas.trajectories[selected_idx]
+        if not self._traj_matches_current_kymo(traj, roi):
+            return None
+        return selected_idx, traj, roi, kymo_w, num_frames_m1
+
+    def _traj_matches_current_kymo(self, traj: dict, roi: dict) -> bool:
+        if not isinstance(traj, dict) or not isinstance(roi, dict):
+            return False
+        traj_roi = traj.get("roi")
+        if not isinstance(traj_roi, dict):
+            return False
+        return traj_roi == roi
+
+    def _start_kymo_anchor_drag(self, event):
+        if event.inaxes != self.kymoCanvas.ax:
+            return
+        ctx = self._get_selected_kymo_traj_context()
+        if ctx is None:
+            return
+        _, traj, roi, kymo_w, num_frames_m1 = ctx
+        anchors = traj.get("anchors", []) or []
+        nodes = traj.get("nodes", []) or []
+        candidates = []
+
+        if anchors:
+            for idx, (frame, xk, _yk) in enumerate(anchors):
+                try:
+                    yk = num_frames_m1 - int(frame)
+                except Exception:
+                    continue
+                candidates.append(("kymo", idx, xk, yk))
+        else:
+            for idx, (frame, x, y) in enumerate(nodes):
+                xk = self.compute_kymo_x_from_roi(roi, x, y, kymo_w)
+                if xk is None:
+                    continue
+                try:
+                    yk = num_frames_m1 - int(frame)
+                except Exception:
+                    continue
+                candidates.append(("movie", idx, xk, yk))
+
+        if not candidates or event.x is None or event.y is None:
+            return
+
+        ax = self.kymoCanvas.ax
+        hit = None
+        best_dist = float("inf")
+        for src, idx, xk, yk in candidates:
+            px, py = ax.transData.transform((xk, yk))
+            dist = np.hypot(px - event.x, py - event.y)
+            if dist < best_dist:
+                best_dist = dist
+                hit = (src, idx)
+
+        if hit is None or best_dist > 8:
+            return
+
+        self._kymo_anchor_drag = {
+            "source": hit[0],
+            "index": hit[1],
+        }
+        self._kymo_anchor_drag_dirty = False
+
+    def _update_kymo_anchor_drag(self, event):
+        if not self._kymo_anchor_drag:
+            return
+        if event.inaxes != self.kymoCanvas.ax or event.xdata is None or event.ydata is None:
+            return
+        ctx = self._get_selected_kymo_traj_context()
+        if ctx is None:
+            return
+        _, traj, roi, kymo_w, num_frames_m1 = ctx
+        frame_idx = num_frames_m1 - int(round(event.ydata))
+        frame_idx = max(0, min(frame_idx, num_frames_m1))
+        xk = float(event.xdata)
+
+        if self._kymo_anchor_drag["source"] == "kymo":
+            anchors = list(traj.get("anchors", []) or [])
+            idx = self._kymo_anchor_drag["index"]
+            if idx >= len(anchors):
+                return
+            anchors[idx] = (int(frame_idx), float(xk), float(event.ydata))
+            traj["anchors"] = anchors
+            if roi is not None:
+                nodes = []
+                for frame, ax_x, _ax_y in anchors:
+                    mx, my = self.compute_roi_point(roi, ax_x)
+                    nodes.append((int(frame), float(mx), float(my)))
+                traj["nodes"] = nodes
+        else:
+            nodes = list(traj.get("nodes", []) or [])
+            idx = self._kymo_anchor_drag["index"]
+            if idx >= len(nodes):
+                return
+            mx, my = self.compute_roi_point(roi, xk)
+            nodes[idx] = (int(frame_idx), float(mx), float(my))
+            traj["nodes"] = nodes
+
+        self._kymo_anchor_drag_dirty = True
+        self.kymoCanvas.draw_trajectories_on_kymo()
+        self.kymoCanvas.draw_idle()
+
+    def _end_kymo_anchor_drag(self, _event):
+        self._kymo_anchor_drag = None
+
     def on_kymo_click(self, event):
 
         if event.button == 3 and self._skip_next_right:
             # we just showed the menu for a label—don’t do live updates
             self._skip_next_right = False
+            return
+
+        if getattr(self, "kymo_anchor_edit_mode", False) and event.button == 1:
+            self._start_kymo_anchor_drag(event)
             return
 
         if event.button == 1 and event.inaxes is self.kymoCanvas.ax and self.traj_overlay_button.isChecked() and len(self.analysis_points) == 0:
@@ -123,17 +299,50 @@ class NavigatorKymoMixin:
         #     self.frameSlider.blockSignals(False)
         #     self.frameNumberLabel.setText(f"{frame_idx+1}")
 
+        force_add = False
+        if event.dblclick and self.analysis_anchors:
+            if len(self.analysis_anchors) >= 2:
+                self.analysis_anchors.pop()
+                if self.analysis_points:
+                    self.analysis_points.pop()
+                if getattr(self, "analysis_markers", None):
+                    last_marker = self.analysis_markers.pop()
+                    for obj in last_marker:
+                        try:
+                            obj.remove()
+                        except Exception:
+                            pass
+                if getattr(self, "permanent_analysis_lines", None):
+                    if self.permanent_analysis_lines:
+                        seg = self.permanent_analysis_lines.pop()
+                        try:
+                            seg.remove()
+                        except Exception:
+                            pass
+            force_add = True
+
+        should_add = True
+        if not force_add and self.analysis_anchors:
+            last_f, last_x, last_y = self.analysis_anchors[-1]
+            if (last_f == frame_idx
+                and math.isclose(last_x, event.xdata, abs_tol=1e-6)
+                and math.isclose(last_y, event.ydata, abs_tol=1e-6)):
+                should_add = False
+
         # — record the anchor in both kymo‐space & movie‐space —
-        self.analysis_anchors.append((frame_idx, event.xdata, event.ydata))
-        self.analysis_points.append((frame_idx, x_orig, y_orig))
+        if should_add:
+            self.analysis_anchors.append((frame_idx, event.xdata, event.ydata))
+            self.analysis_points.append((frame_idx, x_orig, y_orig))
+            self._last_kymo_anchor_time = time.perf_counter()
 
         # — draw a small circle there —
-        marker = self.kymoCanvas.temporary_circle(event.xdata, event.ydata,
-                                              size=8, color='#7da1ff')
-        self.analysis_markers.append(marker)
+        if should_add:
+            marker = self.kymoCanvas.temporary_circle(event.xdata, event.ydata,
+                                                  size=8, color='#7da1ff')
+            self.analysis_markers.append(marker)
 
         # — initialize the live temp line once —
-        if self.temp_analysis_line is None:
+        if should_add and self.temp_analysis_line is None:
             # last anchor in kymo‐coords
             _, x0, y0 = self.analysis_anchors[-1]
 
@@ -153,7 +362,7 @@ class NavigatorKymoMixin:
             self._last_kymo_motion = 0.0
 
         # — add a permanent dotted segment if we have ≥2 anchors —
-        if len(self.analysis_anchors) > 1:
+        if should_add and len(self.analysis_anchors) > 1:
             # get the last two anchors
             _, x_prev, y_prev = self.analysis_anchors[-2]
             _, x_curr, y_curr = self.analysis_anchors[-1]
@@ -202,6 +411,12 @@ class NavigatorKymoMixin:
 
 
     def on_kymo_release(self, event):
+        if getattr(self, "kymo_anchor_edit_mode", False):
+            if self._kymo_anchor_drag:
+                self._end_kymo_anchor_drag(event)
+            if not (QApplication.keyboardModifiers() & Qt.ShiftModifier):
+                self._finish_kymo_anchor_edit(force_recalc=False)
+            return
         H, W = self.kymoCanvas.image.shape[:2]
 
         x, y = event.xdata, event.ydata
@@ -482,6 +697,9 @@ class NavigatorKymoMixin:
         self.trajectoryCanvas.trajectories[row]\
             .setdefault("custom_fields", {})[col_name] = val
         self.trajectoryCanvas.writeToTable(row, col_name, val)
+        if self.color_by_column == col_name:
+            self.refresh_color_by()
+            return
         self._update_legends()
         self.kymoCanvas.draw_trajectories_on_kymo()
         self.kymoCanvas.draw()
@@ -539,6 +757,10 @@ class NavigatorKymoMixin:
     #     self.kymoCanvas.draw_idle()
 
     def on_kymo_motion(self, event):
+        if getattr(self, "kymo_anchor_edit_mode", False):
+            if self._kymo_anchor_drag:
+                self._update_kymo_anchor_drag(event)
+            return
         if self.live_update_mode:
             self.on_kymo_right_click(event)
         elif (hasattr(self, "analysis_anchors")
@@ -637,6 +859,17 @@ class NavigatorKymoMixin:
 
         traj = self.trajectoryCanvas.trajectories[row]
         cf   = traj.get("custom_fields", {})
+        refresh_needed = {"value": False}
+
+        def _mark_binary(r, c):
+            self.trajectoryCanvas._mark_custom(r, c)
+            if self.color_by_column == c:
+                refresh_needed["value"] = True
+
+        def _unmark_binary(r, c):
+            self.trajectoryCanvas._unmark_custom(r, c)
+            if self.color_by_column == c:
+                refresh_needed["value"] = True
 
         # --- build the menu ---
         menu = QMenu(self.kymoCanvas)
@@ -681,12 +914,10 @@ class NavigatorKymoMixin:
                 marked = (text.lower() == "yes")
                 if marked:
                     action_text = f"Unmark as {col}"
-                    callback    = lambda _chk=False, r=row, c=col: \
-                                self.trajectoryCanvas._unmark_custom(r, c)
+                    callback    = lambda _chk=False, r=row, c=col: _unmark_binary(r, c)
                 else:
                     action_text = f"Mark as {col}"
-                    callback    = lambda _chk=False, r=row, c=col: \
-                                self.trajectoryCanvas._mark_custom(r, c)
+                    callback    = lambda _chk=False, r=row, c=col: _mark_binary(r, c)
             else:  # value column
                 if text:
                     action_text = f"Edit {col} value"
@@ -700,6 +931,10 @@ class NavigatorKymoMixin:
         # --- show it, then reset state & redraw ---
         menu.exec_(global_pos)
         self._last_kymo_artist = None
+
+        if refresh_needed["value"]:
+            self.refresh_color_by()
+            return
 
         self._update_legends()
         self.kymoCanvas.draw_trajectories_on_kymo()

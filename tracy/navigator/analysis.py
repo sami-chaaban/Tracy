@@ -1,6 +1,37 @@
 from ._shared import *
+from .extra_calculations import ExtraCalculationSpec
 
 class NavigatorAnalysisMixin:
+    def _extra_calc_specs(self):
+        return [
+            ExtraCalculationSpec(
+                key="steps",
+                label="Calculate Steps",
+                action_attr="showStepsAction",
+                toggle_handler="on_show_steps_toggled",
+                has_popup=True,
+                checks_existing=True,
+                supports_segments=True,
+            ),
+            ExtraCalculationSpec(
+                key="diffusion",
+                label="Calculate Diffusion (D, α)",
+                action_attr="showDiffusionAction",
+                toggle_handler="on_show_diffusion_toggled",
+                has_popup=True,
+                checks_existing=True,
+                supports_segments=True,
+            ),
+            ExtraCalculationSpec(
+                key="colocalization",
+                label="Calculate Colocalization",
+                action_attr="colocalizationAction",
+                toggle_handler="on_colocalization_toggled",
+                has_popup=False,
+                checks_existing=True,
+                supports_segments=True,
+            ),
+        ]
     def _capture_movie_bg(self):
         """Called when axes‐transition animation completes."""
         mc     = self.movieCanvas
@@ -1322,23 +1353,8 @@ class NavigatorAnalysisMixin:
         self.W        = dlg.new_W
         self.min_step = dlg.new_min_step
 
-        # 3) if they chose “Set and Calculate”, recompute *all* trajectories
-        if dlg.calculate_all:
-            all_idxs = range(len(self.trajectoryCanvas.trajectories))
-            progress = QProgressDialog("Computing steps…", "Cancel", 0, len(self.trajectoryCanvas.trajectories), self)
-            progress.setWindowModality(Qt.WindowModal)
-            progress.setMinimumDuration(0)
-            progress.show()
-
-            for i, traj_idx in enumerate(all_idxs):
-                progress.setValue(i)
-                QApplication.processEvents()
-                if progress.wasCanceled():
-                    break
-                self._compute_steps_for_trajectory(traj_idx)
-
-            progress.setValue(len(self.trajectoryCanvas.trajectories))
-            progress.close()
+        # 3) check for missing steps and optionally compute them
+        self._maybe_compute_missing_steps()
 
         # 4) finally redraw (with or without steps)
         self._refresh_intensity_canvas()
@@ -1551,6 +1567,244 @@ class NavigatorAnalysisMixin:
 
         return D, alpha
 
+    def _confirm_missing_calculation(self, label: str, count: int) -> bool:
+        noun = "trajectory" if count == 1 else "trajectories"
+        verb = "is" if count == 1 else "are"
+        obj = "it" if count == 1 else "them"
+        msg = f"{count} {noun} {verb} missing {label} data, calculate {obj}?"
+        title = f"Compute {label.capitalize()}"
+        return QMessageBox.question(
+            self,
+            title,
+            msg,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        ) == QMessageBox.Yes
+
+    def _trajectory_has_segments(self, traj: dict) -> bool:
+        nodes = traj.get("nodes") or []
+        anchors = traj.get("anchors") or []
+        return len(nodes) >= 2 or len(anchors) >= 2
+
+    def _find_missing_steps(self) -> list:
+        missing = []
+        for idx, traj in enumerate(self.trajectoryCanvas.trajectories):
+            if traj.get("step_indices") is None or traj.get("step_medians") is None:
+                missing.append(idx)
+        return missing
+
+    def _compute_steps_for_indices(self, indices: list) -> None:
+        if not indices:
+            return
+        progress = QProgressDialog("Computing steps…", "Cancel", 0, len(indices), self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+
+        for i, traj_idx in enumerate(indices):
+            progress.setValue(i)
+            QApplication.processEvents()
+            if progress.wasCanceled():
+                break
+            self._compute_steps_for_trajectory(traj_idx)
+
+        progress.setValue(len(indices))
+        progress.close()
+
+    def _maybe_compute_missing_steps(self) -> None:
+        if not self.trajectoryCanvas.trajectories:
+            return
+        missing = self._find_missing_steps()
+        if not missing:
+            return
+        if not self._confirm_missing_calculation("steps", len(missing)):
+            return
+        self._compute_steps_for_indices(missing)
+
+    def _find_missing_diffusion(self) -> tuple:
+        d_col = self._DIFF_D_COL
+        a_col = self._DIFF_A_COL
+        missing_vals = []
+        missing_segments = []
+        for idx, traj in enumerate(self.trajectoryCanvas.trajectories):
+            cf = traj.get("custom_fields", {})
+            d_val = cf.get(d_col)
+            a_val = cf.get(a_col)
+            has_vals = (
+                d_val is not None
+                and a_val is not None
+                and not (isinstance(d_val, str) and not d_val.strip())
+                and not (isinstance(a_val, str) and not a_val.strip())
+                and not (isinstance(d_val, float) and math.isnan(d_val))
+                and not (isinstance(a_val, float) and math.isnan(a_val))
+            )
+            if not has_vals:
+                missing_vals.append(idx)
+            if self._trajectory_has_segments(traj) and not traj.get("segment_diffusion"):
+                missing_segments.append(idx)
+        return missing_vals, missing_segments
+
+    def _compute_diffusion_for_trajectory(self, traj_idx: int) -> bool:
+        traj = self.trajectoryCanvas.trajectories[traj_idx]
+        try:
+            D, alpha = self.compute_diffusion_for_data(
+                traj["frames"],
+                traj.get("spot_centers", [])
+            )
+        except ValueError as e:
+            QMessageBox.critical(self, "Diffusion Error", str(e))
+            return False
+
+        cf = traj.setdefault("custom_fields", {})
+        cf[self._DIFF_D_COL] = "" if D is None else f"{D:.4g}"
+        cf[self._DIFF_A_COL] = "" if alpha is None else f"{alpha:.3f}"
+        try:
+            traj["segment_diffusion"] = self.trajectoryCanvas._compute_segment_diffusion(
+                traj, self
+            )
+        except Exception:
+            traj["segment_diffusion"] = []
+        self.trajectoryCanvas.updateTableRow(traj_idx, traj)
+        return True
+
+    def _compute_segment_diffusion_for_trajectory(self, traj_idx: int) -> None:
+        traj = self.trajectoryCanvas.trajectories[traj_idx]
+        try:
+            traj["segment_diffusion"] = self.trajectoryCanvas._compute_segment_diffusion(
+                traj, self
+            )
+        except Exception:
+            traj["segment_diffusion"] = []
+        self.trajectoryCanvas.updateTableRow(traj_idx, traj)
+
+    def _compute_diffusion_for_indices(self, missing_vals: list, missing_segments: list) -> None:
+        indices = sorted(set(missing_vals) | set(missing_segments))
+        if not indices:
+            return
+
+        missing_vals_set = set(missing_vals)
+        progress = QProgressDialog("Computing diffusion…", "Cancel", 0, len(indices), self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+
+        for i, traj_idx in enumerate(indices):
+            progress.setValue(i)
+            QApplication.processEvents()
+            if progress.wasCanceled():
+                break
+            if traj_idx in missing_vals_set:
+                ok = self._compute_diffusion_for_trajectory(traj_idx)
+                if not ok:
+                    break
+            else:
+                self._compute_segment_diffusion_for_trajectory(traj_idx)
+
+        progress.setValue(len(indices))
+        progress.close()
+        self._rebuild_color_by_actions()
+
+    def _maybe_compute_missing_diffusion(self) -> None:
+        if not self.trajectoryCanvas.trajectories:
+            return
+        missing_vals, missing_segments = self._find_missing_diffusion()
+        if not missing_vals and not missing_segments:
+            return
+        count = len(set(missing_vals) | set(missing_segments))
+        if not self._confirm_missing_calculation("diffusion", count):
+            return
+        self._compute_diffusion_for_indices(missing_vals, missing_segments)
+
+    def _find_missing_colocalization(self) -> list:
+        if self.movie is None or self.movie.ndim != 4:
+            return []
+        if self._channel_axis is None:
+            return []
+
+        n_chan = self.movie.shape[self._channel_axis]
+        coloc_cols = [f"Ch. {ch} co. %" for ch in range(1, n_chan + 1)]
+        missing = []
+
+        for r, traj in enumerate(self.trajectoryCanvas.trajectories):
+            ch_ref = traj["channel"]
+            cf = traj.get("custom_fields", {})
+            for col in coloc_cols:
+                if col.endswith(f"{ch_ref} co. %"):
+                    continue
+                if not cf.get(col, "").strip():
+                    missing.append(r)
+                    break
+
+        return missing
+
+    def _compute_colocalization_for_indices(self, indices: list) -> None:
+        if not indices:
+            return
+
+        orig_channel = getattr(self, "analysis_channel", None)
+        progress = QProgressDialog("Computing colocalization…", "Cancel", 0, len(indices), self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+
+        for idx, r in enumerate(indices):
+            progress.setValue(idx)
+            QApplication.processEvents()
+            if progress.wasCanceled():
+                break
+
+            traj = self.trajectoryCanvas.trajectories[r]
+            ch_ref = traj["channel"]
+            n_chan = self.movie.shape[self._channel_axis]
+
+            self.analysis_frames = traj["frames"]
+            self.analysis_fit_params = list(zip(
+                traj["spot_centers"],
+                traj["sigmas"],
+                traj["peaks"]
+            ))
+            self.analysis_channel = ch_ref
+            self._compute_colocalization(showprogress=False)
+
+            any_flags = list(self.analysis_colocalized)
+            by_ch = {
+                tgt: list(flags)
+                for tgt, flags in self.analysis_colocalized_by_ch.items()
+            }
+
+            traj["colocalization_any"] = any_flags
+            traj["colocalization_by_ch"] = by_ch
+
+            cf = traj.setdefault("custom_fields", {})
+            valid_any = [s for s in any_flags if s is not None]
+            pct_any = (
+                f"{100*sum(1 for s in valid_any if s=='Yes')/len(valid_any):.1f}"
+                if valid_any else ""
+            )
+
+            for ch in range(1, n_chan + 1):
+                col_name = f"Ch. {ch} co. %"
+                if ch == ch_ref:
+                    cf[col_name] = ""
+                elif n_chan == 2:
+                    cf[col_name] = pct_any
+                else:
+                    flags = by_ch.get(ch, [])
+                    valid = [s for s in flags if s is not None]
+                    cf[col_name] = (
+                        f"{100*sum(1 for s in valid if s=='Yes')/len(valid):.1f}"
+                        if valid else ""
+                    )
+
+            for ch in range(1, n_chan + 1):
+                self.trajectoryCanvas._mark_custom(r, f"Ch. {ch} co. %", cf[f"Ch. {ch} co. %"])
+
+        progress.setValue(len(indices))
+        progress.close()
+
+        if orig_channel is not None:
+            self.analysis_channel = orig_channel
+
     def on_show_diffusion_toggled(self, checked: bool):
         self.show_diffusion = checked
 
@@ -1594,15 +1848,24 @@ class NavigatorAnalysisMixin:
             self.diffusion_max_lag = dlg.new_max_lag
             self.diffusion_min_pairs = dlg.new_min_pairs
 
-            if dlg.calculate_all:
-                self._compute_diffusion_for_all_trajectories()
+            self._maybe_compute_missing_diffusion()
         else:
             # Turning off diffusion should NOT erase existing values.
             # It only stops future diffusion (re)calculation.
             # Keep any previously computed D/alpha in custom_fields and keep them visible in the table.
             pass
 
+        if not checked:
+            has_seg_diff = any(
+                isinstance(t.get("segment_diffusion"), (list, tuple)) and t.get("segment_diffusion")
+                for t in tc.trajectories
+            )
+            if (not has_seg_diff and isinstance(self.color_by_column, str)
+                    and self.color_by_column.endswith(" (per segment)")):
+                self.set_color_by(None)
+
         tc.hide_empty_columns()
+        self._rebuild_color_by_actions()
 
     def _compute_diffusion_for_all_trajectories(self):
         tc = self.trajectoryCanvas
@@ -1635,7 +1898,12 @@ class NavigatorAnalysisMixin:
             cf = traj.setdefault("custom_fields", {})
             cf[D_COL] = "" if D is None else f"{D:.4g}"
             cf[A_COL] = "" if alpha is None else f"{alpha:.3f}"
+            try:
+                traj["segment_diffusion"] = tc._compute_segment_diffusion(traj, self)
+            except Exception:
+                traj["segment_diffusion"] = []
             tc.updateTableRow(i, traj)
 
         progress.setValue(len(tc.trajectories))
         progress.close()
+        self._rebuild_color_by_actions()

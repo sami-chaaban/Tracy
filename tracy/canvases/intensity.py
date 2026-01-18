@@ -130,14 +130,17 @@ class IntensityCanvas(FigureCanvas):
         if n == 0:
             return
 
+        def _normalize_colors_list(raw, count):
+            seq = list(raw) if raw is not None else []
+            if len(seq) < count:
+                seq = seq + ["magenta"] * (count - len(seq))
+            else:
+                seq = seq[:count]
+            return seq
+
         # --- Build a canonical colors list of exactly length n ---
         if colors and "c" in colors:
-            raw = list(colors["c"])
-            # truncate or pad with magenta so it's exactly n long
-            if len(raw) < n:
-                colors_list = raw + ["magenta"] * (n - len(raw))
-            else:
-                colors_list = raw[:n]
+            colors_list = _normalize_colors_list(colors["c"], n)
         elif colors and "color" in colors:
             colors_list = [colors["color"]] * n
         else:
@@ -172,8 +175,12 @@ class IntensityCanvas(FigureCanvas):
         if isinstance(colors, dict):
             # kwargs provided by _get_traj_colors
             scatter_args = dict(colors)              # clone it
+            if "c" in scatter_args:
+                scatter_args["c"] = _normalize_colors_list(scatter_args["c"], n)
             scatter_args.update(picker=True, s=20, edgecolors="black", linewidths=0.5)   # add these defaults
         else:
+            if isinstance(colors, (list, tuple, np.ndarray)):
+                colors = _normalize_colors_list(colors, n)
             # colors should be a list of hex strings (or None)
             scatter_args = {
                 "c": colors if colors else "magenta",
