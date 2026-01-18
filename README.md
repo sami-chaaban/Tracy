@@ -251,6 +251,27 @@ tracy &                    # run in the background
 
 ---
 
+#### Sheet: Aggregate Analysis
+
+A single row summarizing the whole movie.
+
+##### Columns
+
+* **Pixel size (nm/px)**: pixel size used for unit conversions (blank if unknown).
+* **Frame time (ms)**: frame interval used for unit conversions (blank if unknown).
+* **Total movie frames**
+* **Total time (s)**: total movie duration (blank if frame time unknown).
+* **Movie dimensions (px)**: `width, height`.
+* **Movie dimensions (μm)**: `width, height` converted using pixel size (blank if unknown).
+* **Total kymographs**: number of ROI geometries (see multi-channel caveat below).
+* **Summed kymograph distances (μm)**: sum of all ROI lengths (includes empty ROIs; blank if pixel size unknown).
+* **Empty kymographs**: ROIs with zero trajectories.
+* **Number of trajectories**
+* **Number of events (/min)**: total trajectories per total movie time in minutes (blank if frame time unknown).
+* **Number of events (/um/min)**: events per minute divided by total kymograph distance (blank if pixel size or frame time unknown).
+* **Average net speed (μm/s)**, **Average average speed (μm/s)**, **Average run length (μm)**, **Average run time (s)**,
+  **Average median intensity**, **Average average intensity**: means across all trajectories, regardless of ROI.
+
 #### Sheet: Data Points
 
 Each row is one frame from one trajectory.
@@ -389,27 +410,6 @@ Each row is one ROI geometry (kymograph).
 * **Average run time (s)**: mean **Time (s)** across trajectories in this ROI.
 * **Average median intensity**: mean **Median Intensity** across trajectories in this ROI.
 * **Average average intensity**: mean **Average Intensity** across trajectories in this ROI.
-
-#### Sheet: Aggregate Analysis
-
-A single row summarizing the whole movie.
-
-##### Columns
-
-* **Pixel size (nm/px)**: pixel size used for unit conversions (blank if unknown).
-* **Frame time (ms)**: frame interval used for unit conversions (blank if unknown).
-* **Total movie frames**
-* **Total time (s)**: total movie duration (blank if frame time unknown).
-* **Movie dimensions (px)**: `width, height`.
-* **Movie dimensions (μm)**: `width, height` converted using pixel size (blank if unknown).
-* **Total kymographs**: number of ROI geometries (see multi-channel caveat below).
-* **Summed kymograph distances (μm)**: sum of all ROI lengths (includes empty ROIs; blank if pixel size unknown).
-* **Empty kymographs**: ROIs with zero trajectories.
-* **Number of trajectories**
-* **Number of events (/min)**: total trajectories per total movie time in minutes (blank if frame time unknown).
-* **Number of events (/um/min)**: events per minute divided by total kymograph distance (blank if pixel size or frame time unknown).
-* **Average net speed (μm/s)**, **Average average speed (μm/s)**, **Average run length (μm)**, **Average run time (s)**,
-  **Average median intensity**, **Average average intensity**: means across all trajectories, regardless of ROI.
 
 ---
 
