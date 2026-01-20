@@ -177,9 +177,16 @@ class NavigatorInputMixin:
 
         # now update the buttons & columns as before
         self.traj_overlay_button.setVisible(has_rows)
+        if hasattr(self, "traj_overlay_container"):
+            self.traj_overlay_container.setVisible(has_rows)
         self.delete_button.setVisible(has_rows)
+        if hasattr(self, "delete_container"):
+            self.delete_container.setVisible(has_rows)
         self.clear_button.setVisible(has_rows)
+        if hasattr(self, "clear_container"):
+            self.clear_container.setVisible(has_rows)
         self.trajectoryCanvas.hide_empty_columns()
+        self._ensure_traj_overlay_mode_valid(redraw=False)
 
     # def eventFilter(self, obj, event):
     #     # intercept wheel events when our radius dialog is up
@@ -276,6 +283,9 @@ class NavigatorInputMixin:
         if image is None:
             #print("No movie loaded; cannot reset contrast.")
             return
+        kymo_name = self.kymoCombo.currentText()
+        if not kymo_name:
+            return
         p15, p99 = np.percentile(image, (15, 99))
         
         new_vmin, new_vmax = int(p15), int(p99 * 1.1)
@@ -291,6 +301,15 @@ class NavigatorInputMixin:
         self.kymocontrastControlsWidget.contrastRangeSlider.setRangeValues(new_vmin, new_vmax)
         self.kymocontrastControlsWidget.contrastRangeSlider.blockSignals(False)
         self.kymocontrastControlsWidget.contrastRangeSlider.update()
+
+        if not hasattr(self, "kymo_contrast_settings"):
+            self.kymo_contrast_settings = {}
+        self.kymo_contrast_settings[kymo_name] = {
+            'vmin': new_vmin,
+            'vmax': new_vmax,
+            'extended_min': new_extended_min,
+            'extended_max': new_extended_max
+        }
         
         # self.channel_contrast_settings[current_channel] = {
         #     'vmin': new_vmin,
@@ -307,6 +326,41 @@ class NavigatorInputMixin:
         
         self.kymoCanvas._im.set_clim(new_vmin, new_vmax)
         self.kymoCanvas.draw_idle()
+
+    def _apply_kymo_contrast_settings(self, kymo_name):
+        if not kymo_name:
+            return
+        image = self.kymoCanvas.image
+        if image is None:
+            return
+        if not hasattr(self, "kymo_contrast_settings"):
+            self.kymo_contrast_settings = {}
+
+        settings = self.kymo_contrast_settings.get(kymo_name)
+        if settings is None:
+            p15, p99 = np.percentile(image, (15, 99))
+            new_vmin, new_vmax = int(p15), int(p99 * 1.1)
+            delta = new_vmax - new_vmin
+            settings = {
+                'vmin': new_vmin,
+                'vmax': new_vmax,
+                'extended_min': new_vmin - int(0.7 * delta),
+                'extended_max': new_vmax + int(1.4 * delta)
+            }
+            self.kymo_contrast_settings[kymo_name] = settings
+
+        slider = self.kymocontrastControlsWidget.contrastRangeSlider
+        slider.blockSignals(True)
+        slider.setMinimum(settings['extended_min'])
+        slider.setMaximum(settings['extended_max'])
+        slider.setRangeValues(settings['vmin'], settings['vmax'])
+        slider.blockSignals(False)
+        slider.update()
+
+        self.kymoCanvas._vmin = settings['vmin']
+        self.kymoCanvas._vmax = settings['vmax']
+        if self.kymoCanvas._im is not None:
+            self.kymoCanvas._im.set_clim(settings['vmin'], settings['vmax'])
 
     def on_sum_toggled(self):
         try:

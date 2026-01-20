@@ -244,16 +244,26 @@ class KymoContrastControlsWidget(QWidget):
         # Update the movie canvas display immediately.
         self.kymocanvas.set_display_range(new_low, new_high)
 
-        # Make sure the contrast settings dictionary exists.
-        # if not hasattr(self.moviecanvas.navigator, "kymo_contrast_settings"):
-        #     self.kymo_contrast_settings = {}
+        nav = getattr(self.kymocanvas, "navigator", None)
+        if nav is None:
+            return
+        kymo_name = ""
+        try:
+            kymo_name = nav.kymoCombo.currentText()
+        except Exception:
+            kymo_name = ""
+        if not kymo_name:
+            return
 
-        # self.moviecanvas.navigator.channel_contrast_settings[xxxkymographxxx] = {
-        #     'vmin': new_low,
-        #     'vmax': new_high,
-        #     'extended_min': self.contrastRangeSlider.minimum(),
-        #     'extended_max': self.contrastRangeSlider.maximum()
-        # }
+        if not hasattr(nav, "kymo_contrast_settings"):
+            nav.kymo_contrast_settings = {}
+
+        nav.kymo_contrast_settings[kymo_name] = {
+            'vmin': new_low,
+            'vmax': new_high,
+            'extended_min': self.contrastRangeSlider.minimum(),
+            'extended_max': self.contrastRangeSlider.maximum()
+        }
 
 class ToggleSwitch(QAbstractButton):
     def __init__(self, parent=None):
@@ -267,8 +277,8 @@ class ToggleSwitch(QAbstractButton):
         
         # Define the area for the switch (the actual toggle region)
         self._switchWidth = 50
-        self._switchHeight = self._totalHeight - 8  # leave 4px margin top and bottom
-        self._switchMargin = 4
+        self._switchHeight = self._totalHeight - 10  # leave 5px margin top and bottom
+        self._switchMargin = 5
         
         # The handle offset (an integer value)
         self._handle_offset = 0
@@ -338,10 +348,11 @@ class ToggleSwitch(QAbstractButton):
 
         font = painter.font()
         font.setBold(True)
+        font.setPointSize(11)
         painter.setFont(font)
 
-        painter.drawText(leftTextRect, Qt.AlignRight | Qt.AlignVCenter, "Spot")
-        painter.drawText(rightTextRect, Qt.AlignLeft | Qt.AlignVCenter, "Line")
+        painter.drawText(leftTextRect, Qt.AlignRight | Qt.AlignVCenter, "SPOT")
+        painter.drawText(rightTextRect, Qt.AlignLeft | Qt.AlignVCenter, "KYMO")
     
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:

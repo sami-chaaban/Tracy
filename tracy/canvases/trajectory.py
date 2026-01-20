@@ -1,4 +1,5 @@
 from ._shared import *
+from .. import __version__
 
 class TrajectoryCanvas(QWidget):
     def __init__(self, parent=None, kymo_canvas=None, movie_canvas=None, intensity_canvas=None, navigator=None):
@@ -93,6 +94,14 @@ class TrajectoryCanvas(QWidget):
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
+        self.top_divider = QFrame()
+        self.top_divider.setObjectName("TrajectoryTopLine")
+        self.top_divider.setFixedHeight(1)
+        self.top_divider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.top_divider.setStyleSheet(
+            "QFrame#TrajectoryTopLine { background-color: #d0d0d0; }"
+        )
+        layout.addWidget(self.top_divider)
         layout.addWidget(self.table_widget)
         self.setLayout(layout)
 
@@ -1170,6 +1179,7 @@ class TrajectoryCanvas(QWidget):
 
             # one-row dataframe for the new sheet
             agg_row = {
+                "Tracy Version": __version__,
                 "Pixel size (nm/px)": px_nm if px_nm is not None else "",
                 "Frame time (ms)": ft_ms if ft_ms is not None else "",
                 "Total movie frames": n_frames,
@@ -1253,6 +1263,8 @@ class TrajectoryCanvas(QWidget):
     def on_trajectory_selected_by_table(self):
         selected_rows = self.table_widget.selectionModel().selectedRows()
         if not selected_rows:
+            if self.navigator is not None:
+                self.navigator._ensure_traj_overlay_mode_valid(redraw=True)
             return
         index = selected_rows[0].row()
         self.on_trajectory_selected_by_index(index, zoom=True)
@@ -1581,6 +1593,93 @@ class TrajectoryCanvas(QWidget):
         self.on_trajectory_selected_by_index(new_row, zoom=True)
         if new_row == 0:
             QTimer.singleShot(0, lambda: self.navigator.jump_to_analysis_point(0, animate="discrete", zoom=True))
+
+    def _parse_trackmate_csv(self, filename):
+        df_temp = pd.read_csv(filename, header=0, engine="python")
+
+        if "FRAME" not in df_temp.columns:
+            QMessageBox.critical(self, "Error", "CSV is missing the FRAME column.")
+            return None, None, None
+
+        # Helper: check if value is numeric.
+        def is_numeric(x):
+            try:
+                float(x)
+                return True
+            except (ValueError, TypeError):
+                return False
+
+        # Find first row index where the FRAME column is numeric.
+        data_start = None
+        for idx, val in df_temp["FRAME"].items():
+            if is_numeric(val):
+                data_start = idx
+                break
+        if data_start is None:
+            QMessageBox.critical(self, "Error", "No numeric data found in the 'FRAME' column.")
+            return None, None, None
+        # Keep only the rows from that index onward.
+        df_temp = df_temp.loc[data_start:].reset_index(drop=True)
+
+        # Verify expected columns.
+        required_csv_cols = {"TRACK_ID", "FRAME", "POSITION_X", "POSITION_Y"}
+        if not required_csv_cols.issubset(set(df_temp.columns)):
+            QMessageBox.critical(
+                self, "Error",
+                "CSV is missing one or more required columns: TRACK_ID, FRAME, POSITION_X, POSITION_Y"
+            )
+            return None, None, None
+
+        # Check if the pixel size hasn't been set yet.
+        if self.navigator.pixel_size is None:
+            self.navigator.set_scale()  # This will open the Set Scale dialog
+            # If pixel_size is still not set, bail out.
+            if self.navigator.pixel_size is None:
+                return None, None, None
+
+        # Pixel size must be set before conversion.
+        pixelsize = self.navigator.pixel_size
+        conversion_factor = float(pixelsize) / 1000.0
+
+        # Convert POSITION columns to numeric.
+        df_temp["POSITION_X"] = pd.to_numeric(df_temp["POSITION_X"], errors="coerce")
+        df_temp["POSITION_Y"] = pd.to_numeric(df_temp["POSITION_Y"], errors="coerce")
+        # (If necessary, drop an extra row of NaNs)
+        df_temp = df_temp.iloc[1:].reset_index(drop=True)
+
+        # Build new DataFrame with expected column names.
+        new_data = {
+            "Trajectory": df_temp["TRACK_ID"],
+            "Frame": pd.to_numeric(df_temp["FRAME"], errors="coerce").astype(int),
+            "Original Coordinate X": df_temp["POSITION_X"] / conversion_factor,
+            "Original Coordinate Y": df_temp["POSITION_Y"] / conversion_factor,
+        }
+        df = pd.DataFrame(new_data)
+        df["Trajectory"] = pd.to_numeric(df["Trajectory"], errors="coerce")
+        df["Frame"] = pd.to_numeric(df["Frame"], errors="coerce")
+        df = df.sort_values(by=["Trajectory", "Frame"]).reset_index(drop=True)
+
+        nodes_map = {}
+        clicks_map = {}
+        for traj_id, group in df.groupby("Trajectory"):
+            group = group.sort_values("Frame")
+            nodes = []
+            for frame, x, y in zip(
+                group["Frame"].tolist(),
+                group["Original Coordinate X"].tolist(),
+                group["Original Coordinate Y"].tolist()
+            ):
+                try:
+                    frame_idx = int(frame) - 1
+                    x_val = float(x)
+                    y_val = float(y)
+                except Exception:
+                    continue
+                nodes.append((frame_idx, x_val, y_val))
+            nodes_map[traj_id] = nodes
+            clicks_map[traj_id] = "trackmate"
+
+        return df, nodes_map, clicks_map
 
     def load_trajectories(self):
         if self.navigator.movie is None:
@@ -2026,66 +2125,9 @@ class TrajectoryCanvas(QWidget):
         
         # ----- CSV branch -----
         elif ext == ".csv":
-            # Read CSV assuming first row is the header.
-            df_temp = pd.read_csv(filename, header=0, engine="python")
-
-            # Helper: check if value is numeric.
-            def is_numeric(x):
-                try:
-                    float(x)
-                    return True
-                except (ValueError, TypeError):
-                    return False
-
-            # Find first row index where the FRAME column is numeric.
-            data_start = None
-            for idx, val in df_temp["FRAME"].items():
-                if is_numeric(val):
-                    data_start = idx
-                    break
-            if data_start is None:
-                QMessageBox.critical(self, "Error", "No numeric data found in the 'FRAME' column.")
+            df, nodes_map, clicks_map = self._parse_trackmate_csv(filename)
+            if df is None:
                 return
-            # Keep only the rows from that index onward.
-            df_temp = df_temp.loc[data_start:].reset_index(drop=True)
-
-            # Verify expected columns.
-            required_csv_cols = {"TRACK_ID", "FRAME", "POSITION_X", "POSITION_Y"}
-            if not required_csv_cols.issubset(set(df_temp.columns)):
-                QMessageBox.critical(
-                    self, "Error",
-                    "CSV is missing one or more required columns: TRACK_ID, FRAME, POSITION_X, POSITION_Y"
-                )
-                return
-
-            # Check if the pixel size hasn't been set yet.
-            if self.navigator.pixel_size is None:
-                self.navigator.set_scale()  # This will open the Set Scale dialog
-                # If pixel_size is still not set, bail out.
-                if self.navigator.pixel_size is None:
-                    return
-
-            # Pixel size must be set before conversion.
-            pixelsize = self.navigator.pixel_size
-            conversion_factor = float(pixelsize) / 1000.0
-
-            # Convert POSITION columns to numeric.
-            df_temp["POSITION_X"] = pd.to_numeric(df_temp["POSITION_X"], errors="coerce")
-            df_temp["POSITION_Y"] = pd.to_numeric(df_temp["POSITION_Y"], errors="coerce")
-            # (If necessary, drop an extra row of NaNs)
-            df_temp = df_temp.iloc[1:].reset_index(drop=True)
-
-            # Build new DataFrame with expected column names.
-            new_data = {
-                "Trajectory": df_temp["TRACK_ID"],
-                "Frame": pd.to_numeric(df_temp["FRAME"], errors="coerce").astype(int),
-                "Original Coordinate X": df_temp["POSITION_X"] / conversion_factor,
-                "Original Coordinate Y": df_temp["POSITION_Y"] / conversion_factor,
-            }
-            df = pd.DataFrame(new_data)
-            df["Trajectory"] = pd.to_numeric(df["Trajectory"], errors="coerce")
-            df["Frame"] = pd.to_numeric(df["Frame"], errors="coerce")
-            df = df.sort_values(by=["Trajectory", "Frame"]).reset_index(drop=True)
         else:
             raise Exception("Unsupported file type.")
 
@@ -2146,6 +2188,61 @@ class TrajectoryCanvas(QWidget):
                             f"Error: {e}."
                         )
                         return
+
+    def load_trackmate_spots(self):
+        if self.navigator.movie is None:
+            QMessageBox.warning(self, "",
+                "Please load a movie before loading TrackMate spots.")
+            return
+
+        self.navigator.cancel_left_click_sequence()
+
+        movie_base = self.navigator.movieNameLabel.text()
+        default_filename = os.path.splitext(movie_base)[0] + ".csv"
+        default_filename = os.path.join(self.navigator._last_dir, default_filename)
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load TrackMate spots",
+            default_filename,
+            "CSV Files (*.csv)"
+        )
+        if not filename:
+            return
+
+        ext = os.path.splitext(filename)[1].lower()
+        if ext != ".csv":
+            QMessageBox.critical(self, "Error", "TrackMate spots must be a .csv file.")
+            return
+
+        anchors_map = {}
+        roi_map     = {}
+        nodes_map   = {}
+        clicks_map  = {}
+        segment_diff_map = {}
+
+        self.clear_trajectories(prompt=False)
+        self._custom_load_map = {}
+
+        self.table_widget.setRowCount(0)
+        self._trajectory_counter = 0
+
+        self.show_steps = False
+        self.navigator.showStepsAction.setChecked(False)
+
+        df, nodes_map, clicks_map = self._parse_trackmate_csv(filename)
+        if df is None:
+            return
+
+        self.load_trajectories_from_df(
+            df,
+            anchors_map=anchors_map,
+            roi_map=roi_map,
+            nodes_map=nodes_map,
+            clicks_map=clicks_map,
+            segment_diffusion_map=segment_diff_map
+        )
+
+        self.navigator.update_table_visibility()
 
     def load_trajectories_from_df(self, df, anchors_map=None, roi_map=None, nodes_map=None, clicks_map=None, segment_diffusion_map=None, forcerecalc=False):
 
@@ -3556,13 +3653,14 @@ class TrajectoryCanvas(QWidget):
         self._recalc_thread.start()
 
     def toggle_trajectory_markers(self):
-        if self.navigator.traj_overlay_button.isChecked():
+        mode = self.navigator.get_traj_overlay_mode() if self.navigator is not None else "all"
+        if mode == "off":
+            self.kymoCanvas.clear_kymo_trajectory_markers()
+            self.movieCanvas.clear_movie_trajectory_markers()
+        else:
             self.kymoCanvas.draw_trajectories_on_kymo()
             if self.navigator is not None:
                 self.movieCanvas.draw_trajectories_on_movie()
-        else:
-            self.kymoCanvas.clear_kymo_trajectory_markers()
-            self.movieCanvas.clear_movie_trajectory_markers()
         
         self.movieCanvas.draw()
         self.kymoCanvas.draw()
@@ -3633,8 +3731,8 @@ class TrajectoryCanvas(QWidget):
         if prompt:
             reply = QMessageBox.question(
                 self,
-                "Clear Trajectories",
-                "Are you sure you want to clear all trajectories?",
+                "Delete Trajectories",
+                "Are you sure you want to delete all trajectories?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )

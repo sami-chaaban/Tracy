@@ -1077,7 +1077,8 @@ class MovieCanvas(ImageCanvas):
         self.clear_movie_trajectory_markers()
 
         # 2) If the overlay toggle is off, do nothing
-        if not self.navigator.traj_overlay_button.isChecked():
+        overlay_mode = self.navigator.get_traj_overlay_mode() if self.navigator is not None else "all"
+        if overlay_mode == "off":
             return
 
         # 3) Which table row is currently selected?
@@ -1089,8 +1090,16 @@ class MovieCanvas(ImageCanvas):
         except (ValueError, AttributeError):
             current_ch = None
 
-        # 5) Loop over all trajectories and draw them
-        for idx, traj in enumerate(self.navigator.trajectoryCanvas.trajectories):
+        # 5) Loop over trajectories and draw them
+        if overlay_mode == "selected":
+            if selected_idx < 0 or selected_idx >= len(self.navigator.trajectoryCanvas.trajectories):
+                return
+            indices = [selected_idx]
+        else:
+            indices = range(len(self.navigator.trajectoryCanvas.trajectories))
+
+        for idx in indices:
+            traj = self.navigator.trajectoryCanvas.trajectories[idx]
             # 5a) Skip if trajectory has a channel that doesn't match
             traj_ch = traj.get("channel", None)
             if traj_ch is not None and traj_ch != current_ch:

@@ -242,7 +242,7 @@ class NavigatorIOMixin:
 
             if self.clear_flag:
                 self.clear_rois()
-                self.clear_kymographs()
+                self.clear_kymographs(prompt=False)
                 self.trajectoryCanvas.clear_trajectories(prompt=False)
                 self.clear_flag = False
 
@@ -1236,6 +1236,8 @@ class NavigatorIOMixin:
         # — Display the kymograph
         img = np.flipud(self.kymographs[kymoName])
         self.kymoCanvas.display_image(img)
+        if hasattr(self, "kymocontrastControlsWidget"):
+            self._apply_kymo_contrast_settings(kymoName)
         self.kymoCanvas.draw_trajectories_on_kymo()
         self.kymoCanvas.draw_idle()
 
@@ -1268,6 +1270,8 @@ class NavigatorIOMixin:
 
         # 2) Delete the kymograph
         self.kymographs.pop(current, None)
+        if hasattr(self, "kymo_contrast_settings"):
+            self.kymo_contrast_settings.pop(current, None)
 
         # 3) Remove it from the combo
         old_index = self.kymoCombo.currentIndex()
@@ -1287,7 +1291,19 @@ class NavigatorIOMixin:
         self.update_kymo_visibility()
         self.update_roilist_visibility()
 
-    def clear_kymographs(self):
+    def clear_kymographs(self, prompt=True):
+        reply = QMessageBox.Yes
+        if prompt:
+            reply = QMessageBox.question(
+                self,
+                "Delete Kymographs",
+                "Are you sure you want to delete all kymographs?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+        if reply != QMessageBox.Yes and prompt:
+            return
+
         # 1) First, remove any ROIs associated with kymographs
         for mapping in list(self.kymo_roi_map.values()):
             # extract the ROI name whether mapping is a dict or a plain string
@@ -1308,6 +1324,8 @@ class NavigatorIOMixin:
         self.kymo_roi_map.clear()
         self._roi_zoom_states.clear()
         self._last_roi = None
+        if hasattr(self, "kymo_contrast_settings"):
+            self.kymo_contrast_settings.clear()
         self.kymoCombo.clear()
         self.kymoCanvas.ax.cla()
         self.kymoCanvas.ax.axis("off")
@@ -1695,6 +1713,16 @@ class NavigatorIOMixin:
         if not hasattr(self, "drift_reference") or self.drift_reference is None:
             QMessageBox.warning(self, "",
                                 "Please click a stationary spot that can be found in all frames first.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Drift Tracking Spot",
+            "Is the currently selected spot suitable for drift tracking?",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel
+        )
+        if reply != QMessageBox.Yes:
             return
 
         ref_spot = self.drift_reference  # (x, y)

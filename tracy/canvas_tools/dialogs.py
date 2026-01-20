@@ -635,7 +635,7 @@ class ShortcutsDialog(QDialog):
                 ("Space", "Toggle looping through the trajectory."),
                 ("T", "Cycle tracking mode."),
                 ("Backspace", "Delete selected trajectory."),
-                ("O", "Toggle trajectory overlay."),
+                ("O", "Cycle trajectory overlay (off -> all -> selected; selected shows one trajectory)."),
             ]),
             ("Kymograph / ROI", [
                 ("N", "Toggle line ROI mode."),

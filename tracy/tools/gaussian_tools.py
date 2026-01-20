@@ -105,18 +105,24 @@ def perform_gaussian_fit(frame_image,
             return (None,)*5
 
         # initial parameters and bounds
+        x0_guess = float(np.clip(cx - x1, 0, crop_size - 1))
+        y0_guess = float(np.clip(cy - y1, 0, crop_size - 1))
+        x0_min = max(0.0, x0_guess - 4.0)
+        x0_max = min(float(crop_size), x0_guess + 4.0)
+        y0_min = max(0.0, y0_guess - 4.0)
+        y0_max = min(float(crop_size), y0_guess + 4.0)
         # parameters now: if bg_fixed is None → [A, x0, y0, sx, sy, off]
         #                else           → [A, x0, y0, sx, sy]
         if bg_fixed is None:
-            p0 = [A0, crop_size/2, crop_size/2,
+            p0 = [A0, x0_guess, y0_guess,
                   crop_size/8, crop_size/8, bg_guess]
-            lb = [0, crop_size/2-4, crop_size/2-4, sigma_min, sigma_min, -np.inf]
-            ub = [np.inf, crop_size/2+4, crop_size/2+4, sigma_max, sigma_max, np.inf]
+            lb = [0, x0_min, y0_min, sigma_min, sigma_min, -np.inf]
+            ub = [np.inf, x0_max, y0_max, sigma_max, sigma_max, np.inf]
         else:
-            p0 = [A0, crop_size/2, crop_size/2,
+            p0 = [A0, x0_guess, y0_guess,
                   crop_size/8, crop_size/8]
-            lb = [0, crop_size/2-4, crop_size/2-4, sigma_min, sigma_min]
-            ub = [np.inf, crop_size/2+4, crop_size/2+4, sigma_max, sigma_max]
+            lb = [0, x0_min, y0_min, sigma_min, sigma_min]
+            ub = [np.inf, x0_max, y0_max, sigma_max, sigma_max]
 
         # choose which model function / fitting tuple to call
         if bg_fixed is None:

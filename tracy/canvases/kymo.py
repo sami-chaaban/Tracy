@@ -364,7 +364,8 @@ class KymoCanvas(ImageCanvas):
         # 1) clear any existing overlays
         self.clear_kymo_trajectory_markers()
 
-        if not self.navigator.traj_overlay_button.isChecked():
+        overlay_mode = self.navigator.get_traj_overlay_mode() if self.navigator is not None else "all"
+        if overlay_mode == "off":
             return
 
         # 2) fetch ROI & image info
@@ -393,7 +394,14 @@ class KymoCanvas(ImageCanvas):
         markers = []
         self.kymo_trajectory_markers = markers
 
+        show_anchors = True
+        anchor_btn = getattr(self.navigator, "kymo_anchor_overlay_button", None)
+        if anchor_btn is not None and not anchor_btn.isChecked():
+            show_anchors = False
+
         if getattr(self.navigator, "kymo_anchor_edit_mode", False):
+            if not show_anchors:
+                return
             if selected_idx < 0 or selected_idx >= len(self.navigator.trajectoryCanvas.trajectories):
                 return
             traj = self.navigator.trajectoryCanvas.trajectories[selected_idx]
@@ -420,7 +428,7 @@ class KymoCanvas(ImageCanvas):
             if not xs_disp or not ys_disp:
                 return
 
-            if showsearchline:
+            if showsearchline and show_anchors:
                 dotted, = ax.plot(
                     xs_disp, ys_disp,
                     color="#7da1ff", linestyle="--", linewidth=2,
@@ -441,7 +449,15 @@ class KymoCanvas(ImageCanvas):
             return
 
         # 5) loop once
-        for idx, traj in enumerate(self.navigator.trajectoryCanvas.trajectories):
+        if overlay_mode == "selected":
+            if selected_idx < 0 or selected_idx >= len(self.navigator.trajectoryCanvas.trajectories):
+                return
+            indices = [selected_idx]
+        else:
+            indices = range(len(self.navigator.trajectoryCanvas.trajectories))
+
+        for idx in indices:
+            traj = self.navigator.trajectoryCanvas.trajectories[idx]
             ch = traj.get("channel")
             if ch is not None and ch != current_kymo_ch:
                 continue
@@ -479,7 +495,7 @@ class KymoCanvas(ImageCanvas):
                 linesize = 0.5
 
 
-            if showsearchline:
+            if showsearchline and show_anchors:
                 anchors = traj.get("anchors", []) or []
                 if anchors:
                     xs_disp = [xk for _f, xk, _yk in anchors]
@@ -601,7 +617,7 @@ class KymoCanvas(ImageCanvas):
             markers.append(scatter)
             self.scatter_objs_traj.append(scatter)
 
-            if is_hl:
+            if is_hl and show_anchors:
                 anchors = traj.get("anchors", []) or []
                 ax_xs, ax_ys = [], []
                 if anchors:

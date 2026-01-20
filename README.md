@@ -74,6 +74,7 @@ tracy &                    # run in the background
    If the wrong axis is treated as channels (or the channel list looks off), use **Movie » Change Channel Axis** to select the correct axis (only enabled for 4D movies).
 6. Toggle the maximum projection with the button below the movie (shortcut: `m`).
 7. Adjust the contrast using the slider.
+8. The kymograph view has its own contrast slider and reset button below it; contrast is remembered per kymograph.
 8. **View » Invert** toggles the display colormap (default on) so bright spots appear dark on a light background.
 
 ### 3. Browsing Spots <a name="browsing-spots"></a>
@@ -92,6 +93,7 @@ tracy &                    # run in the background
 ### 4. Generating Kymographs <a name="generating-kymographs"></a>
 
 1. Switch to **Line** mode (slider under movie or `n`).
+   * The toggle shows **SPOT** / **KYMO**.
 2. (Optional) Toggle max‑projection (`m`) to guide line placement or load a [reference image](#reference-image).
 3. Draw a segmented line by clicking anchors (press `Esc` to cancel).
 4. Double‑click to finish and generate the kymograph.
@@ -111,7 +113,9 @@ tracy &                    # run in the background
 5. If you want to recalculate the trajectory with new tracking options, press `Enter` (or **Trajectory » Recalculate**).
 6. (Optional) Fill gaps via **Kymograph » Connect Spot Gaps**.
 
-**Anchor editing (Shift):** with trajectory overlay on, hold **Shift** to enter anchor‑edit mode. Only the selected trajectory’s dotted line and blue anchor circles are shown. Drag any circle to move that anchor; the dotted line updates live. Release **Shift** to exit edit mode and recalculate if anchors changed. Shift also cancels any active left‑click sequence.
+**Anchor editing (Shift):** with trajectory overlay on, hold **Shift** to enter anchor‑edit mode. Only the selected trajectory’s dotted line and blue anchor circles are shown. Drag any circle to move that anchor; the dotted line updates live. Release **Shift** to exit edit mode and recalculate if anchors changed. Shift also cancels any active left‑click sequence. Use the **ANCHORS** toggle below the kymograph to hide/show anchor overlays.
+
+**Trajectory overlay (O):** cycles off -> all -> selected. Selected shows just one trajectory.
 
 > The blue circles are anchor points: direct kymograph clicks, or movie‑click anchors projected onto the current kymograph. Anchors are only shown when the selected trajectory belongs to the currently displayed kymograph/ROI.
 
@@ -142,8 +146,8 @@ tracy &                    # run in the background
 * **Search window:** each frame is fit in a square crop of size `2 * Search Radius` centered on the per‑frame search center (interpolated between anchors in Independent/Smooth; updated from the previous fit in Tracked).
 * **Model:** 2D Gaussian + constant offset (background). If a fixed trajectory background exists, the offset is held fixed; otherwise it is fitted per frame.
 * **Fixed trajectory background:** computed once per trajectory by sampling the outer 10% border pixels of each frame’s crop (only from non‑truncated edges) and taking the median across all frames. This is the value reported as “Background from trajectory”.
-* **Fit constraints:** center is constrained to within ±4 px of the crop center; sigma is bounded between a minimum based on a 200 nm PSF FWHM converted to σ via `FWHM = 2.355·σ` (then scaled by pixel size, or 1 px if unset) and a maximum of `crop_size / 4`.
-* **Quality checks:** fits are rejected if the crop has low contrast (max‑median < 4×std), if the initial amplitude is too small, or if the fitted center lands within 4 px of the crop edge.
+* **Fit constraints:** center is constrained to within ±4 px of the crop center; sigma is bounded between a conservative minimum based on a 200 nm PSF FWHM converted via `FWHM = 2.355·σ`, multiplied by 2 (scaled by pixel size, or 1 px if unset), and a maximum of `crop_size / 4`. The lower bound suppresses spuriously sharp fits; the upper bound prevents overly broad, background‑dominated fits without requiring NA/wavelength inputs.
+* **Quality checks:** fits are rejected if the crop has low contrast (max‑median < 4×std), if the initial amplitude is too small, or if the fitted center lands within 4 px of the crop edge. These filters match common single‑molecule practice for suppressing low‑SNR or edge‑biased localizations.
 * **Two‑pass fitting:** the fit is run twice (recrop around the fitted center) to improve accuracy.
 * **Outputs:** Spot Center = fitted center; Sigma = mean of σx and σy; Peak = fitted amplitude A; Intensity = integrated Gaussian `2π * A * σx * σy` (clamped to ≥0); Background = fitted offset (or fixed background, clamped to ≥0).
 * **Smooth mode:** after independent fits, centers are Savitzky‑Golay smoothed; frames deviating by more than `min(3 px, 2×mean σ)` are re‑fit at the smoothed center with a crop radius of ~`4×mean σ`.
@@ -200,6 +204,8 @@ tracy &                    # run in the background
 
   * **MSD(Δt) = 4D · (Δt)^α** (2D)
 
+* Rationale: this is the standard 2D MSD power-law used in single-particle tracking, with **α = 1** for Brownian motion and **α ≠ 1** capturing anomalous diffusion. Tracy uses the imaging plane (x–y), so the 2D prefactor (4) is appropriate for planar motion; if your trajectories are strictly along a filament, a 1D model would use a prefactor of 2, which would scale the reported **D** by about 2. The fit is intentionally simple (no explicit offset term), so localization error or mixed directed/diffusive motion can bias **D** and **α**; in those cases, use shorter lags or interpret values as effective parameters.
+
 * Enable via **Trajectory » Calculate Diffusion**.
 * Two analysis parameters control the MSD fit window:
 
@@ -240,11 +246,11 @@ tracy &                    # run in the background
 * **Save » Trajectories** exports an Excel workbook with five sheets:
 * Shortcut: `Ctrl+S` (or `Cmd+S` on macOS).
 
-  1. **Data Points**: per-frame spot measurements along each trajectory.
-  2. **Per-trajectory**: one-row summary statistics for each trajectory.
-  3. **Per-segment**: one-row summary for each trajectory segment between consecutive anchors.
-  4. **Per-kymograph**: aggregates grouped by kymograph/ROI (geometry).
-  5. **Aggregate Analysis**: a single-row summary across the whole movie.
+  1. **Aggregate Analysis**: a single-row summary across the whole movie.
+  2. **Data Points**: per-frame spot measurements along each trajectory.
+  3. **Per-trajectory**: one-row summary statistics for each trajectory.
+  4. **Per-segment**: one-row summary for each trajectory segment between consecutive anchors.
+  5. **Per-kymograph**: aggregates grouped by kymograph/ROI (geometry).
 
 * In multi‑channel movies, additional **Per-kymograph Ch. X** sheets are also exported (one per channel).
 * For multi‑channel movies, **Per-kymograph** is an aggregate across channels; in most cases the per‑channel **Per-kymograph Ch. X** sheets are more informative.
@@ -427,7 +433,8 @@ Each row is one ROI geometry (kymograph).
 
 ### Import TrackMate Data <a name="import-trackmate-data"></a>
 
-* Load `.csv` from TrackMate (spot file) via **Load Trajectories**; uses `TRACK_ID`, `FRAME`, `POSITION_X`, `POSITION_Y` to perform a search.
+* Load `.csv` from TrackMate (spot file) via **Load » TrackMate spots**; uses `TRACK_ID`, `FRAME`, `POSITION_X`, `POSITION_Y`.
+* TrackMate points are treated like movie anchors and recorded with click source `trackmate`.
 
 ---
 

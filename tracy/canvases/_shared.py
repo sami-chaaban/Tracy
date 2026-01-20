@@ -5,7 +5,8 @@ from PyQt5.QtCore import Qt, QTimer, QThread, QEvent
 from PyQt5.QtWidgets import (QVBoxLayout, QApplication, QDialog,
                              QWidget, QFileDialog, QMessageBox, QTableWidget,
                              QTableWidgetItem, QMessageBox, QProgressDialog,
-                             QHeaderView, QMenu, QInputDialog, QLineEdit, QLabel)
+                             QHeaderView, QMenu, QInputDialog, QLineEdit, QLabel,
+                             QFrame, QSizePolicy)
 from PyQt5.QtGui import QPainter,QMouseEvent
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure

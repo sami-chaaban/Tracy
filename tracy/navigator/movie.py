@@ -381,74 +381,76 @@ class NavigatorMovieMixin:
         self.movieCanvas.draw_idle()
 
     def on_movie_click(self, event):
-        if (
-            event.button == 3
-            and event.inaxes == self.movieCanvas.ax
-            and self.traj_overlay_button.isChecked()
-        ):
-            for artist in getattr(self.movieCanvas, "movie_trajectory_markers", []):
-                hit, _info = artist.contains(event)
-                if not hit:
-                    continue
-                traj_idx = getattr(artist, "traj_idx", None)
-                if traj_idx is None:
-                    continue
-                if not hasattr(artist, "get_text"):
-                    continue
-                gui_evt = getattr(event, "guiEvent", None)
-                if isinstance(gui_evt, QMouseEvent):
-                    global_pos = gui_evt.globalPos()
-                else:
-                    global_pos = QCursor.pos()
-                self._show_movie_context_menu(traj_idx, global_pos)
-                return
+        roi_mode = self.movieCanvas.roiAddMode
+        if not roi_mode:
+            if (
+                event.button == 3
+                and event.inaxes == self.movieCanvas.ax
+                and self.traj_overlay_button.isChecked()
+            ):
+                for artist in getattr(self.movieCanvas, "movie_trajectory_markers", []):
+                    hit, _info = artist.contains(event)
+                    if not hit:
+                        continue
+                    traj_idx = getattr(artist, "traj_idx", None)
+                    if traj_idx is None:
+                        continue
+                    if not hasattr(artist, "get_text"):
+                        continue
+                    gui_evt = getattr(event, "guiEvent", None)
+                    if isinstance(gui_evt, QMouseEvent):
+                        global_pos = gui_evt.globalPos()
+                    else:
+                        global_pos = QCursor.pos()
+                    self._show_movie_context_menu(traj_idx, global_pos)
+                    return
 
-        if (
-            event.button == 1
-            and event.inaxes == self.movieCanvas.ax
-            and self.traj_overlay_button.isChecked()
-            and len(self.analysis_points) <= 1
-        ):
-            # Loop through all trajectory‐artists (annotations and scatter) that we stored
-            for artist in getattr(self.movieCanvas, "movie_trajectory_markers", []):
-                hit, info = artist.contains(event)
-                if not hit:
-                    continue
+            if (
+                event.button == 1
+                and event.inaxes == self.movieCanvas.ax
+                and self.traj_overlay_button.isChecked()
+                and len(self.analysis_points) <= 1
+            ):
+                # Loop through all trajectory‐artists (annotations and scatter) that we stored
+                for artist in getattr(self.movieCanvas, "movie_trajectory_markers", []):
+                    hit, info = artist.contains(event)
+                    if not hit:
+                        continue
 
-                # We clicked one of our annotations or scatter points.
-                # First, stop any looping.
-                if self.looping:
-                    self.stoploop()
+                    # We clicked one of our annotations or scatter points.
+                    # First, stop any looping.
+                    if self.looping:
+                        self.stoploop()
 
-                self.cancel_left_click_sequence()
+                    self.cancel_left_click_sequence()
 
-                # Grab the trajectory index from the artist
-                traj_idx = getattr(artist, "traj_idx", None)
-                if traj_idx is None:
-                    continue
+                    # Grab the trajectory index from the artist
+                    traj_idx = getattr(artist, "traj_idx", None)
+                    if traj_idx is None:
+                        continue
 
-                # 1) If they clicked a new trajectory (different row), update table selection
-                current_row = self.trajectoryCanvas.table_widget.currentRow()
-                if traj_idx != current_row:
-                    tbl = self.trajectoryCanvas.table_widget
-                    tbl.blockSignals(True)
-                    tbl.selectRow(traj_idx)
-                    tbl.blockSignals(False)
-                    # trigger whatever happens when a trajectory is selected:
-                    self.trajectoryCanvas.on_trajectory_selected_by_index(traj_idx)
+                    # 1) If they clicked a new trajectory (different row), update table selection
+                    current_row = self.trajectoryCanvas.table_widget.currentRow()
+                    if traj_idx != current_row:
+                        tbl = self.trajectoryCanvas.table_widget
+                        tbl.blockSignals(True)
+                        tbl.selectRow(traj_idx)
+                        tbl.blockSignals(False)
+                        # trigger whatever happens when a trajectory is selected:
+                        self.trajectoryCanvas.on_trajectory_selected_by_index(traj_idx)
 
-                # 2) If they clicked on a scatter‐dot (info["ind"] exists), jump to that point:
-                #    info["ind"][0] is the index into traj["spot_centers"].
-                point_idx = info.get("ind", [None])[0]
-                if point_idx is not None:
-                    self.jump_to_analysis_point(point_idx)
-                    if self.sumBtn.isChecked():
-                        self.sumBtn.setChecked(False)
-                    self.intensityCanvas.current_index = point_idx
-                    self.intensityCanvas.highlight_current_point()
+                    # 2) If they clicked on a scatter‐dot (info["ind"] exists), jump to that point:
+                    #    info["ind"][0] is the index into traj["spot_centers"].
+                    point_idx = info.get("ind", [None])[0]
+                    if point_idx is not None:
+                        self.jump_to_analysis_point(point_idx)
+                        if self.sumBtn.isChecked():
+                            self.sumBtn.setChecked(False)
+                        self.intensityCanvas.current_index = point_idx
+                        self.intensityCanvas.highlight_current_point()
 
-                # Consume this click (don’t let it fall through).
-                return
+                    # Consume this click (don’t let it fall through).
+                    return
         if (
             event.button == 1
             and getattr(event, 'guiEvent', None) is not None

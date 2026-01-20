@@ -15,7 +15,9 @@ class NavigatorUiMixin:
         maxiconpath = self.resource_path('icons/max.svg')
         referenceiconpath = self.resource_path('icons/reference.svg')
         trajoverlayiconpath = self.resource_path('icons/overlay_traj.svg')
+        trajoverlayoneiconpath = self.resource_path('icons/overlay_one.svg')
         roioverlayiconpath = self.resource_path('icons/overlay.svg')
+        kymoanchoriconpath = self.resource_path('icons/overlay_anchor.svg')
 
         # --- Top Controls Section ---
         topWidget = QWidget()
@@ -24,7 +26,7 @@ class NavigatorUiMixin:
         topLayout.setContentsMargins(20, 6, 0, 0)
         topLayout.setAlignment(Qt.AlignLeft)
 
-        self.movieNameLabel = ClickableLabel("Load movie")
+        self.movieNameLabel = ClickableLabel("LOAD")
         self.movieNameLabel.setObjectName("movieNameLabel")
         self.movieNameLabel.setProperty("pressed", False)
         self.movieNameLabel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
@@ -107,7 +109,8 @@ class NavigatorUiMixin:
 
 
         # Create the kymograph label, right justified
-        kymoLabel = QLabel("Kymograph")
+        kymoLabel = QLabel("KYMO")
+        kymoLabel.setStyleSheet("font-size: 11px;")
         # kymoLabel.setStyleSheet("color: #666666;")
         kymoLabel.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         # Optional: set a fixed minimum width for label alignment.
@@ -143,7 +146,9 @@ class NavigatorUiMixin:
         self.clearKymoBtn._bubble_filter = clearkymo_filter
         self.clearKymoBtn.setObjectName("Passive")
         self.clearKymoBtn.setFixedWidth(32)
-        self.clearKymoBtn.clicked.connect(self.clear_kymographs)
+        self.clearKymoBtn.clicked.connect(
+            lambda _checked: self.clear_kymographs()
+        )
         kymoControlLayout.addWidget(self.clearKymoBtn)
 
 
@@ -209,7 +214,7 @@ class NavigatorUiMixin:
         self.roiContainer.setContentsMargins(0, 0, 0, 0)
         kymoContainer.setFixedHeight(50)
         self.roiContainer.setFixedHeight(50)
-        leftLayout.setContentsMargins(6, 0, 6, 6)
+        leftLayout.setContentsMargins(6, 0, 6, 1)
         leftLayout.setSpacing(0)
         self.roiContainer.setVisible(False)
 
@@ -265,29 +270,81 @@ class NavigatorUiMixin:
         self.kymoLegendLayout.setSpacing(5)
         self.kymoLegendWidget.installEventFilter(self)
 
-        # leftLayout.addSpacing(10)
-        # kymocontrastwidget = QWidget()
-        # kymocontrastLayout = QHBoxLayout(kymocontrastwidget)
-        # kymocontrastLayout.setContentsMargins(0, 0, 0, 0)
-        # kymocontrastLayout.setSpacing(10)
-        # self.kymocontrastControlsWidget = KymoContrastControlsWidget(self.kymoCanvas)
-        # kymocontrastsliderfilter = BubbleTipFilter("Adjust contrast range", self, placement="left")
-        # self.kymocontrastControlsWidget.installEventFilter(kymocontrastsliderfilter)
-        # self.kymocontrastControlsWidget._bubble_filter = kymocontrastsliderfilter
-        # self.kymocontrastControlsWidget.setMinimumWidth(50)
-        # self.kymocontrastControlsWidget.setMaximumWidth(200)
-        # kymocontrastLayout.addWidget(self.kymocontrastControlsWidget)
-        # self.kymoresetBtn = AnimatedIconButton("")
-        # self.kymoresetBtn.setIcon(QIcon(resetcontrastpath))
-        # self.kymoresetBtn.setIconSize(QSize(16, 16))
-        # kymocontrastresetfilter = BubbleTipFilter("Reset contrast", self, placement="right")
-        # self.kymoresetBtn.installEventFilter(kymocontrastresetfilter)
-        # self.kymoresetBtn._bubble_filter = kymocontrastresetfilter
-        # self.kymoresetBtn.clicked.connect(self.reset_kymo_contrast)
-        # self.kymoresetBtn.setObjectName("Passive")
-        # self.kymoresetBtn.setFixedWidth(40)
-        # kymocontrastLayout.addWidget(self.kymoresetBtn)
-        # leftLayout.addWidget(kymocontrastwidget, alignment=Qt.AlignCenter)
+        kymocontrastwidget = QWidget()
+        kymocontrastLayout = QHBoxLayout(kymocontrastwidget)
+        kymocontrastLayout.setContentsMargins(0, 0, 0, 0)
+        kymocontrastLayout.setSpacing(4)
+        self.kymocontrastControlsWidget = KymoContrastControlsWidget(self.kymoCanvas)
+        kymocontrastsliderfilter = BubbleTipFilter("Adjust contrast range", self, placement="right")
+        self.kymocontrastControlsWidget.installEventFilter(kymocontrastsliderfilter)
+        self.kymocontrastControlsWidget._bubble_filter = kymocontrastsliderfilter
+        self.kymocontrastControlsWidget.setMinimumWidth(100)
+        kymo_contrast_container = QWidget()
+        kymo_contrast_layout = QVBoxLayout(kymo_contrast_container)
+        kymo_contrast_layout.setContentsMargins(0, 0, 0, 0)
+        kymo_contrast_layout.setSpacing(0)
+        kymo_contrast_layout.setAlignment(Qt.AlignHCenter)
+        kymo_contrast_label = QLabel("CONTRAST")
+        kymo_contrast_label.setStyleSheet("color: black; font-size: 9px;")
+        kymo_contrast_label.adjustSize()
+        kymo_label_spacer = max(2, kymo_contrast_label.sizeHint().height() // 2)
+        kymo_contrast_layout.addSpacing(kymo_label_spacer)
+        kymo_contrast_layout.addWidget(self.kymocontrastControlsWidget, alignment=Qt.AlignHCenter)
+        kymo_contrast_layout.addWidget(kymo_contrast_label, alignment=Qt.AlignHCenter)
+        kymocontrastLayout.addWidget(kymo_contrast_container)
+        kymocontrastLayout.setAlignment(kymo_contrast_container, Qt.AlignBottom)
+        self.kymoresetBtn = AnimatedIconButton("")
+        self.kymoresetBtn.setIcon(QIcon(resetcontrastpath))
+        self.kymoresetBtn.setIconSize(QSize(16, 16))
+        kymocontrastresetfilter = BubbleTipFilter("Reset contrast", self, placement="left")
+        self.kymoresetBtn.installEventFilter(kymocontrastresetfilter)
+        self.kymoresetBtn._bubble_filter = kymocontrastresetfilter
+        self.kymoresetBtn.clicked.connect(self.reset_kymo_contrast)
+        self.kymoresetBtn.setObjectName("Passive")
+        self.kymoresetBtn.setFixedSize(36, 36)
+        kymo_reset_container = QWidget()
+        kymo_reset_layout = QVBoxLayout(kymo_reset_container)
+        kymo_reset_layout.setContentsMargins(0, 0, 0, 0)
+        kymo_reset_layout.setSpacing(0)
+        kymo_reset_layout.setAlignment(Qt.AlignHCenter)
+        kymo_reset_label = QLabel("AUTO")
+        kymo_reset_label.setStyleSheet("color: black; font-size: 9px;")
+        kymo_reset_label.adjustSize()
+        kymo_reset_layout.addSpacing(kymo_label_spacer)
+        kymo_reset_layout.addWidget(self.kymoresetBtn, alignment=Qt.AlignHCenter)
+        kymo_reset_layout.addWidget(kymo_reset_label, alignment=Qt.AlignHCenter)
+        kymocontrastLayout.addWidget(kymo_reset_container)
+        kymocontrastLayout.setAlignment(kymo_reset_container, Qt.AlignBottom)
+        kymocontrastLayout.addSpacing(6)
+
+        self.kymo_anchor_overlay_button = AnimatedIconButton("")
+        kymoanchorfilter = BubbleTipFilter("Show anchors (hold shift key to edit them)", self, placement="right")
+        self.kymo_anchor_overlay_button.installEventFilter(kymoanchorfilter)
+        self.kymo_anchor_overlay_button._bubble_filter = kymoanchorfilter
+        self.kymo_anchor_overlay_button.setIcon(QIcon(kymoanchoriconpath))
+        self.kymo_anchor_overlay_button.setIconSize(QSize(16, 16))
+        self.kymo_anchor_overlay_button.setFixedSize(36, 36)
+        self.kymo_anchor_overlay_button.setCheckable(True)
+        self.kymo_anchor_overlay_button.setChecked(True)
+        self.kymo_anchor_overlay_button.setObjectName("Toggle")
+        self.kymo_anchor_overlay_button.clicked.connect(self.toggle_kymo_anchor_overlay)
+        anchor_container = QWidget()
+        anchor_layout = QVBoxLayout(anchor_container)
+        anchor_layout.setContentsMargins(0, 0, 0, 0)
+        anchor_layout.setSpacing(0)
+        anchor_layout.setAlignment(Qt.AlignHCenter)
+        anchor_label = QLabel("ANCHORS")
+        anchor_label.setStyleSheet("color: black; font-size: 9px;")
+        anchor_label.adjustSize()
+        anchor_layout.addSpacing(kymo_label_spacer)
+        anchor_layout.addWidget(self.kymo_anchor_overlay_button, alignment=Qt.AlignHCenter)
+        anchor_layout.addWidget(anchor_label, alignment=Qt.AlignHCenter)
+        kymocontrastLayout.addSpacing(18)
+        kymocontrastLayout.addWidget(anchor_container)
+        kymocontrastLayout.setAlignment(anchor_container, Qt.AlignBottom)
+
+        leftLayout.addSpacing(2)
+        leftLayout.addWidget(kymocontrastwidget, alignment=Qt.AlignCenter)
 
         self.leftWidget.setLayout(leftLayout)
         self.mainSplitter.addWidget(self.leftWidget)
@@ -397,11 +454,11 @@ class NavigatorUiMixin:
         self._ch_overlay.installEventFilter(self)
         self.movieDisplayContainer.installEventFilter(self)
 
-        movieLayout.addSpacing(10)
+        movieLayout.addSpacing(4)
         
         sliderWidget = QWidget()
         sliderLayout = QHBoxLayout(sliderWidget)
-        sliderLayout.setContentsMargins(6, 5, 6, 5)
+        sliderLayout.setContentsMargins(6, 3, 6, 0)
         sliderLayout.setSpacing(10)
         self.frameNumberLabel = QLabel("1")
         self.frameNumberLabel.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -418,17 +475,31 @@ class NavigatorUiMixin:
         self.frameNumberLabel.setFixedWidth(width)
         sliderLayout.addWidget(self.frameSlider)
         movieLayout.addWidget(sliderWidget)
+        movieLayout.addSpacing(-12)
         
         contrastWidget = QWidget()
         contrastLayout = QHBoxLayout(contrastWidget)
         contrastLayout.setContentsMargins(0, 0, 0, 0)
-        contrastLayout.setSpacing(10)
+        contrastLayout.setSpacing(4)
         self.contrastControlsWidget = ContrastControlsWidget(self.movieCanvas)
         contrastsliderfilter = BubbleTipFilter("Adjust contrast range", self, placement="left")
         self.contrastControlsWidget.installEventFilter(contrastsliderfilter)
         self.contrastControlsWidget._bubble_filter = contrastsliderfilter
         self.contrastControlsWidget.setMinimumWidth(100)
-        contrastLayout.addWidget(self.contrastControlsWidget)
+        contrast_container = QWidget()
+        contrast_label_layout = QVBoxLayout(contrast_container)
+        contrast_label_layout.setContentsMargins(0, 0, 0, 0)
+        contrast_label_layout.setSpacing(0)
+        contrast_label_layout.setAlignment(Qt.AlignHCenter)
+        contrast_label = QLabel("CONTRAST")
+        contrast_label.setStyleSheet("color: black; font-size: 9px;")
+        contrast_label.adjustSize()
+        contrast_spacer_height = contrast_label.sizeHint().height() + 1
+        contrast_label_layout.addSpacing(contrast_spacer_height)
+        contrast_label_layout.addWidget(self.contrastControlsWidget, alignment=Qt.AlignHCenter)
+        contrast_label_layout.addWidget(contrast_label, alignment=Qt.AlignHCenter)
+        contrastLayout.addWidget(contrast_container)
+        contrastLayout.setAlignment(contrast_container, Qt.AlignBottom)
         self.resetBtn = AnimatedIconButton("")
         self.resetBtn.setIcon(QIcon(resetcontrastpath))
         self.resetBtn.setIconSize(QSize(16, 16))
@@ -438,20 +509,49 @@ class NavigatorUiMixin:
         self.resetBtn._bubble_filter = contrastresetfilter
         self.resetBtn.clicked.connect(self.reset_contrast)
         self.resetBtn.setObjectName("Passive")
-        self.resetBtn.setFixedWidth(40)
-        contrastLayout.addWidget(self.resetBtn)
+        self.resetBtn.setFixedSize(36, 36)
+        reset_container = QWidget()
+        reset_layout = QVBoxLayout(reset_container)
+        reset_layout.setContentsMargins(0, 0, 0, 0)
+        reset_layout.setSpacing(0)
+        reset_layout.setAlignment(Qt.AlignHCenter)
+        reset_label = QLabel("AUTO")
+        reset_label.setStyleSheet("color: black; font-size: 9px;")
+        reset_label.adjustSize()
+        reset_spacer_height = reset_label.sizeHint().height() + 1
+        reset_layout.addSpacing(reset_spacer_height)
+        reset_layout.addWidget(self.resetBtn, alignment=Qt.AlignHCenter)
+        reset_layout.addWidget(reset_label, alignment=Qt.AlignHCenter)
+        contrastLayout.addWidget(reset_container)
+        contrastLayout.setAlignment(reset_container, Qt.AlignBottom)
+        contrastLayout.addSpacing(16)
         self.sumBtn = AnimatedIconButton("", self)
         self.sumBtn.setIcon(QIcon(maxiconpath))
         self.sumBtn.setIconSize(QSize(16, 16))
         self.sumBtn.setCheckable(True)
-        self.sumBtn.setFixedWidth(40)
+        self.sumBtn.setFixedSize(36, 36)
         # self.sumBtn.setToolTip("Show the maximum projection (shortcut: m)")
         sumfilter = BubbleTipFilter("Maximum projection (shortcut: m)", self)
         self.sumBtn.installEventFilter(sumfilter)
         self.sumBtn._bubble_filter = sumfilter
         self.sumBtn.toggled.connect(self.on_sum_toggled)
         self.sumBtn.setObjectName("Toggle")
-        contrastLayout.addWidget(self.sumBtn)
+
+        sum_container = QWidget()
+        sum_layout = QVBoxLayout(sum_container)
+        sum_layout.setContentsMargins(0, 0, 0, 0)
+        sum_layout.setSpacing(0)
+        sum_layout.setAlignment(Qt.AlignHCenter)
+        sum_label = QLabel("MAX")
+        sum_label.setStyleSheet("color: black; font-size: 9px;")
+        sum_label.adjustSize()
+        sum_spacer_height = sum_label.sizeHint().height() + 1
+        sum_layout.addSpacing(sum_spacer_height)
+        sum_layout.addWidget(self.sumBtn, alignment=Qt.AlignHCenter)
+        sum_layout.addWidget(sum_label, alignment=Qt.AlignHCenter)
+        contrastLayout.addWidget(sum_container)
+        contrastLayout.setAlignment(sum_container, Qt.AlignBottom)
+        contrastLayout.addSpacing(12)
 
         self.refBtn = AnimatedIconButton("")
         self.refBtn.setIcon(QIcon(referenceiconpath))
@@ -461,30 +561,68 @@ class NavigatorUiMixin:
         self.refBtn.installEventFilter(reffilter)
         self.refBtn._bubble_filter = reffilter
         self.refBtn.setCheckable(True)
-        self.refBtn.setFixedWidth(40)
+        self.refBtn.setFixedSize(36, 36)
         self.refBtn.setVisible(False)
         self.refBtn.toggled.connect(self.on_ref_toggled)
         self.refBtn.setObjectName("Toggle")
         contrastLayout.addWidget(self.refBtn)
+        contrastLayout.setAlignment(self.refBtn, Qt.AlignBottom)
 
         self.traj_overlay_button = AnimatedIconButton("")
         # self.traj_overlay_button.setToolTip("Overlay trajectories (shortcut: o)")
-        traj_filter = BubbleTipFilter("Overlay trajectories (shortcut: o)", self)
+        traj_filter = BubbleTipFilter(
+            "Cycle trajectory overlay: all > one > none (shortcut: o)",
+            self
+        )
         self.traj_overlay_button.installEventFilter(traj_filter)
         self.traj_overlay_button._bubble_filter = traj_filter
-        self.traj_overlay_button.setIcon(QIcon(trajoverlayiconpath))
+        self._traj_overlay_icons = {
+            "all": QIcon(trajoverlayiconpath),
+            "selected": QIcon(trajoverlayoneiconpath),
+        }
+        self.traj_overlay_button.setIcon(self._traj_overlay_icons["all"])
         self.traj_overlay_button.setIconSize(QSize(16, 16))
-        self.traj_overlay_button.setFixedWidth(40)
+        self.traj_overlay_button.setFixedSize(36, 36)
         self.traj_overlay_button.setCheckable(True)
-        self.traj_overlay_button.setChecked(True)
+        self.traj_overlay_mode = "all"
+        self._apply_traj_overlay_mode(self.traj_overlay_mode, redraw=False)
         self.traj_overlay_button.setObjectName("Toggle")
         # self.update_overlay_button_style(self.traj_overlay_button.isChecked())
         # self.traj_overlay_button.toggled.connect(self.update_overlay_button_style)
-        contrastLayout.addWidget(self.traj_overlay_button)
+        traj_container = QWidget()
+        traj_layout = QVBoxLayout(traj_container)
+        traj_layout.setContentsMargins(0, 0, 0, 0)
+        traj_layout.setSpacing(0)
+        traj_layout.setAlignment(Qt.AlignHCenter)
+        traj_label = QLabel("SPOTS")
+        traj_label.setStyleSheet("color: black; font-size: 9px;")
+        traj_label.adjustSize()
+        traj_spacer_height = traj_label.sizeHint().height() + 1
+        traj_layout.addSpacing(traj_spacer_height)
+        traj_layout.addWidget(self.traj_overlay_button, alignment=Qt.AlignHCenter)
+        traj_layout.addWidget(traj_label, alignment=Qt.AlignHCenter)
+        contrastLayout.addWidget(traj_container)
+        self.traj_overlay_container = traj_container
+        contrastLayout.setAlignment(traj_container, Qt.AlignBottom)
+        contrastLayout.addSpacing(18)
 
         self.modeSwitch = ToggleSwitch()
         self.modeSwitch.toggled.connect(lambda state: self.onModeChanged("roi" if state else "spot"))
-        contrastLayout.addWidget(self.modeSwitch)
+        mode_container = QWidget()
+        mode_layout = QVBoxLayout(mode_container)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.setSpacing(0)
+        mode_layout.setAlignment(Qt.AlignHCenter)
+        mode_label = QLabel("MODE")
+        mode_label.setStyleSheet("color: black; font-size: 9px;")
+        mode_label.adjustSize()
+        mode_spacer_height = mode_label.sizeHint().height() + 1
+        mode_layout.addSpacing(mode_spacer_height)
+        mode_layout.addWidget(self.modeSwitch, alignment=Qt.AlignHCenter)
+        mode_layout.addWidget(mode_label, alignment=Qt.AlignHCenter)
+        contrastLayout.addWidget(mode_container)
+        contrastLayout.setAlignment(mode_container, Qt.AlignBottom)
+        contrastLayout.addSpacing(24)
         switch_filter = BubbleTipFilter("Switch between finding spots and drawing kymographs (shortcut: n)", self)
         self.modeSwitch.installEventFilter(switch_filter)
         # keep a ref so Python doesn’t garbage‐collect it
@@ -498,7 +636,7 @@ class NavigatorUiMixin:
         self.roi_overlay_button.installEventFilter(overlayroi_filter)
         self.roi_overlay_button._bubble_filter = overlayroi_filter
         self.roi_overlay_button.setCheckable(True)
-        self.roi_overlay_button.setFixedWidth(40)
+        self.roi_overlay_button.setFixedSize(36, 36)
         self.roi_overlay_button.setStyleSheet("""
             QPushButton {
                 background-color: transparent;
@@ -512,7 +650,21 @@ class NavigatorUiMixin:
         """)
         self.roi_overlay_button.clicked.connect(self.toggle_roi_overlay)
         # self.roi_overlay_button.toggled.connect(self.update_roi_overlay_button_style)
-        contrastLayout.addWidget(self.roi_overlay_button)
+        roi_overlay_container = QWidget()
+        roi_overlay_layout = QVBoxLayout(roi_overlay_container)
+        roi_overlay_layout.setContentsMargins(0, 0, 0, 0)
+        roi_overlay_layout.setSpacing(0)
+        roi_overlay_layout.setAlignment(Qt.AlignHCenter)
+        roi_label = QLabel("LINES")
+        roi_label.setStyleSheet("color: black; font-size: 9px;")
+        roi_label.adjustSize()
+        roi_spacer_height = roi_label.sizeHint().height() + 1
+        roi_overlay_layout.addSpacing(roi_spacer_height)
+        roi_overlay_layout.addWidget(self.roi_overlay_button, alignment=Qt.AlignHCenter)
+        roi_overlay_layout.addWidget(roi_label, alignment=Qt.AlignHCenter)
+        contrastLayout.addWidget(roi_overlay_container)
+        contrastLayout.setAlignment(roi_overlay_container, Qt.AlignBottom)
+        contrastLayout.addSpacing(24)
 
         self.delete_button = AnimatedIconButton("")
         # self.delete_button.setToolTip("Delete selected trajectory")
@@ -521,9 +673,23 @@ class NavigatorUiMixin:
         self.delete_button._bubble_filter = deletetraj_filter
         self.delete_button.setIcon(QIcon(crossiconpath))
         self.delete_button.setIconSize(QSize(16, 16))
-        self.delete_button.setFixedWidth(40)
+        self.delete_button.setFixedSize(36, 36)
         self.delete_button.setObjectName("Passive")
-        contrastLayout.addWidget(self.delete_button)
+        delete_container = QWidget()
+        delete_layout = QVBoxLayout(delete_container)
+        delete_layout.setContentsMargins(0, 0, 0, 0)
+        delete_layout.setSpacing(0)
+        delete_layout.setAlignment(Qt.AlignHCenter)
+        delete_label = QLabel("DEL.")
+        delete_label.setStyleSheet("color: black; font-size: 9px;")
+        delete_label.adjustSize()
+        delete_spacer_height = delete_label.sizeHint().height() + 1
+        delete_layout.addSpacing(delete_spacer_height)
+        delete_layout.addWidget(self.delete_button, alignment=Qt.AlignHCenter)
+        delete_layout.addWidget(delete_label, alignment=Qt.AlignHCenter)
+        contrastLayout.addWidget(delete_container)
+        contrastLayout.setAlignment(delete_container, Qt.AlignBottom)
+        self.delete_container = delete_container
 
         self.clear_button = AnimatedIconButton("")
         # self.clear_button.setToolTip("Delete all trajectories")
@@ -532,9 +698,23 @@ class NavigatorUiMixin:
         self.clear_button._bubble_filter = deletealltraj_filter
         self.clear_button.setIcon(QIcon(crossdoticonpath))
         self.clear_button.setIconSize(QSize(16, 16))
-        self.clear_button.setFixedWidth(40)
+        self.clear_button.setFixedSize(36, 36)
         self.clear_button.setObjectName("Passive")
-        contrastLayout.addWidget(self.clear_button)
+        clear_container = QWidget()
+        clear_layout = QVBoxLayout(clear_container)
+        clear_layout.setContentsMargins(0, 0, 0, 0)
+        clear_layout.setSpacing(0)
+        clear_layout.setAlignment(Qt.AlignHCenter)
+        clear_label = QLabel("ALL")
+        clear_label.setStyleSheet("color: black; font-size: 9px;")
+        clear_label.adjustSize()
+        clear_spacer_height = clear_label.sizeHint().height() + 1
+        clear_layout.addSpacing(clear_spacer_height)
+        clear_layout.addWidget(self.clear_button, alignment=Qt.AlignHCenter)
+        clear_layout.addWidget(clear_label, alignment=Qt.AlignHCenter)
+        contrastLayout.addWidget(clear_container)
+        contrastLayout.setAlignment(clear_container, Qt.AlignBottom)
+        self.clear_container = clear_container
 
         movieLayout.addWidget(contrastWidget, alignment=Qt.AlignCenter)
         self.movieWidget.setLayout(movieLayout)
@@ -666,7 +846,7 @@ class NavigatorUiMixin:
         self.clear_button.clicked.connect(
             lambda _checked: self.trajectoryCanvas.clear_trajectories()
             )
-        self.traj_overlay_button.clicked.connect(self.trajectoryCanvas.toggle_trajectory_markers)
+        self.traj_overlay_button.clicked.connect(self._cycle_traj_overlay_mode)
         self.delete_button.clicked.connect(self.trajectoryCanvas.delete_selected_trajectory)
         
         
@@ -969,12 +1149,60 @@ class NavigatorUiMixin:
             self.update_roi_overlay_if_active()
             self.update_roilist_visibility()
 
+    def get_traj_overlay_mode(self):
+        return getattr(self, "traj_overlay_mode", "all")
+
+    def _traj_overlay_has_selection(self):
+        tc = getattr(self, "trajectoryCanvas", None)
+        if tc is None or not tc.trajectories:
+            return False
+        sel = tc.table_widget.selectionModel()
+        if sel is None:
+            return False
+        return bool(sel.selectedRows())
+
+    def _normalize_traj_overlay_mode(self, mode):
+        if mode not in ("off", "selected", "all"):
+            mode = "all"
+        if mode == "selected" and not self._traj_overlay_has_selection():
+            mode = "all"
+        return mode
+
+    def _apply_traj_overlay_mode(self, mode, redraw=True):
+        mode = self._normalize_traj_overlay_mode(mode)
+        self.traj_overlay_mode = mode
+        icon = self._traj_overlay_icons["selected"] if mode == "selected" else self._traj_overlay_icons["all"]
+        self.traj_overlay_button.setIcon(icon)
+        self.traj_overlay_button.setChecked(mode != "off")
+        if redraw and getattr(self, "trajectoryCanvas", None) is not None:
+            self.trajectoryCanvas.toggle_trajectory_markers()
+
+    def _cycle_traj_overlay_mode(self):
+        if getattr(self, "trajectoryCanvas", None) is None:
+            return
+        order = ("off", "all", "selected")
+        current = self.get_traj_overlay_mode()
+        try:
+            idx = order.index(current)
+        except ValueError:
+            idx = 0
+        for step in range(1, len(order) + 1):
+            candidate = order[(idx + step) % len(order)]
+            if candidate == "selected" and not self._traj_overlay_has_selection():
+                continue
+            self._apply_traj_overlay_mode(candidate)
+            return
+
+    def _ensure_traj_overlay_mode_valid(self, redraw=False):
+        current = self.get_traj_overlay_mode()
+        normalized = self._normalize_traj_overlay_mode(current)
+        if normalized != current:
+            self._apply_traj_overlay_mode(normalized, redraw=redraw)
+
     def _on_o_pressed(self):
         if len(self.trajectoryCanvas.trajectories) == 0:
             return
-        btn = self.traj_overlay_button
-        btn.setChecked(not btn.isChecked())           # flip its checked state
-        self.trajectoryCanvas.toggle_trajectory_markers()
+        self._cycle_traj_overlay_mode()
 
     def _on_m_pressed(self):
         if self.movie is None:
@@ -1381,6 +1609,10 @@ class NavigatorUiMixin:
         loadKymosAction = QAction("Kymograph w/Point-ROIs", self)
         loadKymosAction.triggered.connect(self.load_kymograph_with_overlays)
         loadMenu.addAction(loadKymosAction)
+
+        loadTrackMateAction = QAction("TrackMate spots", self)
+        loadTrackMateAction.triggered.connect(self.trajectoryCanvas.load_trackmate_spots)
+        loadMenu.addAction(loadTrackMateAction)
 
         saveMenu = menubar.addMenu("Save")
         saveTrajectoriesAction = QAction("Trajectories", self)

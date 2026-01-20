@@ -34,6 +34,13 @@ class NavigatorKymoMixin:
             except Exception:
                 pass
 
+    def toggle_kymo_anchor_overlay(self):
+        try:
+            self.kymoCanvas.draw_trajectories_on_kymo()
+            self.kymoCanvas.draw_idle()
+        except Exception:
+            pass
+
     def _finish_kymo_anchor_edit(self, force_recalc=False):
         if not getattr(self, "kymo_anchor_edit_mode", False):
             return
@@ -42,12 +49,41 @@ class NavigatorKymoMixin:
         if force_recalc or was_dirty:
             self.add_or_recalculate()
         else:
-            try:
-                idx = getattr(self.intensityCanvas, "current_index", 0)
-                if getattr(self, "analysis_frames", None):
-                    self.jump_to_analysis_point(idx, animate="discrete", zoom=False)
-            except Exception:
-                pass
+            self._restore_anchor_edit_view()
+
+    def _restore_anchor_edit_view(self):
+        try:
+            idx = getattr(self.intensityCanvas, "current_index", 0)
+            if not getattr(self, "analysis_frames", None):
+                return
+            if idx < 0 or idx >= len(self.analysis_frames):
+                return
+
+            self.intensityCanvas.highlight_current_point()
+
+            centers = getattr(self, "analysis_search_centers", None)
+            if centers and idx < len(centers):
+                cx, cy = centers[idx]
+                self.movieCanvas.overlay_rectangle(
+                    cx,
+                    cy,
+                    int(2 * self.searchWindowSpin.value())
+                )
+
+            fit_params = getattr(self, "analysis_fit_params", None)
+            if fit_params and idx < len(fit_params):
+                fc, fs, _pk = fit_params[idx]
+                self.movieCanvas.remove_gaussian_circle()
+                self.movieCanvas.add_gaussian_circle(
+                    fc,
+                    fs,
+                    self.intensityCanvas.get_current_point_color()
+                )
+
+            self.movieCanvas.draw_idle()
+            self.kymoCanvas.draw_idle()
+        except Exception:
+            pass
 
     def _get_selected_kymo_traj_context(self):
         if self.kymoCanvas.image is None:
@@ -77,6 +113,26 @@ class NavigatorKymoMixin:
             return False
         traj_roi = traj.get("roi")
         if not isinstance(traj_roi, dict):
+            # Allow movie/TrackMate anchors to be edited if the trajectory lies on this ROI.
+            try:
+                radius = int(self.searchWindowSpin.value())
+            except Exception:
+                radius = 5
+            start = traj.get("start")
+            end = traj.get("end")
+            if (
+                isinstance(start, (list, tuple)) and len(start) >= 3
+                and isinstance(end, (list, tuple)) and len(end) >= 3
+            ):
+                try:
+                    sx, sy = float(start[1]), float(start[2])
+                    ex, ey = float(end[1]), float(end[2])
+                except Exception:
+                    return False
+                return (
+                    is_point_near_roi((sx, sy), roi, search_radius=radius)
+                    and is_point_near_roi((ex, ey), roi, search_radius=radius)
+                )
             return False
         return traj_roi == roi
 
