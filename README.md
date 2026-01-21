@@ -10,15 +10,14 @@
 
 1. [Installation](#installation)
 2. [Getting Started](#getting-started)
-
    1. [Launching Tracy](#launching-tracy)
    2. [Loading Your Movie](#loading-your-movie)
    3. [Browsing Spots](#browsing-spots)
    4. [Generating Kymographs](#generating-kymographs)
    5. [Generating Trajectories](#generating-trajectories)
    6. [Browsing Trajectories](#browsing-trajectories)
+   7. [Saving](#saving)
 3. [Additional Features](#additional-features)
-
    * [Drift Correction](#drift-correction)
    * [Colocalization](#colocalization)
    * [Step Finding](#step-finding)
@@ -26,10 +25,9 @@
    * [Reference Image](#reference-image)
    * [Custom Columns](#custom-columns)
    * [Color by Value](#color-by-value)
-4. [Saving & Loading](#saving--loading)
-
-   * [Save Trajectories](#save-trajectories)
+4. [Loading & Saving](#loading--saving)
    * [Load Trajectories](#load-trajectories)
+   * [Save Trajectories](#save-trajectories)
    * [Import TrackMate Data](#import-trackmate-data)
 5. [License](#license)
 
@@ -69,13 +67,15 @@ tracy &                    # run in the background
 1. Click **Load Movie** (or use **Load » Movie**).
 2. Select a single- or multi-channel TIFF movie.
 3. If necessary, enter pixel size and frame interval when prompted.
-4. Pan by holding down the middle button (or Ctrl/Cmd) and dragging, zoom with the mouse wheel.
+4. Pan by holding down the middle button (or `Ctrl/Cmd`) and dragging, zoom with the mouse wheel.
 5. If available, switch channels by clicking the channel label (shortcut: `1`, `2`, …).
    If the wrong axis is treated as channels (or the channel list looks off), use **Movie » Change Channel Axis** to select the correct axis (only enabled for 4D movies).
 6. Toggle the maximum projection with the button below the movie (shortcut: `m`).
 7. Adjust the contrast using the slider.
 8. The kymograph view has its own contrast slider and reset button below it; contrast is remembered per kymograph.
 8. **View » Invert** toggles the display colormap (default on) so bright spots appear dark on a light background.
+
+Other load options are available under **Load** — see [Loading & Saving](#loading--saving) for details.
 
 ### 3. Browsing Spots <a name="browsing-spots"></a>
 
@@ -115,9 +115,9 @@ tracy &                    # run in the background
 
 **Anchor editing (Shift):** with trajectory overlay on, hold **Shift** to enter anchor‑edit mode. Only the selected trajectory’s dotted line and blue anchor circles are shown. Drag any circle to move that anchor; the dotted line updates live. Release **Shift** to exit edit mode and recalculate if anchors changed. Shift also cancels any active left‑click sequence. Use the **ANCHORS** toggle below the kymograph to hide/show anchor overlays.
 
-**Trajectory overlay (O):** cycles off -> all -> selected. Selected shows just one trajectory.
+**Trajectory overlay (`o`):** cycles all -> one -> none.
 
-> The blue circles are anchor points: direct kymograph clicks, or movie‑click anchors projected onto the current kymograph. Anchors are only shown when the selected trajectory belongs to the currently displayed kymograph/ROI.
+> The blue circles are anchor points: direct kymograph clicks, or movie‑click anchors projected onto the current kymograph. Anchors are only shown when the selected trajectory belongs to the currently displayed kymograph/geometry.
 
 #### B. Direct Movie Tracking
 
@@ -138,7 +138,7 @@ tracy &                    # run in the background
   * **Tracked:** uses previous frame’s spot as center.
   * **Smooth:** independent + post‑filter outliers.
 * Tracking options are set for any subsequent analysis. An existing trajectory can be recalculated using the currently set options by pressing `Enter` (or **Trajectory » Recalculate**).
-* If a spot looks wrong, you can invalidate it with `x` when it's highlighted.
+* If a spot looks wrong, press `x` to invalidate the highlighted point; press `x` again to re‑fit and restore it.
 * Avoid using spots in existing tracks via **Spot » Avoid previous spots**.
 
 #### Intensity Calculation <a name="intensity"></a>
@@ -152,22 +152,23 @@ tracy &                    # run in the background
 * **Outputs:** Spot Center = fitted center; Sigma = mean of σx and σy; Peak = fitted amplitude A; Intensity = integrated Gaussian `2π * A * σx * σy` (clamped to ≥0); Background = fitted offset (or fixed background, clamped to ≥0).
 * **Smooth mode:** after independent fits, centers are Savitzky‑Golay smoothed; frames deviating by more than `min(3 px, 2×mean σ)` are re‑fit at the smoothed center with a crop radius of ~`4×mean σ`.
 
----
-
-## Plots <a name="plots"></a>
-
-* **Intensity Plot:** integrated spot intensity at each frame.
-* **Speed Histogram:** frame‑to‑frame speeds with the net speed overlayed (i.e. only considering start and end position).
-
----
-
-## Browsing Trajectories <a name="browsing-trajectories"></a>
+### 6. Browsing Trajectories <a name="browsing-trajectories"></a>
 
 * New trajectories append to the **Trajectory Table**.
 * Click trajectories in the table or use the arrow keys (**`↑`**, **`↓`**). Right‑click for options (e.g., Go to kymograph).
 * Delete a trajectory with `Backspace`.
+* Right‑click menu options include saving selected trajectories, jumping to the matching kymograph, and marking/setting custom columns.
+
+### 7. Saving <a name="saving"></a>
+
+Use **Save » Trajectories** (`Ctrl/Cmd+S`) to export your analysis; see [Loading & Saving](#loading--saving) for all save/load options and details.
 
 ---
+
+## Plots <a name="plots"></a>
+
+* **Intensity Plot:** per‑frame integrated intensity (1‑indexed frames) with average (grey dashed) and median (magenta dashed) lines. The top strip mirrors the per‑frame color coding (e.g., Color By or colocalization), and missing/invalid intensities appear grey. When step‑finding is enabled, step medians and transitions are overlaid in green. Click a point to jump to that frame.
+* **Speed Histogram:** histogram of frame‑to‑frame speeds in px/frame, or μm/s when pixel size + frame interval are set. Dashed vertical lines show the average speed and the net speed (start‑to‑end displacement divided by total time).
 
 ## Additional Features <a name="additional-features"></a>
 
@@ -239,46 +240,65 @@ tracy &                    # run in the background
 
 ---
 
-## Saving & Loading <a name="saving--loading"></a>
+## Loading & Saving <a name="loading--saving"></a>
+
+Use the **Load** and **Save** menus to move data in and out of Tracy.
+
+**Load menu options:**
+* **Movie**: single- or multi-channel TIFF movie.
+* **Line ROIs**: ImageJ-generated `.roi` or `.zip` file containing line ROIs.
+* **Trajectories**: Tracy trajectory `.xlsx` file (see [Load Trajectories](#load-trajectories)).
+* **Reference**: single-frame TIFF image used as an overlay (see [Reference Image](#reference-image)).
+* **TrackMate spots**: TrackMate-generated `.csv` spot file (see [Import TrackMate Data](#import-trackmate-data)).
+
+**Save menu options:**
+* **Trajectories**: exports a `.xlsx` workbook with all trajectory data (details below).
+* **Kymographs**: exports selected kymograph images (with optional overlays).
+* **Line ROIs**: exports an ImageJ ROI `.zip` that can be reopened in ImageJ later.
+
+### Load Trajectories <a name="load-trajectories"></a>
+
+* Load `.xlsx` files with the above sheets or similar formats (requires columns: Trajectory, Channel, Frame, Search Center X, Search Center Y).
+* If the workbook includes kymograph geometry, Tracy can regenerate kymographs from the `Kymo-Anchors`/`ROI` columns, and it can optionally restore empty kymographs recorded in **Per-kymograph**.
+* Use **Kymograph » Draw from Trajectories** to redraw the stored kymograph lines saved in the spreadsheet (Per-trajectory `Kymo-Anchors`/`ROI` columns).
 
 ### Save Trajectories <a name="save-trajectories"></a>
 
-* **Save » Trajectories** exports an Excel workbook with five sheets:
-* Shortcut: `Ctrl+S` (or `Cmd+S` on macOS).
+* **Save » Trajectories** (`Ctrl/Cmd+S`) exports an Excel workbook with five sheets:
 
   1. **Aggregate Analysis**: a single-row summary across the whole movie.
   2. **Data Points**: per-frame spot measurements along each trajectory.
   3. **Per-trajectory**: one-row summary statistics for each trajectory.
   4. **Per-segment**: one-row summary for each trajectory segment between consecutive anchors.
-  5. **Per-kymograph**: aggregates grouped by kymograph/ROI (geometry).
+  5. **Per-kymograph**: aggregates grouped by kymograph geometry.
 
-* In multi‑channel movies, additional **Per-kymograph Ch. X** sheets are also exported (one per channel).
-* For multi‑channel movies, **Per-kymograph** is an aggregate across channels; in most cases the per‑channel **Per-kymograph Ch. X** sheets are more informative.
-
----
-
-#### Sheet: Aggregate Analysis
+<details>
+<summary>Sheet: Aggregate Analysis</summary>
 
 A single row summarizing the whole movie.
 
 ##### Columns
 
+* **Tracy Version**: version of Tracy used to generate the export.
 * **Pixel size (nm/px)**: pixel size used for unit conversions (blank if unknown).
 * **Frame time (ms)**: frame interval used for unit conversions (blank if unknown).
 * **Total movie frames**
 * **Total time (s)**: total movie duration (blank if frame time unknown).
 * **Movie dimensions (px)**: `width, height`.
 * **Movie dimensions (μm)**: `width, height` converted using pixel size (blank if unknown).
-* **Total kymographs**: number of ROI geometries (see multi-channel caveat below).
-* **Summed kymograph distances (μm)**: sum of all ROI lengths (includes empty ROIs; blank if pixel size unknown).
-* **Empty kymographs**: ROIs with zero trajectories.
+* **Total kymographs**: number of kymograph geometries (see multi-channel notes below).
+* **Summed kymograph distances (μm)**: sum of all kymograph geometry lengths (includes empty kymographs; blank if pixel size unknown).
+* **Empty kymographs**: kymographs with zero trajectories.
 * **Number of trajectories**
 * **Number of events (/min)**: total trajectories per total movie time in minutes (blank if frame time unknown).
 * **Number of events (/um/min)**: events per minute divided by total kymograph distance (blank if pixel size or frame time unknown).
 * **Average net speed (μm/s)**, **Average average speed (μm/s)**, **Average run length (μm)**, **Average run time (s)**,
-  **Average median intensity**, **Average average intensity**: means across all trajectories, regardless of ROI.
+  **Average median intensity**, **Average average intensity**: means across all trajectories, regardless of kymograph.
 
-#### Sheet: Data Points
+</details>
+
+<details>
+<summary>Sheet: Data Points</summary>
 
 Each row is one frame from one trajectory.
 
@@ -315,11 +335,13 @@ Each row is one frame from one trajectory.
 * **Colocalized w/any channel**: `Yes`/`No` per frame (blank if not evaluated).
 * **Colocalized w/ch1**, **Colocalized w/ch2**, …: `Yes`/`No` per frame for each channel (the reference channel column is left blank).
 
----
+</details>
 
-#### Sheet: Per-trajectory
+<details>
+<summary>Sheet: Per-trajectory</summary>
 
 Each row is one trajectory.
+If `Kymo-Anchors` and `ROI` are present, Tracy can regenerate the kymograph locations on load.
 
 ##### Columns
 
@@ -328,7 +350,7 @@ Each row is one trajectory.
 * **Channel**: channel the trajectory was tracked in.
 * **Start Frame / End Frame**: 1-indexed start/end frames.
 * **Kymo-Anchors**: JSON list of kymograph anchors (frame index + kymo x/y in px; frame index is Tracy’s internal index).
-* **ROI**: JSON description of the kymograph ROI geometry.
+* **Kymograph geometry** (`ROI` column): JSON description of the kymograph line.
 * **Clicks**: source of the anchor sequence (`kymograph` or `movie`).
 * **Movie-Anchors**: JSON list of anchors in movie coordinates as `(x, y, frame)`; frame is 1‑indexed.
 * **Segments**: number of segments in the trajectory (`Movie-Anchors` minus one; 0 if <2 anchors).
@@ -379,9 +401,10 @@ Each row is one trajectory.
   * For >2 channels, each non-reference column is computed separately per target channel.
   * The reference channel’s own **Ch. X co. %** cell is left blank.
 
----
+</details>
 
-#### Sheet: Per-segment
+<details>
+<summary>Sheet: Per-segment</summary>
 
 Each row summarizes one segment between consecutive anchors in a trajectory.
 
@@ -391,45 +414,46 @@ Each row summarizes one segment between consecutive anchors in a trajectory.
 * **Trajectory**: trajectory ID.
 * **Segment**: segment index within the trajectory (1‑indexed).
 * **Channel**: channel the segment belongs to.
-* **Clicks**, **Kymo-Anchors**, **ROI**: same meanings as in Per-trajectory.
+* **Clicks**, **Kymo-Anchors**, **Kymograph geometry** (`ROI` column): same meanings as in Per-trajectory.
 * **Segment Start X / Y / Frame**: anchor position for segment start (movie coordinates; frame is 1‑indexed).
 * **Segment End X / Y / Frame**: anchor position for segment end (movie coordinates; frame is 1‑indexed).
 * All remaining numeric columns mirror **Per-trajectory**, but computed per segment.
 
----
+</details>
 
-#### Sheet: Per-kymograph
+<details>
+<summary>Sheet: Per-kymograph</summary>
 
-Each row is one ROI geometry (kymograph).
+Each row is one kymograph geometry.
+Tracy can optionally include empty kymographs (no trajectories) as blank rows so distance‑normalized stats still account for kymograph lengths; these rows can be restored on load.
 
 ##### Columns
 
-* **ROI**: ROI JSON (same format as in Per-trajectory).
-* **Total distance (μm)**: total polyline length of the ROI in μm (blank if pixel size missing).
+* **Kymograph geometry** (`ROI` column): JSON (same format as in Per-trajectory).
+* **Total distance (μm)**: total polyline length of the kymograph geometry in μm (blank if pixel size missing).
 * **Total time (s)**: total movie duration in seconds (blank if frame interval missing).
-* **Number of trajectories**: trajectories whose ROI matches this ROI JSON.
+* **Number of trajectories**: trajectories whose kymograph geometry matches this JSON.
 * **Events (/min)**: `Number of trajectories / (Total time in minutes)` (blank if frame interval missing).
 * **Events (/μm/min)**: `Events (/min) / Total distance (μm)` (blank if pixel size or frame interval missing).
-* **Average net speed (μm/s)**: mean **Net Speed (μm/s)** across trajectories in this ROI.
-* **Average average speed (μm/s)**: mean **Avg. Speed (μm/s)** across trajectories in this ROI.
-* **Average run length (μm)**: mean **Distance (μm)** across trajectories in this ROI.
-* **Average run time (s)**: mean **Time (s)** across trajectories in this ROI.
-* **Average median intensity**: mean **Median Intensity** across trajectories in this ROI.
-* **Average average intensity**: mean **Average Intensity** across trajectories in this ROI.
+* **Average net speed (μm/s)**: mean **Net Speed (μm/s)** across trajectories in this kymograph.
+* **Average average speed (μm/s)**: mean **Avg. Speed (μm/s)** across trajectories in this kymograph.
+* **Average run length (μm)**: mean **Distance (μm)** across trajectories in this kymograph.
+* **Average run time (s)**: mean **Time (s)** across trajectories in this kymograph.
+* **Average median intensity**: mean **Median Intensity** across trajectories in this kymograph.
+* **Average average intensity**: mean **Average Intensity** across trajectories in this kymograph.
 
----
+</details>
 
-#### Caveats (especially important for multi-channel movies)
+<details>
+<summary>Multi-channel notes</summary>
 
-* **Per-kymograph and Aggregate “kymograph” counts are ROI-based, not per-channel.** In multi-channel movies, Tracy draws a kymograph for each channel from the same ROI geometry, but the export currently groups by ROI geometry only. That means:
-  * **Total kymographs** counts ROI geometries (not `ROI × channels`).
-  * **Per-kymograph** rows are ROI geometries (not separate rows per channel). Use Per-kymograph Ch. X instead if you want to analyse each channel's kymograph independently.
-* **Overlapping ROIs / shared trajectories:** if the same trajectory is associated with multiple ROIs/kymographs, the **Per-kymograph** sheet can double-count trajectories and bias the averages.
+* **Per-kymograph and Aggregate “kymograph” counts are kymograph-geometry-based, not per-channel.** In multi-channel movies, Tracy draws a kymograph for each channel from the same kymograph geometry, but the export currently groups by kymograph geometry only. That means:
+  * **Per-kymograph** rows are kymograph geometries (not separate rows per channel).
+  * **Per-kymograph Ch. X** sheets are exported for each channel when you need per-channel analysis.
+  * **Total kymographs** counts kymograph geometries (not `kymograph geometry × channels`).
+* **Overlapping kymograph geometries / shared trajectories:** if the same trajectory is associated with multiple kymographs, the **Per-kymograph** sheet can double-count trajectories and bias the averages.
 
-### Load Trajectories <a name="load-trajectories"></a>
-
-* Load `.xlsx` files with the above sheets or similar formats (requires columns: Trajectory, Channel, Frame, Search Center X, Search Center Y).
-* Use **Kymograph » Draw from Trajectories** to redraw the stored kymograph lines saved in the spreadsheet (Per-trajectory `Kymo-Anchors`/`ROI` fields).
+</details>
 
 ### Import TrackMate Data <a name="import-trackmate-data"></a>
 
