@@ -558,7 +558,7 @@ class NavigatorUiMixin:
         self.refBtn.setIcon(QIcon(referenceiconpath))
         self.refBtn.setIconSize(QSize(16, 16))
         # self.refBtn.setToolTip("Show the reference image")
-        reffilter = BubbleTipFilter("Reference image", self)
+        reffilter = BubbleTipFilter("Reference image (use ctrl/cmd+arrows to nudge)", self)
         self.refBtn.installEventFilter(reffilter)
         self.refBtn._bubble_filter = reffilter
         self.refBtn.setCheckable(True)
@@ -566,8 +566,20 @@ class NavigatorUiMixin:
         self.refBtn.setVisible(False)
         self.refBtn.toggled.connect(self.on_ref_toggled)
         self.refBtn.setObjectName("Toggle")
-        contrastLayout.addWidget(self.refBtn)
-        contrastLayout.setAlignment(self.refBtn, Qt.AlignBottom)
+        ref_container = QWidget()
+        ref_layout = QVBoxLayout(ref_container)
+        ref_layout.setContentsMargins(0, 0, 0, 0)
+        ref_layout.setSpacing(0)
+        ref_layout.setAlignment(Qt.AlignHCenter)
+        ref_label = QLabel("REF")
+        ref_label.setStyleSheet("color: black; font-size: 9px;")
+        ref_label.adjustSize()
+        ref_spacer_height = ref_label.sizeHint().height() + 1
+        ref_layout.addSpacing(ref_spacer_height)
+        ref_layout.addWidget(self.refBtn, alignment=Qt.AlignHCenter)
+        ref_layout.addWidget(ref_label, alignment=Qt.AlignHCenter)
+        contrastLayout.addWidget(ref_container)
+        contrastLayout.setAlignment(ref_container, Qt.AlignBottom)
 
         self.traj_overlay_button = AnimatedIconButton("")
         # self.traj_overlay_button.setToolTip("Overlay trajectories (shortcut: o)")
@@ -633,7 +645,7 @@ class NavigatorUiMixin:
         self.roi_overlay_button.setIcon(QIcon(roioverlayiconpath))
         self.roi_overlay_button.setIconSize(QSize(16, 16))
         # self.roi_overlay_button.setToolTip("Overlay ROI onto the movie")
-        overlayroi_filter = BubbleTipFilter("Overlay lines (shortcut n)", self)
+        overlayroi_filter = BubbleTipFilter("Overlay kymograph lines (shortcut n)", self)
         self.roi_overlay_button.installEventFilter(overlayroi_filter)
         self.roi_overlay_button._bubble_filter = overlayroi_filter
         self.roi_overlay_button.setCheckable(True)
@@ -1270,9 +1282,9 @@ class NavigatorUiMixin:
         table.selectRow(new_row)
 
     def keyPressEvent(self, event):
-        # Shift+Arrow: translate reference image (persist across ref toggles)
+        # Ctrl/Cmd+Arrow: translate reference image (persist across ref toggles)
         try:
-            if (event.modifiers() & Qt.ShiftModifier) and hasattr(self, "refBtn") and self.refBtn.isChecked():
+            if (event.modifiers() & (Qt.ControlModifier | Qt.MetaModifier)) and hasattr(self, "refBtn") and self.refBtn.isChecked():
                 step = 1
                 if event.key() == Qt.Key_Left:
                     self._nudge_reference_translation(-step, 0)

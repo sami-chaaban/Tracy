@@ -17,7 +17,11 @@
    5. [Generating Trajectories](#generating-trajectories)
    6. [Browsing Trajectories](#browsing-trajectories)
    7. [Saving](#saving)
-3. [Additional Features](#additional-features)
+3. [Plots](#plots)
+   * [Pixel Intensity Histogram](#pixel-intensity-histogram)
+   * [Intensity Plot](#intensity-plot)
+   * [Speed Histogram](#speed-histogram)
+4. [Additional Features](#additional-features)
    * [Drift Correction](#drift-correction)
    * [Colocalization](#colocalization)
    * [Step Finding](#step-finding)
@@ -25,11 +29,11 @@
    * [Reference Image](#reference-image)
    * [Custom Columns](#custom-columns)
    * [Color by Value](#color-by-value)
-4. [Loading & Saving](#loading--saving)
+5. [Loading & Saving](#loading--saving)
    * [Load Trajectories](#load-trajectories)
    * [Save Trajectories](#save-trajectories)
    * [Import TrackMate Data](#import-trackmate-data)
-5. [License](#license)
+6. [License](#license)
 
 ---
 
@@ -86,6 +90,7 @@ Other load options are available under **Load** — see [Loading & Saving](#load
 2. Hover over the inset to view a 3D fit (scroll to zoom, drag to rotate).
 3. Hold `r` + scroll (or use **Spot » Search Radius**) to adjust the search radius.
 4. Navigate frames with the slider under the movie.
+5. The pixel intensity histogram updates for the current search window; see [Pixel Intensity Histogram](#pixel-intensity-histogram) for details.
 
 > The **spot histogram** shows intensities in the search area and highlights values in the spot.
 > Inset size can be changed under **View » Inset size**; this only affects visualization and does not change calculations.
@@ -167,8 +172,25 @@ Use **Save » Trajectories** (`Ctrl/Cmd+S`) to export your analysis; see [Loadin
 
 ## Plots <a name="plots"></a>
 
-* **Intensity Plot:** per‑frame integrated intensity (1‑indexed frames) with average (grey dashed) and median (magenta dashed) lines. The top strip mirrors the per‑frame color coding (e.g., Color By or colocalization), and missing/invalid intensities appear grey. When step‑finding is enabled, step medians and transitions are overlaid in green. Click a point to jump to that frame.
-* **Speed Histogram:** histogram of frame‑to‑frame speeds in px/frame, or μm/s when pixel size + frame interval are set. Dashed vertical lines show the average speed and the net speed (start‑to‑end displacement divided by total time).
+### Pixel Intensity Histogram <a name="pixel-intensity-histogram"></a>
+
+* Histogram of pixel intensities in the current search window (the same square crop used for fitting). Uses 50 bins.
+* If the fitted sigma is available, the colored overlay shows pixels within 2σ of the fitted center.
+* Dashed lines mark the background level and the fitted peak (background + amplitude), when available.
+
+### Intensity Plot <a name="intensity-plot"></a>
+
+* Per‑frame integrated intensity (1‑indexed frames) with average (grey dashed) and median (magenta dashed) lines.
+* The top strip mirrors the per‑frame color coding (e.g., Color By or colocalization), and missing/invalid intensities appear grey.
+* When step‑finding is enabled, step medians and transitions are overlaid in green.
+* Click a point to jump to that frame.
+
+### Speed Histogram <a name="speed-histogram"></a>
+
+* Histogram of frame‑to‑frame speeds in px/frame, or μm/s when pixel size + frame interval are set.
+* Dashed vertical lines show the average speed and the net speed (start‑to‑end displacement divided by total time).
+
+---
 
 ## Additional Features <a name="additional-features"></a>
 
@@ -221,8 +243,8 @@ Use **Save » Trajectories** (`Ctrl/Cmd+S`) to export your analysis; see [Loadin
 
 * Useful for overlaying filaments or guides during kymograph creation.
 * Load via **Load » Reference Image**
-* Toggle with the icon under the movie.
-* While toggled, use shift+arrows to move the reference image if necessary
+* Toggle with the **REF** icon under the movie.
+* While toggled, use `Ctrl/Cmd` + arrows to nudge the reference image if necessary
 
 ### Custom Columns <a name="custom-columns"></a>
 
