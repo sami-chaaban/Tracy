@@ -619,6 +619,10 @@ class NavigatorMovieMixin:
             self.movieCanvas.ax.draw_artist(self.movieCanvas.tempRoiLine)        
         canvas.blit(self.movieCanvas._roi_bbox)
 
+    def on_movie_leave(self, _event):
+        self.pixelValueLabel.setText("")
+        self._last_hover_xy = None
+
     def on_movie_left_click(self, event):
         # Get the current frame index from the frame slider.
         frame_idx = self.frameSlider.value()

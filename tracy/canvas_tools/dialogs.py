@@ -64,7 +64,8 @@ class SetScaleDialog(QDialog):
 
         # Create OK and Cancel buttons
         self.buttonBox = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        layout.addWidget(self.buttonBox)
+        self.buttonBox.setCenterButtons(True)
+        layout.addWidget(self.buttonBox, alignment=Qt.AlignHCenter)
 
         # Initially disable OK if either field is empty
         self.buttonBox.button(QDialogButtonBox.Ok).setEnabled(self.inputs_valid())

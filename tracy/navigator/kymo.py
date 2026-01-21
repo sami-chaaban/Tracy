@@ -667,12 +667,12 @@ class NavigatorKymoMixin:
         
         # Check that the event is in the kymograph canvas and has valid data
         if event.inaxes != self.kymoCanvas.ax or event.xdata is None or event.ydata is None:
-            #self.pixelValueLabel.setText("No hover data")
+            self.pixelValueLabel.setText("")
             return
 
         kymograph = self.kymoCanvas.image
         if kymograph is None:
-            #self.pixelValueLabel.setText("No kymograph loaded")
+            self.pixelValueLabel.setText("")
             return
 
         if self.looping:
@@ -686,7 +686,7 @@ class NavigatorKymoMixin:
         
         # Check if the computed indices are within image bounds
         if not (0 <= x < kymograph.shape[1] and 0 <= y < kymograph.shape[0]):
-            #self.pixelValueLabel.setText("Coordinates out of bounds")
+            self.pixelValueLabel.setText("")
             return
 
         # For a vertically flipped kymograph, the frame index is computed as below:
@@ -885,6 +885,7 @@ class NavigatorKymoMixin:
     def on_kymo_leave(self, event):
         """Callback for when the mouse leaves the kymograph axes.
         This removes the blue X marker from the movie canvas."""
+        self.pixelValueLabel.setText("")
         if self.movieCanvas is not None:
             self.movieCanvas.draw_idle()
 

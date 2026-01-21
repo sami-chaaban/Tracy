@@ -236,6 +236,7 @@ class NavigatorUiMixin:
         self.kymoCanvas.mpl_connect("button_release_event", self.on_kymo_release)
         self.kymoCanvas.mpl_connect("motion_notify_event", self.on_kymo_hover)
         self.kymoCanvas.mpl_connect("axes_leave_event", self.on_kymo_leave)
+        self.kymoCanvas.mpl_connect("figure_leave_event", self.on_kymo_leave)
         self.kymoCanvas.mpl_connect("pick_event", self._on_kymo_label_pick)
 
         self.kymoCanvas.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -571,7 +572,7 @@ class NavigatorUiMixin:
         self.traj_overlay_button = AnimatedIconButton("")
         # self.traj_overlay_button.setToolTip("Overlay trajectories (shortcut: o)")
         traj_filter = BubbleTipFilter(
-            "Cycle trajectory overlay: all > one > none (shortcut: o)",
+            "Overlay trajectories (all > one > none; shortcut: o)",
             self
         )
         self.traj_overlay_button.installEventFilter(traj_filter)
@@ -632,7 +633,7 @@ class NavigatorUiMixin:
         self.roi_overlay_button.setIcon(QIcon(roioverlayiconpath))
         self.roi_overlay_button.setIconSize(QSize(16, 16))
         # self.roi_overlay_button.setToolTip("Overlay ROI onto the movie")
-        overlayroi_filter = BubbleTipFilter("Overlay the kymograph ROIs onto the movie", self)
+        overlayroi_filter = BubbleTipFilter("Overlay lines (shortcut n)", self)
         self.roi_overlay_button.installEventFilter(overlayroi_filter)
         self.roi_overlay_button._bubble_filter = overlayroi_filter
         self.roi_overlay_button.setCheckable(True)
@@ -852,6 +853,7 @@ class NavigatorUiMixin:
         
         # Connect additional signals (e.g. for mouse motion over the movie canvas).
         self.movieCanvas.mpl_connect("motion_notify_event", self.on_movie_hover)
+        self.movieCanvas.mpl_connect("axes_leave_event", self.on_movie_leave)
 
         # Create a container (QFrame) for the zoom inset.
         self.zoomInsetFrame = QFrame(self.movieDisplayContainer)
@@ -1606,9 +1608,9 @@ class NavigatorUiMixin:
         loadReferenceAction.triggered.connect(self.load_reference)
         loadMenu.addAction(loadReferenceAction)
         
-        loadKymosAction = QAction("Kymograph w/Point-ROIs", self)
-        loadKymosAction.triggered.connect(self.load_kymograph_with_overlays)
-        loadMenu.addAction(loadKymosAction)
+        # loadKymosAction = QAction("Kymograph w/Point-ROIs", self)
+        # loadKymosAction.triggered.connect(self.load_kymograph_with_overlays)
+        # loadMenu.addAction(loadKymosAction)
 
         loadTrackMateAction = QAction("TrackMate spots", self)
         loadTrackMateAction.triggered.connect(self.trajectoryCanvas.load_trackmate_spots)
@@ -1760,11 +1762,21 @@ class NavigatorUiMixin:
             self.colorByMenu.removeAction(act)
         self._colorByActions.clear()
 
+        def finalize_menu():
+            def sort_key(act):
+                return act.text().casefold().replace("α", "a")
+            self._colorByActions.sort(key=sort_key)
+            for act in self._colorByActions:
+                self.colorByMenu.addAction(act)
+            has_actions = bool(self._colorByActions)
+            self.colorByMenu.menuAction().setVisible(has_actions)
+            self.colorByMenu.setEnabled(has_actions)
+
         # 2) add custom columns (binary/value)
         for col in self.trajectoryCanvas.custom_columns:
             ctype = self.trajectoryCanvas._column_types[col]
             if ctype in ("binary", "value"):
-                act = QAction(f"Color by {col}", self, checkable=True)
+                act = QAction(f"{col}", self, checkable=True)
                 act.setData(col)   # ← store the real key
                 act.toggled.connect(lambda on, a=act: 
                     self._on_color_by_toggled(a.data(), a, on)
@@ -1773,13 +1785,10 @@ class NavigatorUiMixin:
                 if self.color_by_column == col:
                     act.setChecked(True)
 
-                self.colorByMenu.addAction(act)
                 self._colorByActions.append(act)
 
         if self.movie is None:
-            has_actions = bool(self._colorByActions)
-            self.colorByMenu.menuAction().setVisible(has_actions)
-            self.colorByMenu.setEnabled(has_actions)
+            finalize_menu()
             return
 
         has_seg_diff = any(
@@ -1791,20 +1800,15 @@ class NavigatorUiMixin:
             a_col = getattr(self, "_DIFF_A_COL", "α")
             for base in (d_col, a_col):
                 key = f"{base} (per segment)"
-                act = QAction(f"Color by {key}", self, checkable=True)
+                act = QAction(f"{key}", self, checkable=True)
                 act.setData(key)
                 act.toggled.connect(lambda on, a=act: 
                     self._on_color_by_toggled(a.data(), a, on)
                 )
                 if self.color_by_column == key:
                     act.setChecked(True)
-                self.colorByMenu.addAction(act)
                 self._colorByActions.append(act)
 
-        has_actions = bool(self._colorByActions)
-        self.colorByMenu.menuAction().setVisible(has_actions)
-        self.colorByMenu.setEnabled(has_actions)
-        
         # 3) count channels
         if self.movie.ndim == 4 and self._channel_axis is not None:
             n_chan = self.movie.shape[self._channel_axis]
@@ -1815,20 +1819,19 @@ class NavigatorUiMixin:
         if getattr(self, "check_colocalization", False):
             if n_chan == 2:
                 key = "colocalization"
-                act = QAction("Color by Colocalization", self, checkable=True)
+                act = QAction("Colocalization", self, checkable=True)
                 act.setData(key)
                 act.toggled.connect(lambda on, a=act: 
                     self._on_color_by_toggled(a.data(), a, on)
                 )
                 if self.color_by_column == key:
                     act.setChecked(True)
-                self.colorByMenu.addAction(act)
                 self._colorByActions.append(act)
 
             elif n_chan > 2:
                 for tgt in range(1, n_chan+1):
                     key  = f"coloc_ch{tgt}"
-                    text = f"Color by Ch. {tgt} coloc"
+                    text = f"Ch. {tgt} coloc"
                     act = QAction(text, self, checkable=True)
                     act.setData(key)
                     act.toggled.connect(lambda on, a=act: 
@@ -1836,8 +1839,9 @@ class NavigatorUiMixin:
                     )
                     if self.color_by_column == key:
                         act.setChecked(True)
-                    self.colorByMenu.addAction(act)
                     self._colorByActions.append(act)
+
+        finalize_menu()
 
     def _on_color_by_toggled(self, column_name, action, checked):
         if checked and (column_name == "colocalization" or column_name.startswith("coloc_ch")):
