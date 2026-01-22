@@ -20,6 +20,9 @@ class ClickableLabel(QLabel):
 class AnimatedIconButton(QPushButton):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.setProperty("iconOnly", True)
+        self.style().unpolish(self)
+        self.style().polish(self)
         # set up the animation on the built-in iconSize property
         self._anim = QPropertyAnimation(self, b"iconSize", self)
         self._anim.setDuration(100)

@@ -266,14 +266,15 @@ class KymoContrastControlsWidget(QWidget):
         }
 
 class ToggleSwitch(QAbstractButton):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, total_width=130, total_height=30, show_labels=True):
         super().__init__(parent)
         self.setCheckable(True)
         self.setChecked(False)
         # Set the overall widget size
-        self._totalWidth = 130
-        self._totalHeight = 30
+        self._totalWidth = total_width
+        self._totalHeight = total_height
         self.setMinimumSize(self._totalWidth, self._totalHeight)
+        self._show_labels = show_labels
         
         # Define the area for the switch (the actual toggle region)
         self._switchWidth = 50
@@ -327,32 +328,33 @@ class ToggleSwitch(QAbstractButton):
         painter.setPen(QtGui.QPen(QColor("#d0d0d0"), 1.5))
         painter.drawEllipse(handleRect)
 
-        # Assume switchRect is already computed.
-        # totalRect is the full widget rect:
-        totalRect = self.rect()
-        margin = 4  # Reduced margin to bring the labels closer
+        if self._show_labels:
+            # Assume switchRect is already computed.
+            # totalRect is the full widget rect:
+            totalRect = self.rect()
+            margin = 4  # Reduced margin to bring the labels closer
 
-        # Rectangle for "Spot": extends from the left edge to just before the switch.
-        leftTextRect = QRectF(
-            totalRect.left(), totalRect.top(),
-            switchRect.left() - 2 * margin, totalRect.height()
-        )
+            # Rectangle for "Spot": extends from the left edge to just before the switch.
+            leftTextRect = QRectF(
+                totalRect.left(), totalRect.top(),
+                switchRect.left() - 2 * margin, totalRect.height()
+            )
 
-        # Rectangle for "ROI": extends from just after the switch to the right edge.
-        rightTextRect = QRectF(
-            switchRect.right() + 2 * margin, totalRect.top(),
-            totalRect.right() - (switchRect.right() + 2 * margin), totalRect.height()
-        )
+            # Rectangle for "ROI": extends from just after the switch to the right edge.
+            rightTextRect = QRectF(
+                switchRect.right() + 2 * margin, totalRect.top(),
+                totalRect.right() - (switchRect.right() + 2 * margin), totalRect.height()
+            )
 
-        painter.setPen(QColor("black"))
+            painter.setPen(QColor("black"))
 
-        font = painter.font()
-        font.setBold(True)
-        font.setPointSize(11)
-        painter.setFont(font)
+            font = painter.font()
+            font.setBold(True)
+            font.setPointSize(11)
+            painter.setFont(font)
 
-        painter.drawText(leftTextRect, Qt.AlignRight | Qt.AlignVCenter, "SPOT")
-        painter.drawText(rightTextRect, Qt.AlignLeft | Qt.AlignVCenter, "KYMO")
+            painter.drawText(leftTextRect, Qt.AlignRight | Qt.AlignVCenter, "SPOT")
+            painter.drawText(rightTextRect, Qt.AlignLeft | Qt.AlignVCenter, "KYMO")
     
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:

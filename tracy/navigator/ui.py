@@ -1,4 +1,5 @@
 from ._shared import *
+import sys
 
 
 def _label_text_rect(widget, option):
@@ -56,10 +57,13 @@ class ElidedClickableLabel(ClickableLabel):
 
         text_rect = _label_text_rect(self, option)
         elided = self.fontMetrics().elidedText(super().text(), self._elide_mode, text_rect.width())
+        alignment = self.alignment()
+        if super().text().strip().lower() == "load":
+            alignment = Qt.AlignHCenter | Qt.AlignVCenter
         self.style().drawItemText(
             painter,
             text_rect,
-            self.alignment(),
+            alignment,
             option.palette,
             self.isEnabled(),
             elided,
@@ -102,6 +106,7 @@ class NavigatorUiMixin:
             background: transparent;
             color: black;
             font-size: 14px;
+            font-weight: bold;
             border: 1px solid #DCE6FF;
             border-radius: 8px;
             padding: 6px 12px
@@ -118,7 +123,10 @@ class NavigatorUiMixin:
         self.movieNameLabel.installEventFilter(load_tip_filter)
         self.movieNameLabel._bubble_filter = load_tip_filter
         self._load_tip_filter = load_tip_filter
-        QTimer.singleShot(8000, self._maybe_show_load_tip)
+        self._load_tip_timer = QTimer(self)
+        self._load_tip_timer.setSingleShot(True)
+        self._load_tip_timer.timeout.connect(self._maybe_show_load_tip)
+        self._load_tip_timer.start(8000)
 
         
         # Search window radius control.
@@ -356,7 +364,7 @@ class NavigatorUiMixin:
         kymo_contrast_layout.setSpacing(0)
         kymo_contrast_layout.setAlignment(Qt.AlignHCenter)
         kymo_contrast_label = QLabel("CONTRAST")
-        kymo_contrast_label.setStyleSheet("color: black; font-size: 9px;")
+        kymo_contrast_label.setStyleSheet("color: black; font-size: 10px;")
         kymo_contrast_label.adjustSize()
         kymo_label_spacer = max(2, kymo_contrast_label.sizeHint().height() // 2)
         kymo_contrast_layout.addSpacing(kymo_label_spacer)
@@ -379,7 +387,7 @@ class NavigatorUiMixin:
         kymo_reset_layout.setSpacing(0)
         kymo_reset_layout.setAlignment(Qt.AlignHCenter)
         kymo_reset_label = QLabel("AUTO")
-        kymo_reset_label.setStyleSheet("color: black; font-size: 9px;")
+        kymo_reset_label.setStyleSheet("color: black; font-size: 10px;")
         kymo_reset_label.adjustSize()
         kymo_reset_layout.addSpacing(kymo_label_spacer)
         kymo_reset_layout.addWidget(self.kymoresetBtn, alignment=Qt.AlignHCenter)
@@ -405,7 +413,7 @@ class NavigatorUiMixin:
         anchor_layout.setSpacing(0)
         anchor_layout.setAlignment(Qt.AlignHCenter)
         anchor_label = QLabel("ANCHORS")
-        anchor_label.setStyleSheet("color: black; font-size: 9px;")
+        anchor_label.setStyleSheet("color: black; font-size: 10px;")
         anchor_label.adjustSize()
         anchor_layout.addSpacing(kymo_label_spacer)
         anchor_layout.addWidget(self.kymo_anchor_overlay_button, alignment=Qt.AlignHCenter)
@@ -564,7 +572,7 @@ class NavigatorUiMixin:
         contrast_label_layout.setSpacing(0)
         contrast_label_layout.setAlignment(Qt.AlignHCenter)
         contrast_label = QLabel("CONTRAST")
-        contrast_label.setStyleSheet("color: black; font-size: 9px;")
+        contrast_label.setStyleSheet("color: black; font-size: 10px;")
         contrast_label.adjustSize()
         movie_label_spacer = max(2, contrast_label.sizeHint().height() // 2)
         contrast_label_layout.addSpacing(movie_label_spacer)
@@ -588,7 +596,7 @@ class NavigatorUiMixin:
         reset_layout.setSpacing(0)
         reset_layout.setAlignment(Qt.AlignHCenter)
         reset_label = QLabel("AUTO")
-        reset_label.setStyleSheet("color: black; font-size: 9px;")
+        reset_label.setStyleSheet("color: black; font-size: 10px;")
         reset_label.adjustSize()
         reset_layout.addSpacing(movie_label_spacer)
         reset_layout.addWidget(self.resetBtn, alignment=Qt.AlignHCenter)
@@ -614,14 +622,15 @@ class NavigatorUiMixin:
         sum_layout.setSpacing(0)
         sum_layout.setAlignment(Qt.AlignHCenter)
         sum_label = QLabel("MAX")
-        sum_label.setStyleSheet("color: black; font-size: 9px;")
+        sum_label.setStyleSheet("color: black; font-size: 10px;")
         sum_label.adjustSize()
         sum_layout.addSpacing(movie_label_spacer)
         sum_layout.addWidget(self.sumBtn, alignment=Qt.AlignHCenter)
         sum_layout.addWidget(sum_label, alignment=Qt.AlignHCenter)
         contrastLayout.addWidget(sum_container)
         contrastLayout.setAlignment(sum_container, Qt.AlignBottom)
-        contrastLayout.addSpacing(12)
+        overlay_gap = 12
+        contrastLayout.addSpacing(overlay_gap)
 
         self.refBtn = AnimatedIconButton("")
         self.refBtn.setIcon(QIcon(referenceiconpath))
@@ -641,7 +650,7 @@ class NavigatorUiMixin:
         ref_layout.setSpacing(0)
         ref_layout.setAlignment(Qt.AlignHCenter)
         ref_label = QLabel("REF")
-        ref_label.setStyleSheet("color: black; font-size: 9px;")
+        ref_label.setStyleSheet("color: black; font-size: 10px;")
         ref_label.adjustSize()
         ref_spacer_height = ref_label.sizeHint().height() + 1
         ref_layout.addSpacing(ref_spacer_height)
@@ -652,7 +661,7 @@ class NavigatorUiMixin:
         ref_container.setVisible(False)
         self.ref_container = ref_container
         ref_spacer = QWidget()
-        ref_spacer.setFixedWidth(12)
+        ref_spacer.setFixedWidth(overlay_gap)
         ref_spacer.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Minimum)
         contrastLayout.addWidget(ref_spacer)
         contrastLayout.setAlignment(ref_spacer, Qt.AlignBottom)
@@ -686,7 +695,7 @@ class NavigatorUiMixin:
         traj_layout.setSpacing(0)
         traj_layout.setAlignment(Qt.AlignHCenter)
         traj_label = QLabel("SPOTS")
-        traj_label.setStyleSheet("color: black; font-size: 9px;")
+        traj_label.setStyleSheet("color: black; font-size: 10px;")
         traj_label.adjustSize()
         traj_layout.addSpacing(movie_label_spacer)
         traj_layout.addWidget(self.traj_overlay_button, alignment=Qt.AlignHCenter)
@@ -696,7 +705,7 @@ class NavigatorUiMixin:
         contrastLayout.setAlignment(traj_container, Qt.AlignBottom)
         contrastLayout.addSpacing(18)
 
-        self.modeSwitch = ToggleSwitch()
+        self.modeSwitch = ToggleSwitch(total_width=60, show_labels=False)
         self.modeSwitch.toggled.connect(lambda state: self.onModeChanged("roi" if state else "spot"))
         mode_container = QWidget()
         mode_layout = QVBoxLayout(mode_container)
@@ -704,14 +713,25 @@ class NavigatorUiMixin:
         mode_layout.setSpacing(0)
         mode_layout.setAlignment(Qt.AlignHCenter)
         mode_label = QLabel("MODE")
-        mode_label.setStyleSheet("color: black; font-size: 9px;")
+        mode_label.setStyleSheet("color: black; font-size: 10px;")
         mode_label.adjustSize()
         mode_layout.addSpacing(movie_label_spacer)
-        mode_layout.addWidget(self.modeSwitch, alignment=Qt.AlignHCenter)
+        mode_switch_row = QWidget()
+        mode_switch_layout = QHBoxLayout(mode_switch_row)
+        mode_switch_layout.setContentsMargins(0, 0, 0, 0)
+        mode_switch_layout.setSpacing(2)
+        spot_label = QLabel("SPOT")
+        spot_label.setStyleSheet("color: black; font-size: 14px; font-weight: bold;")
+        kymo_label = QLabel("KYMO")
+        kymo_label.setStyleSheet("color: black; font-size: 14px; font-weight: bold;")
+        mode_switch_layout.addWidget(spot_label, alignment=Qt.AlignVCenter)
+        mode_switch_layout.addWidget(self.modeSwitch, alignment=Qt.AlignVCenter)
+        mode_switch_layout.addWidget(kymo_label, alignment=Qt.AlignVCenter)
+        mode_layout.addWidget(mode_switch_row, alignment=Qt.AlignHCenter)
         mode_layout.addWidget(mode_label, alignment=Qt.AlignHCenter)
         contrastLayout.addWidget(mode_container)
         contrastLayout.setAlignment(mode_container, Qt.AlignBottom)
-        contrastLayout.addSpacing(24)
+        contrastLayout.addSpacing(18)
         switch_filter = BubbleTipFilter("Switch between finding spots and drawing kymographs (shortcut: n)", self)
         self.modeSwitch.installEventFilter(switch_filter)
         # keep a ref so Python doesn’t garbage‐collect it
@@ -745,7 +765,7 @@ class NavigatorUiMixin:
         roi_overlay_layout.setSpacing(0)
         roi_overlay_layout.setAlignment(Qt.AlignHCenter)
         roi_label = QLabel("LINES")
-        roi_label.setStyleSheet("color: black; font-size: 9px;")
+        roi_label.setStyleSheet("color: black; font-size: 10px;")
         roi_label.adjustSize()
         roi_overlay_layout.addSpacing(movie_label_spacer)
         roi_overlay_layout.addWidget(self.roi_overlay_button, alignment=Qt.AlignHCenter)
@@ -769,7 +789,7 @@ class NavigatorUiMixin:
         delete_layout.setSpacing(0)
         delete_layout.setAlignment(Qt.AlignHCenter)
         delete_label = QLabel("DEL.")
-        delete_label.setStyleSheet("color: black; font-size: 9px;")
+        delete_label.setStyleSheet("color: black; font-size: 10px;")
         delete_label.adjustSize()
         delete_layout.addSpacing(movie_label_spacer)
         delete_layout.addWidget(self.delete_button, alignment=Qt.AlignHCenter)
@@ -793,7 +813,7 @@ class NavigatorUiMixin:
         clear_layout.setSpacing(0)
         clear_layout.setAlignment(Qt.AlignHCenter)
         clear_label = QLabel("ALL")
-        clear_label.setStyleSheet("color: black; font-size: 9px;")
+        clear_label.setStyleSheet("color: black; font-size: 10px;")
         clear_label.adjustSize()
         clear_layout.addSpacing(movie_label_spacer)
         clear_layout.addWidget(self.clear_button, alignment=Qt.AlignHCenter)
@@ -1685,6 +1705,57 @@ class NavigatorUiMixin:
     def get_point_color(self):
         return self.intensityCanvas.get_current_point_color()
 
+    def _get_toggle_action_icon(self):
+        icon = getattr(self, "_toggle_action_icon", None)
+        if icon is not None:
+            return icon
+
+        size = 12
+        off = QtGui.QPixmap(size, size)
+        off.fill(Qt.transparent)
+        painter = QtGui.QPainter(off)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        pen = QtGui.QPen(QColor(120, 120, 120, 160))
+        pen.setWidth(1)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(QRectF(1, 1, size - 2, size - 2))
+        painter.end()
+
+        on = QtGui.QPixmap(size, size)
+        on.fill(Qt.transparent)
+        painter = QtGui.QPainter(on)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        pen = QtGui.QPen(QColor(60, 60, 60))
+        pen.setWidth(2)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(QRectF(1, 1, size - 2, size - 2))
+        path = QtGui.QPainterPath()
+        path.moveTo(size * 0.25, size * 0.55)
+        path.lineTo(size * 0.45, size * 0.72)
+        path.lineTo(size * 0.78, size * 0.32)
+        painter.drawPath(path)
+        painter.end()
+
+        icon = QIcon()
+        icon.addPixmap(off, QIcon.Normal, QIcon.Off)
+        icon.addPixmap(on, QIcon.Normal, QIcon.On)
+        self._toggle_action_icon = icon
+        return icon
+
+    def _apply_checkable_action_style(self, action):
+        if not action.isCheckable():
+            return
+        if not sys.platform.startswith("win"):
+            return
+        if not action.icon().isNull():
+            return
+        action.setIcon(self._get_toggle_action_icon())
+        action.setIconVisibleInMenu(True)
+
     # In create_menu(), add a new menu action:
     def create_menu(self):
         menubar = self.menuBar()
@@ -1767,6 +1838,7 @@ class NavigatorUiMixin:
         avoidOldSpotsAction.setChecked(False)
         avoidOldSpotsAction.setStatusTip("Skip any spot centers that were already analysed")
         avoidOldSpotsAction.toggled.connect(lambda checked: setattr(self, "avoid_previous_spot", checked))
+        self._apply_checkable_action_style(avoidOldSpotsAction)
         self.spotMenu.addAction(avoidOldSpotsAction)
 
         kymoMenu = menubar.addMenu("Kymograph")
@@ -1774,6 +1846,7 @@ class NavigatorUiMixin:
         kymoLoGAction = QAction("Apply LoG filter", self, checkable=True)
         kymoLoGAction.setChecked(False)
         kymoLoGAction.toggled.connect(self.on_toggle_log_filter)
+        self._apply_checkable_action_style(kymoLoGAction)
         kymoMenu.addAction(kymoLoGAction)
 
         kymopreferencesAction = QAction("Line options", self)
@@ -1787,6 +1860,7 @@ class NavigatorUiMixin:
         connectgapsAction = QAction("Connect spot gaps", self, checkable=True)
         connectgapsAction.setChecked(False)
         connectgapsAction.toggled.connect(self.on_connect_spot_gaps_toggled)
+        self._apply_checkable_action_style(connectgapsAction)
         kymoMenu.addAction(connectgapsAction)
 
         trajMenu = menubar.addMenu("Trajectories")
@@ -1819,6 +1893,7 @@ class NavigatorUiMixin:
 
         self.invertAct = QAction("Invert", self, checkable=True)
         self.invertAct.triggered.connect(self.toggle_invert_cmap)
+        self._apply_checkable_action_style(self.invertAct)
         viewMenu.addAction(self.invertAct)
 
         zoomAction = QAction("Inset size", self)
@@ -1836,6 +1911,7 @@ class NavigatorUiMixin:
             action.setChecked(False)
             handler = getattr(self, spec.toggle_handler)
             action.toggled.connect(handler)
+            self._apply_checkable_action_style(action)
 
             if spec.has_popup or spec.checks_existing:
                 tips = []
@@ -1881,6 +1957,7 @@ class NavigatorUiMixin:
                 act.toggled.connect(lambda on, a=act: 
                     self._on_color_by_toggled(a.data(), a, on)
                 )
+                self._apply_checkable_action_style(act)
                 # if already selected, show its checkmark
                 if self.color_by_column == col:
                     act.setChecked(True)
@@ -1905,6 +1982,7 @@ class NavigatorUiMixin:
                 act.toggled.connect(lambda on, a=act: 
                     self._on_color_by_toggled(a.data(), a, on)
                 )
+                self._apply_checkable_action_style(act)
                 if self.color_by_column == key:
                     act.setChecked(True)
                 self._colorByActions.append(act)
@@ -1924,6 +2002,7 @@ class NavigatorUiMixin:
                 act.toggled.connect(lambda on, a=act: 
                     self._on_color_by_toggled(a.data(), a, on)
                 )
+                self._apply_checkable_action_style(act)
                 if self.color_by_column == key:
                     act.setChecked(True)
                 self._colorByActions.append(act)
@@ -1937,6 +2016,7 @@ class NavigatorUiMixin:
                     act.toggled.connect(lambda on, a=act: 
                         self._on_color_by_toggled(a.data(), a, on)
                     )
+                    self._apply_checkable_action_style(act)
                     if self.color_by_column == key:
                         act.setChecked(True)
                     self._colorByActions.append(act)

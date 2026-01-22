@@ -27,6 +27,10 @@ QPushButton#Passive {
     border-radius: 5px;
     padding: 8px 16px;
 }
+QPushButton[iconOnly="true"],
+QPushButton#Passive[iconOnly="true"] {
+    padding: 0px;
+}
 QPushButton#Passive {
     color: white;
 }

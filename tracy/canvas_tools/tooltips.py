@@ -135,6 +135,12 @@ class BubbleTipFilter(QObject):
         if ev.type() == QEvent.MouseMove and self.bubble and not self._force_show:
             self._checkHide()
 
+        # Stop timer/hide when pressing inside the target widget (or its children).
+        if ev.type() == QEvent.MouseButtonPress and self._wobj is not None:
+            if isinstance(obj, QWidget) and (obj is self._wobj or self._wobj.isAncestorOf(obj)):
+                self._timer.stop()
+                self._hideBubble()
+
         # — Enter on *our* button?
         if ev.type() == QEvent.Enter and getattr(obj, "_bubble_filter", None) is self:
             self._wobj = obj
@@ -296,4 +302,3 @@ class CenteredBubbleFilter(QObject):
             self.bubble.hide()
             self.bubble.deleteLater()
             self.bubble = None
-

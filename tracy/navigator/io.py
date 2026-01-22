@@ -18,6 +18,13 @@ class NavigatorIOMixin:
         return ''.join(ax for ax in axes if ax.isupper())
 
     def handle_movie_load(self, fname=None, pixelsize=None, frameinterval=None):
+        load_timer = getattr(self, "_load_tip_timer", None)
+        if load_timer is not None and load_timer.isActive():
+            load_timer.stop()
+        load_tip = getattr(self, "_load_tip_filter", None)
+        if load_tip is not None:
+            load_tip._timer.stop()
+            load_tip._hideBubble()
         # If save_and_load_routine is active, don't open the dialog.
         if self.save_and_load_routine:
             # Reset the flag so it only applies once.
@@ -140,6 +147,8 @@ class NavigatorIOMixin:
             self.refBtn.setVisible(False)
             if hasattr(self, "ref_container"):
                 self.ref_container.setVisible(False)
+            if hasattr(self, "ref_spacer"):
+                self.ref_spacer.setVisible(False)
             self.refBtn.setChecked(False)
             self.sumBtn.setChecked(False)
             self.zoomInsetFrame.setVisible(False)
@@ -790,10 +799,14 @@ class NavigatorIOMixin:
             self.refBtn.setVisible(False)
             if hasattr(self, "ref_container"):
                 self.ref_container.setVisible(False)
+            if hasattr(self, "ref_spacer"):
+                self.ref_spacer.setVisible(False)
             self.refBtn.setChecked(False)
             self.refBtn.setVisible(True)
             if hasattr(self, "ref_container"):
                 self.ref_container.setVisible(True)
+            if hasattr(self, "ref_spacer"):
+                self.ref_spacer.setVisible(True)
 
             reffilt = self.refBtn._bubble_filter
             reffilt._wobj = self.refBtn
@@ -1462,7 +1475,7 @@ class NavigatorIOMixin:
                 out_path = os.path.join(directory, f"{fname}.{ft}")
 
                 if do_overlay:
-                    print([name])
+                    
                     # 1) load & flip the raw kymo
                     kymo = np.flipud(self.kymographs[name])
 
@@ -1496,9 +1509,25 @@ class NavigatorIOMixin:
                     if ft == "tif":
                         tifffile.imwrite(out_path, kymo, imagej=True)
                     else:
-                        p15, p99 = np.percentile(kymo, (15, 99))
-                        disp     = np.clip((kymo - p15)/(p99 - p15), 0, 1)
-                        disp     = (disp*255).astype(np.uint8)
+                        settings = getattr(self, "kymo_contrast_settings", {}).get(name)
+                        if settings:
+                            p15, p99 = np.percentile(kymo, (15, 99))
+                            denom = p99 - p15
+                            if denom == 0:
+                                denom = 1
+                            base = np.clip((kymo - p15) / denom, 0, 1) * 255.0
+                            vmin = settings.get("vmin", 0)
+                            vmax = settings.get("vmax", 255)
+                            if vmin >= vmax:
+                                vmax = vmin + 1
+                            disp = np.clip((base - vmin) / (vmax - vmin), 0, 1)
+                        else:
+                            p15, p99 = np.percentile(kymo, (15, 99))
+                            denom = p99 - p15
+                            if denom == 0:
+                                denom = 1
+                            disp = np.clip((kymo - p15) / denom, 0, 1)
+                        disp = (disp * 255).astype(np.uint8)
                         cmap     = "gray_r" if getattr(self, "inverted_cmap", False) else "gray"
                         disp     = np.flipud(disp)
                         plt.imsave(out_path, disp, cmap=cmap, origin="lower")
