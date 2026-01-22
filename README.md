@@ -97,13 +97,12 @@ Other load options are available under **Load** — see [Loading & Saving](#load
 
 ### 4. Generating Kymographs <a name="generating-kymographs"></a>
 
-1. Switch to **Line** mode (slider under movie or `n`).
-   * The toggle shows **SPOT** / **KYMO**.
-2. (Optional) Toggle max‑projection (`m`) to guide line placement or load a [reference image](#reference-image).
+1. Switch to **KYMO** mode (toggle under the movie or `n`).
+2. (Optional) To help guide line placement, toggle max‑projection (`m`) or load a [reference image](#reference-image).
 3. Draw a segmented line by clicking anchors (press `Esc` to cancel).
 4. Double‑click to finish and generate the kymograph.
 5. For multi‑channel movies, a kymograph is generated for each channel (toggle with `1`, `2`, …).
-6. Cycle through kymographs with `,` (previous) and `.` (next).
+6. Cycle through kymographs with `,` (previous) and `.` (next) or use the dropdown menu.
 
 > *Tip:* Apply a LoG filter via **Kymograph » Apply LoG filter** for clearer tracks (applies to subsequent kymographs).
 
@@ -111,42 +110,54 @@ Other load options are available under **Load** — see [Loading & Saving](#load
 
 #### A. From a Kymograph
 
-1. On the kymograph, draw a segmented line (blue anchors) to follow the track.
+1. On the kymograph, draw a segmented line (blue [anchors](#anchors)) to follow the track.
 2. Double‑click to finish and compute a trajectory using your search radius and tracking mode (see [tracking options](#tracking-options)).
 3. Click any kymograph or plot point to jump to that spot; use `→`/`←` to step forward and backward.
-4. Press spacebar to animate the trajectory.
+4. Press spacebar to animate the trajectory and again to stop the playback.
 5. If you want to recalculate the trajectory with new tracking options, press `Enter` (or **Trajectory » Recalculate**).
-6. (Optional) Fill gaps via **Kymograph » Connect Spot Gaps**.
+6. If a spot looks wrong, press `x` to invalidate the highlighted point; press `x` again to re‑fit and restore it.
 
-**Anchor editing (Shift):** with trajectory overlay on, hold **Shift** to enter anchor‑edit mode. Only the selected trajectory’s dotted line and blue anchor circles are shown. Drag any circle to move that anchor; the dotted line updates live. Release **Shift** to exit edit mode and recalculate if anchors changed. Shift also cancels any active left‑click sequence. Use the **ANCHORS** toggle below the kymograph to hide/show anchor overlays.
-
-**Trajectory overlay (`o`):** cycles all -> one -> none.
-
-> The blue circles are anchor points: direct kymograph clicks, or movie‑click anchors projected onto the current kymograph. Anchors are only shown when the selected trajectory belongs to the currently displayed kymograph/geometry.
+> Optionally connect gaps via **Kymograph » Connect Spot Gaps**.
 
 #### B. Direct Movie Tracking
 
 1. Click an initial spot on the movie.
 2. Skip a few frames and click the next spot. Repeat until the track is covered.
 3. End a click sequence with `Enter` or cancel with `Esc`.
-4. Browse/select tracks as above.
+4. Browse, playback, edit tracks as above.
 5. If you want to recalculate the trajectory with new [tracking options](#tracking-options), press `Enter` (or **Trajectory » Recalculate**).
 
 > You can use “video‑game” controls: `w`/`a`/`s`/`d` to move the cursor, `l`/`j` to change frames, `k` to select the spot.
 
-#### Tracking Options <a name="tracking-options"></a>
+<details>
+
+<summary>Tracking Options <a name="tracking-options"></a></summary>
 
 * **Search Radius:** adjust with `r` + scroll
 * **Tracking Mode** (`t`)**:**
-
   * **Independent** (default)**:** fits each frame independently.
   * **Tracked:** uses previous frame’s spot as center.
   * **Smooth:** independent + post‑filter outliers.
-* Tracking options are set for any subsequent analysis. An existing trajectory can be recalculated using the currently set options by pressing `Enter` (or **Trajectory » Recalculate**).
-* If a spot looks wrong, press `x` to invalidate the highlighted point; press `x` again to re‑fit and restore it.
 * Avoid using spots in existing tracks via **Spot » Avoid previous spots**.
+* Tracking options are set for any subsequent analysis. An existing trajectory can be recalculated using the currently set options by pressing `Enter` (or **Trajectory » Recalculate**).
 
-#### Intensity Calculation <a name="intensity"></a>
+</details>
+
+<details>
+
+<summary>Anchors <a name="anchors"></a></summary>
+
+* The blue circles are anchor points: direct kymograph clicks, or movie‑click anchors projected onto the current kymograph. Anchors are only shown when the selected trajectory belongs to the currently displayed kymograph/geometry.
+
+* To edit anchors, hold **Shift**. Only the selected trajectory’s dotted line and blue anchor circles are shown. Drag any circle to move that anchor; the dotted line updates live. Release **Shift** to exit edit mode and recalculate if anchors changed. Shift also cancels any active left‑click sequence. Use the **ANCHORS** toggle below the kymograph to hide/show anchor overlays.
+
+* Anchors define track segments (i.e. between anchors), which allow for per-segment analysis during saving see [Loading & Saving](#loading--saving) as well as per-segment diffusion analysis when requested.
+
+</details>
+
+<details>
+
+<summary>Intensity Calculation <a name="intensity"></a></summary>
 
 * **Search window:** each frame is fit in a square crop of size `2 * Search Radius` centered on the per‑frame search center (interpolated between anchors in Independent/Smooth; updated from the previous fit in Tracked).
 * **Model:** 2D Gaussian + constant offset (background). If a fixed trajectory background exists, the offset is held fixed; otherwise it is fitted per frame.
@@ -157,10 +168,12 @@ Other load options are available under **Load** — see [Loading & Saving](#load
 * **Outputs:** Spot Center = fitted center; Sigma = mean of σx and σy; Peak = fitted amplitude A; Intensity = integrated Gaussian `2π * A * σx * σy` (clamped to ≥0); Background = fitted offset (or fixed background, clamped to ≥0).
 * **Smooth mode:** after independent fits, centers are Savitzky‑Golay smoothed; frames deviating by more than `min(3 px, 2×mean σ)` are re‑fit at the smoothed center with a crop radius of ~`4×mean σ`.
 
+</details>
+
 ### 6. Browsing Trajectories <a name="browsing-trajectories"></a>
 
 * New trajectories append to the **Trajectory Table**.
-* Click trajectories in the table or use the arrow keys (**`↑`**, **`↓`**). Right‑click for options (e.g., Go to kymograph).
+* Click trajectories in the table or use the arrow keys (**`↑`**, **`↓`**). Right‑click for options (e.g. Go to kymograph).
 * Delete a trajectory with `Backspace`.
 * Right‑click menu options include saving selected trajectories, jumping to the matching kymograph, and marking/setting custom columns.
 
@@ -180,8 +193,8 @@ Use **Save » Trajectories** (`Ctrl/Cmd+S`) to export your analysis; see [Loadin
 
 ### Intensity Plot <a name="intensity-plot"></a>
 
-* Per‑frame integrated intensity (1‑indexed frames) with average (grey dashed) and median (magenta dashed) lines.
-* The top strip mirrors the per‑frame color coding (e.g., Color By or colocalization), and missing/invalid intensities appear grey.
+* Per‑frame integrated intensity (1‑indexed frames) with average (grey dashed) and median (magenta dashed) lines. See [intensity calculation](#intensity).
+* The top strip mirrors the per‑frame color coding (e.g. Color By or colocalization), and missing/invalid intensities appear grey.
 * When step‑finding is enabled, step medians and transitions are overlaid in green.
 * Click a point to jump to that frame.
 
@@ -375,7 +388,7 @@ If `Kymo-Anchors` and `ROI` are present, Tracy can regenerate the kymograph loca
 * **Kymograph geometry** (`ROI` column): JSON description of the kymograph line.
 * **Clicks**: source of the anchor sequence (`kymograph` or `movie`).
 * **Movie-Anchors**: JSON list of anchors in movie coordinates as `(x, y, frame)`; frame is 1‑indexed.
-* **Segments**: number of segments in the trajectory (`Movie-Anchors` minus one; 0 if <2 anchors).
+* **Segments**: number of segments in the trajectory (`Movie-Anchors` minus one).
 * **Total Points**: number of frames in the trajectory.
 * **Valid Points**: number of frames with a valid intensity (>0).
 * **Percent Valid**: `100 * Valid Points / Total Points`.

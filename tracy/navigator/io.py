@@ -138,6 +138,8 @@ class NavigatorIOMixin:
 
             self.referenceImage = None
             self.refBtn.setVisible(False)
+            if hasattr(self, "ref_container"):
+                self.ref_container.setVisible(False)
             self.refBtn.setChecked(False)
             self.sumBtn.setChecked(False)
             self.zoomInsetFrame.setVisible(False)
@@ -197,6 +199,7 @@ class NavigatorIOMixin:
                 self.zoomInsetWidget.ax.axis("off")
                 self.zoomInsetWidget.draw_idle()
 
+            self.movieCanvas.stop_idle_animation()
             self.movieCanvas.clear_canvas()
             self.movie = temp_movie
             self.original_movie = self.movie.copy()
@@ -784,7 +787,13 @@ class NavigatorIOMixin:
                 'extended_max': ref_vmax + int(1.4 * delta)
             }
             # Make the Ref. button visible.
+            self.refBtn.setVisible(False)
+            if hasattr(self, "ref_container"):
+                self.ref_container.setVisible(False)
+            self.refBtn.setChecked(False)
             self.refBtn.setVisible(True)
+            if hasattr(self, "ref_container"):
+                self.ref_container.setVisible(True)
 
             reffilt = self.refBtn._bubble_filter
             reffilt._wobj = self.refBtn

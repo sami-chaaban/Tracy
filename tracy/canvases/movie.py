@@ -1,5 +1,8 @@
 from ._shared import *
 from .base import ImageCanvas
+from matplotlib.textpath import TextPath
+from matplotlib.font_manager import FontProperties
+from matplotlib.transforms import Affine2D
 
 class MovieCanvas(ImageCanvas):
     def __init__(self, parent=None, navigator=None):
@@ -62,6 +65,22 @@ class MovieCanvas(ImageCanvas):
 
         self._ctrl_panning = False
         self._last_pan = 0.0
+        self._idle_timer = None
+        self._idle_active = False
+        self._idle_scatter = None
+        self._idle_positions = None
+        self._idle_velocities = None
+        self._idle_sizes = None
+        self._idle_rng = np.random.default_rng()
+        self._idle_color = "#7da1ff"
+        self._idle_drift = np.array([0.0002, 0.0001])
+        self._idle_cursor = None
+        self._idle_cursor_strength = 0.0
+        self._idle_cursor_prev = None
+        self._idle_cursor_last = None
+        self._idle_tracy_path = None
+        self._idle_tracy_purple = "#8b7dff"
+        self._idle_base_speeds = None
 
     def mousePressEvent(self, event):
         # Ctrl+Left → pretend it was Middle
@@ -93,6 +112,10 @@ class MovieCanvas(ImageCanvas):
 
     def leaveEvent(self, event):
         self._ctrl_panning = False
+        self._idle_cursor = None
+        self._idle_cursor_prev = None
+        self._idle_cursor_last = None
+        self._idle_cursor_strength = 0.0
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
@@ -134,6 +157,7 @@ class MovieCanvas(ImageCanvas):
         """
         if image is None:
             return
+        self.stop_idle_animation()
         self.image = image
         h, w = image.shape
         # Set the image extent to the full image.
@@ -280,6 +304,27 @@ class MovieCanvas(ImageCanvas):
             self._last_pan = time.perf_counter()
 
     def on_mouse_move(self, event):
+        if self._idle_active:
+            if event.inaxes == self.ax and event.xdata is not None and event.ydata is not None:
+                now = time.perf_counter()
+                cursor = np.array([event.xdata, event.ydata], dtype=float)
+                if self._idle_cursor_prev is not None and self._idle_cursor_last is not None:
+                    dt = max(now - self._idle_cursor_last, 1e-3)
+                    delta = cursor - self._idle_cursor_prev
+                    dist = np.linalg.norm(delta)
+                    speed = 0.0 if dist < 1e-5 else dist / dt
+                    target = min(speed * 0.02, 1.0)
+                    self._idle_cursor_strength = 0.8 * self._idle_cursor_strength + 0.2 * target
+                else:
+                    self._idle_cursor_strength = 0.0
+                self._idle_cursor_prev = cursor
+                self._idle_cursor_last = now
+                self._idle_cursor = (event.xdata, event.ydata)
+            else:
+                self._idle_cursor = None
+                self._idle_cursor_prev = None
+                self._idle_cursor_last = None
+                self._idle_cursor_strength = 0.0
         if not self._is_panning or event.inaxes != self.ax:
             return
         # throttle pan updates to ~50 Hz
@@ -1002,6 +1047,7 @@ class MovieCanvas(ImageCanvas):
 
     def clear_canvas(self):
         """Clear the canvas by removing all overlays and resetting internal state."""
+        self.stop_idle_animation()
         # Clear the axes.
         self.ax.cla()
         # Remove stored image, marker, and any overlay objects.
@@ -1016,6 +1062,126 @@ class MovieCanvas(ImageCanvas):
         self._orig_ylim = None
         self.manual_zoom = False
         self.image = None
+
+    def start_idle_animation(self, count=90):
+        if self.image is not None or self._idle_active:
+            return
+        self._idle_active = True
+        rng = self._idle_rng
+        if self._idle_tracy_path is None:
+            self._idle_tracy_path = self._build_idle_tracy_path()
+        self._idle_positions = rng.random((count, 2))
+        angles = rng.uniform(0, 2 * np.pi, size=count)
+        speeds = rng.uniform(0.00008, 0.0006, size=count)
+        self._idle_velocities = np.column_stack(
+            (np.cos(angles) * speeds, np.sin(angles) * speeds)
+        )
+        self._idle_base_speeds = speeds
+        self._idle_sizes = rng.uniform(10, 40, size=count)
+        self.ax.clear()
+        self.ax.set_xlim(0, 1)
+        self.ax.set_ylim(0, 1)
+        self.ax.axis("off")
+        self._idle_scatter = self.ax.scatter(
+            self._idle_positions[:, 0],
+            self._idle_positions[:, 1],
+            s=self._idle_sizes,
+            color=self._idle_color,
+            alpha=0.12,
+            edgecolors="none"
+        )
+        if self._idle_timer is None:
+            self._idle_timer = QTimer(self)
+            self._idle_timer.timeout.connect(self._update_idle_animation)
+        self._idle_timer.start(40)
+        self.draw_idle()
+
+    def stop_idle_animation(self):
+        if self._idle_timer is not None:
+            self._idle_timer.stop()
+        self._idle_active = False
+        self._idle_cursor = None
+        if self._idle_scatter is not None:
+            try:
+                self._idle_scatter.remove()
+            except Exception:
+                pass
+        self._idle_scatter = None
+        self._idle_positions = None
+        self._idle_velocities = None
+        self._idle_sizes = None
+        self._idle_tracy_path = None
+        self._idle_base_speeds = None
+
+    def _build_idle_tracy_path(self):
+        props = FontProperties(weight="bold")
+        text_path = TextPath((0, 0), "TRACY", size=1, prop=props)
+        bbox = text_path.get_extents()
+        if bbox.width <= 0 or bbox.height <= 0:
+            return None
+        target = 0.8
+        sx = target / bbox.width
+        sy = target / bbox.height
+        left = (1.0 - target) * 0.5
+        bottom = (1.0 - target) * 0.5
+        tx = left - bbox.x0 * sx
+        ty = bottom - bbox.y0 * sy
+        transform = Affine2D().scale(sx, sy).translate(tx, ty)
+        return text_path.transformed(transform)
+
+    def _update_idle_animation(self):
+        if not self._idle_active or self.image is not None:
+            self.stop_idle_animation()
+            return
+        if self._idle_scatter is None or self._idle_positions is None:
+            return
+        rng = self._idle_rng
+        pos = self._idle_positions
+        vel = self._idle_velocities
+        vel += rng.normal(scale=0.00004, size=vel.shape)
+        influence = None
+        diff = None
+        dist = None
+        strength = 0.0
+        if self._idle_cursor is not None and self._idle_cursor_strength > 0.0:
+            cursor = np.array(self._idle_cursor)
+            diff = cursor - pos
+            dist = np.linalg.norm(diff, axis=1)
+            influence = dist < 0.07
+            strength = self._idle_cursor_strength
+        if self._idle_tracy_path is not None:
+            tracy_mask = self._idle_tracy_path.contains_points(pos)
+        else:
+            tracy_mask = None
+        speed = np.linalg.norm(vel, axis=1)
+        if self._idle_base_speeds is not None and speed.size == self._idle_base_speeds.size:
+            jitter = rng.normal(scale=0.05, size=self._idle_base_speeds.shape)
+            target = self._idle_base_speeds * (1.0 + jitter)
+            target = np.clip(target, 0.00005, 0.0012)
+            scale = target / np.maximum(speed, 1e-6)
+            if influence is not None:
+                scale = np.where(influence, 1.0, scale)
+            vel = vel * scale[:, None]
+        if influence is not None and np.any(influence) and strength > 0.0:
+            pull = (0.03 * strength) / (0.02 + dist[influence])
+            vel[influence] += diff[influence] * pull[:, None]
+            max_speed = 0.008
+            vel_infl = vel[influence]
+            speed_infl = np.linalg.norm(vel_infl, axis=1)
+            over = speed_infl > max_speed
+            if np.any(over):
+                vel_infl[over] *= (max_speed / speed_infl[over])[:, None]
+                vel[influence] = vel_infl
+        noise = rng.normal(scale=0.0002, size=pos.shape)
+        pos = (pos + vel + noise + self._idle_drift) % 1.0
+        self._idle_positions = pos
+        self._idle_velocities = vel
+        self._idle_scatter.set_offsets(pos)
+        if tracy_mask is not None:
+            colors = np.full(pos.shape[0], self._idle_color, dtype=object)
+            colors[tracy_mask] = self._idle_tracy_purple
+            self._idle_scatter.set_color(colors)
+        self.draw_idle()
 
     def draw_manual_marker(self):
         """Draw a translucent circle at the current manual position."""

@@ -159,6 +159,10 @@ class NavigatorInputMixin:
         if not hasattr(self, "_last_table_has_rows"):
             self._last_table_has_rows = not has_rows  # force an update on first run
 
+        if has_rows and getattr(self, "_right_panel_auto_show_pending", False):
+            self._right_panel_auto_show_pending = False
+            self._show_right_panel_if_collapsed()
+
         if adjust_splitter and has_rows != self._last_table_has_rows:
             total_height = self.rightVerticalSplitter.height()
             if not has_rows:
@@ -187,6 +191,38 @@ class NavigatorInputMixin:
             self.clear_container.setVisible(has_rows)
         self.trajectoryCanvas.hide_empty_columns()
         self._ensure_traj_overlay_mode_valid(redraw=False)
+
+    def _collapse_right_panel_on_startup(self):
+        if getattr(self, "_right_panel_startup_done", False):
+            return
+        splitter = getattr(self, "topRightSplitter", None)
+        if splitter is None:
+            return
+        total_width = splitter.width()
+        if total_width <= 0:
+            QTimer.singleShot(0, self._collapse_right_panel_on_startup)
+            return
+        splitter.setSizes([total_width, 0])
+        self._right_panel_startup_done = True
+
+    def _show_right_panel_if_collapsed(self):
+        splitter = getattr(self, "topRightSplitter", None)
+        if splitter is None:
+            return
+        sizes = splitter.sizes()
+        if len(sizes) < 2:
+            return
+        total_width = sum(sizes)
+        if total_width <= 0:
+            total_width = splitter.width()
+        if total_width <= 0:
+            QTimer.singleShot(0, self._show_right_panel_if_collapsed)
+            return
+        if getattr(self, "rightPanel", None) is not None:
+            self.rightPanel.setVisible(True)
+        target_width = getattr(self, "_right_panel_width", 0) or 0
+        target_width = max(0, min(int(target_width), total_width))
+        splitter.setSizes([max(0, total_width - target_width), target_width])
 
     # def eventFilter(self, obj, event):
     #     # intercept wheel events when our radius dialog is up

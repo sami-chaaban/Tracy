@@ -1,6 +1,8 @@
 from ._shared import *
 
 class CustomSplitter(QSplitter):
+    handleReleased = pyqtSignal()
+
     def __init__(self, orientation, parent=None, handle_y_offset_pct=0.5):
         super().__init__(orientation, parent)
         self._handle_y_offset_pct = handle_y_offset_pct
@@ -49,6 +51,18 @@ class CustomSplitterHandle(QSplitterHandle):
             painter.drawRoundedRect(x, y, handle_width, handle_height, handle_height/2, handle_height/2)
         painter.end()
 
+    def mousePressEvent(self, event):
+        splitter = self.splitter()
+        setattr(splitter, "_dragging", True)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        splitter = self.splitter()
+        setattr(splitter, "_dragging", False)
+        if hasattr(splitter, "handleReleased"):
+            splitter.handleReleased.emit()
+
 
 class RoundedFrame(QFrame):
     def __init__(self, parent=None, radius=10, bg_color="#FAFBFF", border_color=None):
@@ -74,4 +88,3 @@ class RoundedFrame(QFrame):
         painter.setPen(QPen(self.border_color, 6))
         painter.drawRoundedRect(self.rect(), self.radius, self.radius)
         super().paintEvent(event)
-

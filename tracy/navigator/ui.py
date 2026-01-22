@@ -1,5 +1,70 @@
 from ._shared import *
 
+
+def _label_text_rect(widget, option):
+    se_label = getattr(QtWidgets.QStyle, "SE_LabelContents", None)
+    if se_label is not None:
+        return widget.style().subElementRect(se_label, option, widget)
+    return widget.contentsRect()
+
+
+class ElidedLabel(QLabel):
+    def __init__(self, text="", parent=None, elide_mode=Qt.ElideRight):
+        super().__init__(text, parent)
+        self._elide_mode = elide_mode
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setMinimumWidth(0)
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        return QSize(0, hint.height())
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        option = QtWidgets.QStyleOption()
+        option.initFrom(self)
+        self.style().drawPrimitive(QtWidgets.QStyle.PE_Widget, option, painter, self)
+
+        text_rect = _label_text_rect(self, option)
+        elided = self.fontMetrics().elidedText(super().text(), self._elide_mode, text_rect.width())
+        self.style().drawItemText(
+            painter,
+            text_rect,
+            self.alignment(),
+            option.palette,
+            self.isEnabled(),
+            elided,
+        )
+
+
+class ElidedClickableLabel(ClickableLabel):
+    def __init__(self, text="", parent=None, elide_mode=Qt.ElideRight):
+        super().__init__(text, parent)
+        self._elide_mode = elide_mode
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setMinimumWidth(0)
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        return QSize(0, hint.height())
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        option = QtWidgets.QStyleOption()
+        option.initFrom(self)
+        self.style().drawPrimitive(QtWidgets.QStyle.PE_Widget, option, painter, self)
+
+        text_rect = _label_text_rect(self, option)
+        elided = self.fontMetrics().elidedText(super().text(), self._elide_mode, text_rect.width())
+        self.style().drawItemText(
+            painter,
+            text_rect,
+            self.alignment(),
+            option.palette,
+            self.isEnabled(),
+            elided,
+        )
+
 class NavigatorUiMixin:
     def create_ui(self):
         # Create the central widget and overall layout.
@@ -26,7 +91,7 @@ class NavigatorUiMixin:
         topLayout.setContentsMargins(20, 6, 0, 0)
         topLayout.setAlignment(Qt.AlignLeft)
 
-        self.movieNameLabel = ClickableLabel("LOAD")
+        self.movieNameLabel = ElidedClickableLabel("LOAD")
         self.movieNameLabel.setObjectName("movieNameLabel")
         self.movieNameLabel.setProperty("pressed", False)
         self.movieNameLabel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
@@ -49,6 +114,11 @@ class NavigatorUiMixin:
         }
         """)
         topLayout.addWidget(self.movieNameLabel)
+        load_tip_filter = BubbleTipFilter("Load single- or multi-channel TIFF", self, placement="right")
+        self.movieNameLabel.installEventFilter(load_tip_filter)
+        self.movieNameLabel._bubble_filter = load_tip_filter
+        self._load_tip_filter = load_tip_filter
+        QTimer.singleShot(8000, self._maybe_show_load_tip)
 
         
         # Search window radius control.
@@ -66,13 +136,13 @@ class NavigatorUiMixin:
         
         # Add stretch and right-aligned labels.
         topLayout.addStretch()
-        self.pixelValueLabel = QLabel("")
+        self.pixelValueLabel = ElidedLabel("")
         self.pixelValueLabel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.pixelValueLabel.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.pixelValueLabel.setStyleSheet("color: #444444; background: transparent; padding-right: 25px;")
         topLayout.addWidget(self.pixelValueLabel)
 
-        self.scaleLabel = ClickableLabel("")
+        self.scaleLabel = ElidedClickableLabel("")
         self.scaleLabel.setObjectName("scaleLabel")
         self.scaleLabel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.scaleLabel.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -454,6 +524,7 @@ class NavigatorUiMixin:
         self.movieLegendWidget.stackUnder(self._ch_overlay)
         self._ch_overlay.installEventFilter(self)
         self.movieDisplayContainer.installEventFilter(self)
+        QTimer.singleShot(0, self.movieCanvas.start_idle_animation)
 
         movieLayout.addSpacing(4)
         
@@ -476,7 +547,7 @@ class NavigatorUiMixin:
         self.frameNumberLabel.setFixedWidth(width)
         sliderLayout.addWidget(self.frameSlider)
         movieLayout.addWidget(sliderWidget)
-        movieLayout.addSpacing(-12)
+        movieLayout.addSpacing(0)
         
         contrastWidget = QWidget()
         contrastLayout = QHBoxLayout(contrastWidget)
@@ -495,8 +566,8 @@ class NavigatorUiMixin:
         contrast_label = QLabel("CONTRAST")
         contrast_label.setStyleSheet("color: black; font-size: 9px;")
         contrast_label.adjustSize()
-        contrast_spacer_height = contrast_label.sizeHint().height() + 1
-        contrast_label_layout.addSpacing(contrast_spacer_height)
+        movie_label_spacer = max(2, contrast_label.sizeHint().height() // 2)
+        contrast_label_layout.addSpacing(movie_label_spacer)
         contrast_label_layout.addWidget(self.contrastControlsWidget, alignment=Qt.AlignHCenter)
         contrast_label_layout.addWidget(contrast_label, alignment=Qt.AlignHCenter)
         contrastLayout.addWidget(contrast_container)
@@ -519,8 +590,7 @@ class NavigatorUiMixin:
         reset_label = QLabel("AUTO")
         reset_label.setStyleSheet("color: black; font-size: 9px;")
         reset_label.adjustSize()
-        reset_spacer_height = reset_label.sizeHint().height() + 1
-        reset_layout.addSpacing(reset_spacer_height)
+        reset_layout.addSpacing(movie_label_spacer)
         reset_layout.addWidget(self.resetBtn, alignment=Qt.AlignHCenter)
         reset_layout.addWidget(reset_label, alignment=Qt.AlignHCenter)
         contrastLayout.addWidget(reset_container)
@@ -546,8 +616,7 @@ class NavigatorUiMixin:
         sum_label = QLabel("MAX")
         sum_label.setStyleSheet("color: black; font-size: 9px;")
         sum_label.adjustSize()
-        sum_spacer_height = sum_label.sizeHint().height() + 1
-        sum_layout.addSpacing(sum_spacer_height)
+        sum_layout.addSpacing(movie_label_spacer)
         sum_layout.addWidget(self.sumBtn, alignment=Qt.AlignHCenter)
         sum_layout.addWidget(sum_label, alignment=Qt.AlignHCenter)
         contrastLayout.addWidget(sum_container)
@@ -580,6 +649,15 @@ class NavigatorUiMixin:
         ref_layout.addWidget(ref_label, alignment=Qt.AlignHCenter)
         contrastLayout.addWidget(ref_container)
         contrastLayout.setAlignment(ref_container, Qt.AlignBottom)
+        ref_container.setVisible(False)
+        self.ref_container = ref_container
+        ref_spacer = QWidget()
+        ref_spacer.setFixedWidth(12)
+        ref_spacer.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Minimum)
+        contrastLayout.addWidget(ref_spacer)
+        contrastLayout.setAlignment(ref_spacer, Qt.AlignBottom)
+        ref_spacer.setVisible(False)
+        self.ref_spacer = ref_spacer
 
         self.traj_overlay_button = AnimatedIconButton("")
         # self.traj_overlay_button.setToolTip("Overlay trajectories (shortcut: o)")
@@ -610,8 +688,7 @@ class NavigatorUiMixin:
         traj_label = QLabel("SPOTS")
         traj_label.setStyleSheet("color: black; font-size: 9px;")
         traj_label.adjustSize()
-        traj_spacer_height = traj_label.sizeHint().height() + 1
-        traj_layout.addSpacing(traj_spacer_height)
+        traj_layout.addSpacing(movie_label_spacer)
         traj_layout.addWidget(self.traj_overlay_button, alignment=Qt.AlignHCenter)
         traj_layout.addWidget(traj_label, alignment=Qt.AlignHCenter)
         contrastLayout.addWidget(traj_container)
@@ -629,8 +706,7 @@ class NavigatorUiMixin:
         mode_label = QLabel("MODE")
         mode_label.setStyleSheet("color: black; font-size: 9px;")
         mode_label.adjustSize()
-        mode_spacer_height = mode_label.sizeHint().height() + 1
-        mode_layout.addSpacing(mode_spacer_height)
+        mode_layout.addSpacing(movie_label_spacer)
         mode_layout.addWidget(self.modeSwitch, alignment=Qt.AlignHCenter)
         mode_layout.addWidget(mode_label, alignment=Qt.AlignHCenter)
         contrastLayout.addWidget(mode_container)
@@ -671,8 +747,7 @@ class NavigatorUiMixin:
         roi_label = QLabel("LINES")
         roi_label.setStyleSheet("color: black; font-size: 9px;")
         roi_label.adjustSize()
-        roi_spacer_height = roi_label.sizeHint().height() + 1
-        roi_overlay_layout.addSpacing(roi_spacer_height)
+        roi_overlay_layout.addSpacing(movie_label_spacer)
         roi_overlay_layout.addWidget(self.roi_overlay_button, alignment=Qt.AlignHCenter)
         roi_overlay_layout.addWidget(roi_label, alignment=Qt.AlignHCenter)
         contrastLayout.addWidget(roi_overlay_container)
@@ -696,8 +771,7 @@ class NavigatorUiMixin:
         delete_label = QLabel("DEL.")
         delete_label.setStyleSheet("color: black; font-size: 9px;")
         delete_label.adjustSize()
-        delete_spacer_height = delete_label.sizeHint().height() + 1
-        delete_layout.addSpacing(delete_spacer_height)
+        delete_layout.addSpacing(movie_label_spacer)
         delete_layout.addWidget(self.delete_button, alignment=Qt.AlignHCenter)
         delete_layout.addWidget(delete_label, alignment=Qt.AlignHCenter)
         contrastLayout.addWidget(delete_container)
@@ -721,8 +795,7 @@ class NavigatorUiMixin:
         clear_label = QLabel("ALL")
         clear_label.setStyleSheet("color: black; font-size: 9px;")
         clear_label.adjustSize()
-        clear_spacer_height = clear_label.sizeHint().height() + 1
-        clear_layout.addSpacing(clear_spacer_height)
+        clear_layout.addSpacing(movie_label_spacer)
         clear_layout.addWidget(self.clear_button, alignment=Qt.AlignHCenter)
         clear_layout.addWidget(clear_label, alignment=Qt.AlignHCenter)
         contrastLayout.addWidget(clear_container)
@@ -734,9 +807,10 @@ class NavigatorUiMixin:
         self.topRightSplitter.addWidget(self.movieWidget)
 
         # Column 3: Right Panel with additional canvases.
-        rightPanel = QWidget()
-        rightPanel.setFixedWidth(500)
-        rightPanelLayout = QVBoxLayout(rightPanel)
+        self._right_panel_width = 500
+        self.rightPanel = QWidget()
+        self.rightPanel.setFixedWidth(self._right_panel_width)
+        rightPanelLayout = QVBoxLayout(self.rightPanel)
         rightPanelLayout.setContentsMargins(6, 6, 6, 6)
         rightPanelLayout.setSpacing(10)
 
@@ -833,13 +907,16 @@ class NavigatorUiMixin:
         # self.trajectoryControlButtons = TrajectoryControlButtons(self)
         # rightPanelLayout.addWidget(self.trajectoryControlButtons, stretch=0)
 
-        rightPanel.setLayout(rightPanelLayout)
-        self.topRightSplitter.addWidget(rightPanel)
+        self.rightPanel.setLayout(rightPanelLayout)
+        self.topRightSplitter.addWidget(self.rightPanel)
         # Optional: adjust stretch factors for the topRightSplitter:
         self.topRightSplitter.setStretchFactor(0, 3)  # movie widget
         self.topRightSplitter.setStretchFactor(1, 2)  # right panel
         self.topRightSplitter.setCollapsible(1, True)
         self.topRightSplitter.setCollapsible(0, True)
+        self.rightPanel.setVisible(False)
+        self._right_panel_auto_show_pending = True
+        QTimer.singleShot(0, self._collapse_right_panel_on_startup)
 
         # Add the top row (movie + right panel) as the upper widget in the vertical splitter.
         self.rightVerticalSplitter.addWidget(self.topRightSplitter)
@@ -996,6 +1073,19 @@ class NavigatorUiMixin:
             self.scaleLabel.setText(f"{self.pixel_size:.1f} nm/pixel, {self.frame_interval:.1f} ms/frame")
         else:
             self.scaleLabel.setText("Set scale")
+
+    def _maybe_show_load_tip(self):
+        if getattr(self, "movie", None) is not None:
+            return
+        if getattr(self, "movieNameLabel", None) is None:
+            return
+        if self.movieNameLabel.text().strip().lower() != "load":
+            return
+        filt = getattr(self, "_load_tip_filter", None)
+        if filt is None:
+            return
+        filt._wobj = self.movieNameLabel
+        filt._showBubble(force=True)
 
     def update_kymo_visibility(self):
         # Check if there is neither an ROI nor a kymograph loaded.
@@ -1178,8 +1268,6 @@ class NavigatorUiMixin:
     def _normalize_traj_overlay_mode(self, mode):
         if mode not in ("off", "selected", "all"):
             mode = "all"
-        if mode == "selected" and not self._traj_overlay_has_selection():
-            mode = "all"
         return mode
 
     def _apply_traj_overlay_mode(self, mode, redraw=True):
@@ -1202,8 +1290,6 @@ class NavigatorUiMixin:
             idx = 0
         for step in range(1, len(order) + 1):
             candidate = order[(idx + step) % len(order)]
-            if candidate == "selected" and not self._traj_overlay_has_selection():
-                continue
             self._apply_traj_overlay_mode(candidate)
             return
 
@@ -1212,6 +1298,8 @@ class NavigatorUiMixin:
         normalized = self._normalize_traj_overlay_mode(current)
         if normalized != current:
             self._apply_traj_overlay_mode(normalized, redraw=redraw)
+        elif redraw and getattr(self, "trajectoryCanvas", None) is not None:
+            self.trajectoryCanvas.toggle_trajectory_markers()
 
     def _on_o_pressed(self):
         if len(self.trajectoryCanvas.trajectories) == 0:

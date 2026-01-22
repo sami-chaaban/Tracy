@@ -45,6 +45,12 @@ warnings.filterwarnings(
 )
 warnings.filterwarnings(
     "ignore",
+    message=".*divide by zero encountered in scalar divide.*",
+    category=RuntimeWarning,
+    module="matplotlib\\.layout_engine",
+)
+warnings.filterwarnings(
+    "ignore",
     message=".*Attempting to set identical low and high xlims makes transformation singular.*"
 )
 warnings.filterwarnings(

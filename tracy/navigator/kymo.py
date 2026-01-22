@@ -7,6 +7,10 @@ class NavigatorKymoMixin:
         self.kymo_anchor_edit_mode = enabled
         self._kymo_anchor_drag = None
         self._kymo_anchor_drag_dirty = False
+        if not enabled:
+            self._kymo_anchor_edit_line = None
+            self._kymo_anchor_edit_scatter = None
+            self._kymo_anchor_bg = None
         if enabled:
             try:
                 self.movieCanvas.remove_gaussian_circle()
@@ -26,8 +30,11 @@ class NavigatorKymoMixin:
                 table.blockSignals(False)
                 self.trajectoryCanvas.on_trajectory_selected_by_index(row)
         if getattr(self, "traj_overlay_button", None) and self.traj_overlay_button.isChecked():
-            self.kymoCanvas.draw_trajectories_on_kymo()
-            self.kymoCanvas.draw_idle()
+            if enabled:
+                self._build_kymo_anchor_edit_artists()
+            else:
+                self.kymoCanvas.draw_trajectories_on_kymo()
+                self.kymoCanvas.draw_idle()
             try:
                 self.movieCanvas.draw_trajectories_on_movie()
                 self.movieCanvas.draw_idle()
@@ -45,6 +52,20 @@ class NavigatorKymoMixin:
         if not getattr(self, "kymo_anchor_edit_mode", False):
             return
         was_dirty = getattr(self, "_kymo_anchor_drag_dirty", False)
+        if force_recalc or was_dirty:
+            ok, msg = self._validate_kymo_anchor_edit()
+            if not ok:
+                self._restore_kymo_anchor_drag_original()
+                self.flash_message(msg)
+                self._set_kymo_anchor_edit_mode(False)
+                self.kymoCanvas.draw_trajectories_on_kymo()
+                self.kymoCanvas.draw_idle()
+                try:
+                    self.movieCanvas.draw_trajectories_on_movie()
+                    self.movieCanvas.draw_idle()
+                except Exception:
+                    pass
+                return
         self._set_kymo_anchor_edit_mode(False)
         if force_recalc or was_dirty:
             self.add_or_recalculate()
@@ -185,6 +206,10 @@ class NavigatorKymoMixin:
             "source": hit[0],
             "index": hit[1],
         }
+        self._kymo_anchor_drag_orig = {
+            "anchors": list(anchors),
+            "nodes": list(nodes),
+        }
         self._kymo_anchor_drag_dirty = False
 
     def _update_kymo_anchor_drag(self, event):
@@ -196,9 +221,8 @@ class NavigatorKymoMixin:
         if ctx is None:
             return
         _, traj, roi, kymo_w, num_frames_m1 = ctx
-        frame_idx = num_frames_m1 - int(round(event.ydata))
-        frame_idx = max(0, min(frame_idx, num_frames_m1))
         xk = float(event.xdata)
+        frame_idx = num_frames_m1 - int(round(event.ydata))
 
         if self._kymo_anchor_drag["source"] == "kymo":
             anchors = list(traj.get("anchors", []) or [])
@@ -223,11 +247,145 @@ class NavigatorKymoMixin:
             traj["nodes"] = nodes
 
         self._kymo_anchor_drag_dirty = True
+        xs_disp, ys_disp = self._get_anchor_edit_display_points(traj, roi, kymo_w, num_frames_m1)
+        if not xs_disp or not ys_disp:
+            return
+        line = getattr(self, "_kymo_anchor_edit_line", None)
+        scatter = getattr(self, "_kymo_anchor_edit_scatter", None)
+        if line is None or scatter is None:
+            self._build_kymo_anchor_edit_artists()
+            line = getattr(self, "_kymo_anchor_edit_line", None)
+            scatter = getattr(self, "_kymo_anchor_edit_scatter", None)
+        if line is None or scatter is None:
+            self.kymoCanvas.draw_trajectories_on_kymo()
+            self.kymoCanvas.draw_idle()
+            return
+        line.set_data(xs_disp, ys_disp)
+        scatter.set_offsets(np.column_stack([xs_disp, ys_disp]))
+
+        if self.kymoCanvas._is_panning or self.kymoCanvas.manual_zoom or self._kymo_anchor_bg is None:
+            self.kymoCanvas.manual_zoom = False
+            self._capture_kymo_anchor_bg()
+            return
+
+        canvas = self.kymoCanvas.figure.canvas
+        canvas.restore_region(self._kymo_anchor_bg)
+        self.kymoCanvas.ax.draw_artist(line)
+        self.kymoCanvas.ax.draw_artist(scatter)
+        canvas.blit(self.kymoCanvas.ax.bbox)
+
+    def _build_kymo_anchor_edit_artists(self):
+        if not getattr(self, "kymo_anchor_edit_mode", False):
+            return
         self.kymoCanvas.draw_trajectories_on_kymo()
-        self.kymoCanvas.draw_idle()
+        markers = getattr(self.kymoCanvas, "kymo_trajectory_markers", []) or []
+        line = None
+        scatter = None
+        for marker in markers:
+            if line is None and hasattr(marker, "set_data"):
+                line = marker
+            elif scatter is None and hasattr(marker, "set_offsets"):
+                scatter = marker
+        self._kymo_anchor_edit_line = line
+        self._kymo_anchor_edit_scatter = scatter
+        if line is None or scatter is None:
+            self.kymoCanvas.draw_idle()
+            return
+        self._capture_kymo_anchor_bg()
+
+    def _capture_kymo_anchor_bg(self):
+        line = getattr(self, "_kymo_anchor_edit_line", None)
+        scatter = getattr(self, "_kymo_anchor_edit_scatter", None)
+        if line is None or scatter is None:
+            return
+        line.set_animated(False)
+        scatter.set_animated(False)
+        line.set_visible(False)
+        scatter.set_visible(False)
+        self.kymoCanvas.draw()
+        canvas = self.kymoCanvas.figure.canvas
+        self._kymo_anchor_bg = canvas.copy_from_bbox(self.kymoCanvas.ax.bbox)
+        line.set_visible(True)
+        scatter.set_visible(True)
+        canvas.restore_region(self._kymo_anchor_bg)
+        self.kymoCanvas.ax.draw_artist(line)
+        self.kymoCanvas.ax.draw_artist(scatter)
+        canvas.blit(self.kymoCanvas.ax.bbox)
+
+    def _get_anchor_edit_display_points(self, traj, roi, kymo_w, num_frames_m1):
+        anchors = traj.get("anchors", []) or []
+        xs_disp, ys_disp = [], []
+        if anchors:
+            xs_disp = [xk for _f, xk, _yk in anchors]
+            ys_disp = [num_frames_m1 - f for f, _xk, _yk in anchors]
+        else:
+            nodes = traj.get("nodes", []) or []
+            for f, x, y in nodes:
+                xk = self.compute_kymo_x_from_roi(roi, x, y, kymo_w)
+                if xk is None:
+                    continue
+                xs_disp.append(xk)
+                ys_disp.append(num_frames_m1 - f)
+        return xs_disp, ys_disp
 
     def _end_kymo_anchor_drag(self, _event):
         self._kymo_anchor_drag = None
+
+    def _validate_kymo_anchor_edit(self):
+        ctx = self._get_selected_kymo_traj_context()
+        if ctx is None:
+            return True, ""
+        _, traj, roi, kymo_w, num_frames_m1 = ctx
+        anchors = traj.get("anchors", []) or []
+        if anchors:
+            frames = []
+            for frame, xk, yk in anchors:
+                try:
+                    f = int(frame)
+                    x = float(xk)
+                    y = float(yk)
+                except Exception:
+                    return False, "Out of bounds"
+                if f < 0 or f > num_frames_m1 or x < 0 or x > kymo_w or y < 0 or y > num_frames_m1:
+                    return False, "Out of bounds"
+                frames.append(f)
+            for prev, curr in zip(frames, frames[1:]):
+                if curr <= prev:
+                    return False, "Bad anchor order"
+            return True, ""
+
+        nodes = traj.get("nodes", []) or []
+        frames = []
+        for frame, x, y in nodes:
+            try:
+                f = int(frame)
+                mx = float(x)
+                my = float(y)
+            except Exception:
+                return False, "Out of bounds"
+            if f < 0 or f > num_frames_m1:
+                return False, "Out of bounds"
+            xk = self.compute_kymo_x_from_roi(roi, mx, my, kymo_w)
+            if xk is None or xk < 0 or xk > kymo_w:
+                return False, "Out of bounds"
+            frames.append(f)
+        for prev, curr in zip(frames, frames[1:]):
+            if curr <= prev:
+                return False, "Bad anchor order"
+        return True, ""
+
+    def _restore_kymo_anchor_drag_original(self):
+        orig = getattr(self, "_kymo_anchor_drag_orig", None)
+        if not orig:
+            return
+        ctx = self._get_selected_kymo_traj_context()
+        if ctx is None:
+            return
+        _, traj, _roi, _kymo_w, _num_frames_m1 = ctx
+        if "anchors" in orig:
+            traj["anchors"] = list(orig["anchors"])
+        if "nodes" in orig:
+            traj["nodes"] = list(orig["nodes"])
 
     def on_kymo_click(self, event):
 

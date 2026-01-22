@@ -582,10 +582,7 @@ class NavigatorMovieMixin:
                 pixel_val = image[y, x]
                 current_frame = self.frameSlider.value() + 1
                 text = f"F: {current_frame} X: {x} Y: {y} I: {pixel_val}"
-                # Use the label's font metrics to elide the text if it exceeds the label's width.
-                fm = self.pixelValueLabel.fontMetrics()
-                elided_text = fm.elidedText(text, Qt.ElideRight, self.pixelValueLabel.width())
-                self.pixelValueLabel.setText(elided_text)
+                self.pixelValueLabel.setText(text)
             else:
                 self.pixelValueLabel.setText("")
 
