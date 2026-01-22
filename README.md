@@ -155,21 +155,6 @@ Other load options are available under **Load** — see [Loading & Saving](#load
 
 </details>
 
-<details>
-
-<summary>Intensity Calculation <a name="intensity"></a></summary>
-
-* **Search window:** each frame is fit in a square crop of size `2 * Search Radius` centered on the per‑frame search center (interpolated between anchors in Independent/Smooth; updated from the previous fit in Tracked).
-* **Model:** 2D Gaussian + constant offset (background). If a fixed trajectory background exists, the offset is held fixed; otherwise it is fitted per frame.
-* **Fixed trajectory background:** computed once per trajectory by sampling the outer 10% border pixels of each frame’s crop (only from non‑truncated edges) and taking the median across all frames. This is the value reported as “Background from trajectory”.
-* **Fit constraints:** center is constrained to within ±4 px of the crop center; sigma is bounded between a conservative minimum based on a 200 nm PSF FWHM converted via `FWHM = 2.355·σ`, multiplied by 2 (scaled by pixel size, or 1 px if unset), and a maximum of `crop_size / 4`. The lower bound suppresses spuriously sharp fits; the upper bound prevents overly broad, background‑dominated fits without requiring NA/wavelength inputs.
-* **Quality checks:** fits are rejected if the crop has low contrast (max‑median < 4×std), if the initial amplitude is too small, or if the fitted center lands within 4 px of the crop edge. These filters match common single‑molecule practice for suppressing low‑SNR or edge‑biased localizations.
-* **Two‑pass fitting:** the fit is run twice (recrop around the fitted center) to improve accuracy.
-* **Outputs:** Spot Center = fitted center; Sigma = mean of σx and σy; Peak = fitted amplitude A; Intensity = integrated Gaussian `2π * A * σx * σy` (clamped to ≥0); Background = fitted offset (or fixed background, clamped to ≥0).
-* **Smooth mode:** after independent fits, centers are Savitzky‑Golay smoothed; frames deviating by more than `min(3 px, 2×mean σ)` are re‑fit at the smoothed center with a crop radius of ~`4×mean σ`.
-
-</details>
-
 ### 6. Browsing Trajectories <a name="browsing-trajectories"></a>
 
 * New trajectories append to the **Trajectory Table**.
@@ -193,7 +178,23 @@ Use **Save » Trajectories** (`Ctrl/Cmd+S`) to export your analysis; see [Loadin
 
 ### Intensity Plot <a name="intensity-plot"></a>
 
-* Per‑frame integrated intensity (1‑indexed frames) with average (grey dashed) and median (magenta dashed) lines. See [intensity calculation](#intensity).
+* Per‑frame integrated intensity (1‑indexed frames) with average (grey dashed) and median (magenta dashed) lines.
+
+<details>
+
+<summary>Intensity Calculation <a name="intensity"></a></summary>
+
+* **Search window:** each frame is fit in a square crop of size `2 * Search Radius` centered on the per‑frame search center (interpolated between anchors in Independent/Smooth; updated from the previous fit in Tracked).
+* **Model:** 2D Gaussian + constant offset (background). If a fixed trajectory background exists, the offset is held fixed; otherwise it is fitted per frame.
+* **Fixed trajectory background:** computed once per trajectory by sampling the outer 10% border pixels of each frame’s crop (only from non‑truncated edges) and taking the median across all frames. This is the value reported as “Background from trajectory”.
+* **Fit constraints:** center is constrained to within ±4 px of the crop center; sigma is bounded between a conservative minimum based on a 200 nm PSF FWHM converted via `FWHM = 2.355·σ`, multiplied by 2 (scaled by pixel size, or 1 px if unset), and a maximum of `crop_size / 4`. The lower bound suppresses spuriously sharp fits; the upper bound prevents overly broad, background‑dominated fits without requiring NA/wavelength inputs.
+* **Quality checks:** fits are rejected if the crop has low contrast (max‑median < 4×std), if the initial amplitude is too small, or if the fitted center lands within 4 px of the crop edge. These filters match common single‑molecule practice for suppressing low‑SNR or edge‑biased localizations.
+* **Two‑pass fitting:** the fit is run twice (recrop around the fitted center) to improve accuracy.
+* **Outputs:** Spot Center = fitted center; Sigma = mean of σx and σy; Peak = fitted amplitude A; Intensity = integrated Gaussian `2π * A * σx * σy` (clamped to ≥0); Background = fitted offset (or fixed background, clamped to ≥0).
+* **Smooth mode:** after independent fits, centers are Savitzky‑Golay smoothed; frames deviating by more than `min(3 px, 2×mean σ)` are re‑fit at the smoothed center with a crop radius of ~`4×mean σ`.
+
+</details>
+
 * The top strip mirrors the per‑frame color coding (e.g. Color By or colocalization), and missing/invalid intensities appear grey.
 * When step‑finding is enabled, step medians and transitions are overlaid in green.
 * Click a point to jump to that frame.
