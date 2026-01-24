@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QFileDialog, QLabel, QMessageBox, QComboBox, QSpinBox, QShortcut,
     QListView, QSlider, QSizePolicy, QAction, QDialog,
     QProgressDialog, QApplication, QFrame,
-    QLineEdit, QFormLayout, QGraphicsDropShadowEffect,
+    QLineEdit, QFormLayout, QGraphicsDropShadowEffect, QDialogButtonBox,
     QInputDialog, QMenu, QLayout
 )
 

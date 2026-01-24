@@ -1,12 +1,181 @@
 from ._shared import *
 
 class NavigatorKymoMixin:
+    def _set_kymo_label_hover_cursor(self, hovering: bool, in_image: bool = False):
+        if not hasattr(self, "kymoCanvas"):
+            return
+        if not in_image:
+            self.kymoCanvas.setCursor(Qt.ArrowCursor)
+            return
+        if hovering:
+            self.kymoCanvas.setCursor(Qt.ArrowCursor)
+        else:
+            cursor = getattr(self, "_kymo_sequence_cursor", None)
+            if cursor is None:
+                cursor = self._make_colored_circle_cursor(shade='blue')
+                self._kymo_sequence_cursor = cursor
+            self.kymoCanvas.setCursor(cursor)
+
+    def _handle_kymo_anchor_edit_right_click(self, event):
+        if event.inaxes != self.kymoCanvas.ax or event.xdata is None or event.ydata is None:
+            return
+        ctx = self._get_selected_kymo_traj_context()
+        if ctx is None:
+            return
+        _, traj, roi, kymo_w, num_frames_m1 = ctx
+
+        anchors = list(traj.get("anchors", []) or [])
+        nodes = list(traj.get("nodes", []) or [])
+        xs_disp, ys_disp = self._get_anchor_edit_display_points(traj, roi, kymo_w, num_frames_m1)
+        if not xs_disp or not ys_disp:
+            return
+
+        ax = self.kymoCanvas.ax
+        ex, ey = ax.transData.transform((event.xdata, event.ydata))
+
+        def _pt_segment_dist(px, py, ax0, ay0, ax1, ay1):
+            vx, vy = ax1 - ax0, ay1 - ay0
+            wx, wy = px - ax0, py - ay0
+            c1 = vx * wx + vy * wy
+            if c1 <= 0:
+                return np.hypot(px - ax0, py - ay0)
+            c2 = vx * vx + vy * vy
+            if c2 <= c1:
+                return np.hypot(px - ax1, py - ay1)
+            t = c1 / c2
+            projx = ax0 + t * vx
+            projy = ay0 + t * vy
+            return np.hypot(px - projx, py - projy)
+
+        anchor_idx = None
+        anchor_dist = float("inf")
+        for idx, (xk, yk) in enumerate(zip(xs_disp, ys_disp)):
+            px, py = ax.transData.transform((xk, yk))
+            dist = np.hypot(px - ex, py - ey)
+            if dist < anchor_dist:
+                anchor_dist = dist
+                anchor_idx = idx
+
+        anchor_thresh = 8.0
+        line_thresh = 6.0
+
+        if anchor_idx is not None and anchor_dist <= anchor_thresh:
+            if anchors and len(anchors) <= 2:
+                self.flash_message("Need at least two anchors")
+                return
+            if not anchors and len(nodes) <= 2:
+                self.flash_message("Need at least two anchors")
+                return
+            self._kymo_anchor_drag_orig = {
+                "anchors": list(anchors),
+                "nodes": list(nodes),
+            }
+            if anchors:
+                if anchor_idx < len(anchors):
+                    anchors.pop(anchor_idx)
+                    traj["anchors"] = anchors
+                    if roi is not None:
+                        new_nodes = []
+                        for frame, ax_x, _ax_y in anchors:
+                            mx, my = self.compute_roi_point(roi, ax_x)
+                            new_nodes.append((int(frame), float(mx), float(my)))
+                        traj["nodes"] = new_nodes
+            else:
+                if anchor_idx < len(nodes):
+                    nodes.pop(anchor_idx)
+                    traj["nodes"] = nodes
+            self._kymo_anchor_drag_dirty = True
+        else:
+            if len(xs_disp) < 2:
+                return
+            best_seg = None
+            best_dist = float("inf")
+            for idx in range(len(xs_disp) - 1):
+                x0, y0 = xs_disp[idx], ys_disp[idx]
+                x1, y1 = xs_disp[idx + 1], ys_disp[idx + 1]
+                p0x, p0y = ax.transData.transform((x0, y0))
+                p1x, p1y = ax.transData.transform((x1, y1))
+                dist = _pt_segment_dist(ex, ey, p0x, p0y, p1x, p1y)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_seg = idx
+
+            if best_seg is None or best_dist > line_thresh:
+                return
+
+            frame_idx = num_frames_m1 - int(round(event.ydata))
+            if anchors:
+                f_prev = int(anchors[best_seg][0])
+                f_next = int(anchors[best_seg + 1][0])
+                if frame_idx <= f_prev or frame_idx >= f_next:
+                    self.flash_message("Bad anchor order")
+                    return
+                self._kymo_anchor_drag_orig = {
+                    "anchors": list(anchors),
+                    "nodes": list(nodes),
+                }
+                anchors.insert(best_seg + 1, (int(frame_idx), float(event.xdata), float(event.ydata)))
+                traj["anchors"] = anchors
+                if roi is not None:
+                    new_nodes = []
+                    for frame, ax_x, _ax_y in anchors:
+                        mx, my = self.compute_roi_point(roi, ax_x)
+                        new_nodes.append((int(frame), float(mx), float(my)))
+                    traj["nodes"] = new_nodes
+                self._kymo_anchor_drag_dirty = True
+            else:
+                if best_seg + 1 > len(nodes):
+                    return
+                f_prev = int(nodes[best_seg][0])
+                f_next = int(nodes[best_seg + 1][0])
+                if frame_idx <= f_prev or frame_idx >= f_next:
+                    self.flash_message("Bad anchor order")
+                    return
+                self._kymo_anchor_drag_orig = {
+                    "anchors": list(anchors),
+                    "nodes": list(nodes),
+                }
+                mx, my = self.compute_roi_point(roi, float(event.xdata))
+                nodes.insert(best_seg + 1, (int(frame_idx), float(mx), float(my)))
+                traj["nodes"] = nodes
+                self._kymo_anchor_drag_dirty = True
+
+        xs_disp, ys_disp = self._get_anchor_edit_display_points(traj, roi, kymo_w, num_frames_m1)
+        if not xs_disp or not ys_disp:
+            self.kymoCanvas.draw_trajectories_on_kymo()
+            self.kymoCanvas.draw_idle()
+            return
+        line = getattr(self, "_kymo_anchor_edit_line", None)
+        scatter = getattr(self, "_kymo_anchor_edit_scatter", None)
+        if line is None or scatter is None:
+            self._build_kymo_anchor_edit_artists()
+            line = getattr(self, "_kymo_anchor_edit_line", None)
+            scatter = getattr(self, "_kymo_anchor_edit_scatter", None)
+        if line is None or scatter is None:
+            self.kymoCanvas.draw_trajectories_on_kymo()
+            self.kymoCanvas.draw_idle()
+            return
+        line.set_data(xs_disp, ys_disp)
+        scatter.set_offsets(np.column_stack([xs_disp, ys_disp]))
+        self._capture_kymo_anchor_bg()
+        self.kymoCanvas.draw_idle()
+
+    def _set_kymo_sequence_cursor(self, enabled: bool):
+        if not hasattr(self, "kymoCanvas"):
+            return
+        cursor = getattr(self, "_kymo_sequence_cursor", None)
+        if cursor is None:
+            cursor = self._make_colored_circle_cursor(shade='blue')
+            self._kymo_sequence_cursor = cursor
+        self.kymoCanvas.setCursor(cursor)
+
     def _set_kymo_anchor_edit_mode(self, enabled):
         if getattr(self, "kymo_anchor_edit_mode", False) == enabled:
             return
         self.kymo_anchor_edit_mode = enabled
         self._kymo_anchor_drag = None
         self._kymo_anchor_drag_dirty = False
+        self._kymo_anchor_edit_orig = None
         if not enabled:
             self._kymo_anchor_edit_line = None
             self._kymo_anchor_edit_scatter = None
@@ -29,6 +198,14 @@ class NavigatorKymoMixin:
                 table.selectRow(row)
                 table.blockSignals(False)
                 self.trajectoryCanvas.on_trajectory_selected_by_index(row)
+            ctx = self._get_selected_kymo_traj_context()
+            if ctx is not None:
+                _, traj, _roi, _kymo_w, _num_frames_m1 = ctx
+                self._kymo_anchor_edit_orig = {
+                    "traj": traj,
+                    "anchors": list(traj.get("anchors", []) or []),
+                    "nodes": list(traj.get("nodes", []) or []),
+                }
         if getattr(self, "traj_overlay_button", None) and self.traj_overlay_button.isChecked():
             if enabled:
                 self._build_kymo_anchor_edit_artists()
@@ -66,6 +243,16 @@ class NavigatorKymoMixin:
                 except Exception:
                     pass
                 return
+            ctx = self._get_selected_kymo_traj_context()
+            if ctx is not None:
+                _, traj, _roi, _kymo_w, _num_frames_m1 = ctx
+                orig = getattr(self, "_kymo_anchor_edit_orig", None)
+                if orig and orig.get("traj") is traj:
+                    anchors = list(traj.get("anchors", []) or [])
+                    nodes = list(traj.get("nodes", []) or [])
+                    if anchors == orig.get("anchors") and nodes == orig.get("nodes"):
+                        was_dirty = False
+                        self._kymo_anchor_drag_dirty = False
         self._set_kymo_anchor_edit_mode(False)
         if force_recalc or was_dirty:
             self.add_or_recalculate()
@@ -317,7 +504,7 @@ class NavigatorKymoMixin:
         xs_disp, ys_disp = [], []
         if anchors:
             xs_disp = [xk for _f, xk, _yk in anchors]
-            ys_disp = [num_frames_m1 - f for f, _xk, _yk in anchors]
+            ys_disp = [yk for _f, _xk, yk in anchors]
         else:
             nodes = traj.get("nodes", []) or []
             for f, x, y in nodes:
@@ -397,6 +584,9 @@ class NavigatorKymoMixin:
         if getattr(self, "kymo_anchor_edit_mode", False) and event.button == 1:
             self._start_kymo_anchor_drag(event)
             return
+        if getattr(self, "kymo_anchor_edit_mode", False) and event.button == 3:
+            self._handle_kymo_anchor_edit_right_click(event)
+            return
 
         if event.button == 1 and event.inaxes is self.kymoCanvas.ax and self.traj_overlay_button.isChecked() and len(self.analysis_points) == 0:
             current_row = self.trajectoryCanvas.table_widget.currentRow()
@@ -438,9 +628,13 @@ class NavigatorKymoMixin:
         # — only if click was inside the image —
         if (self.kymoCanvas.image is None or 
             event.xdata is None or event.ydata is None):
+            if event.button == 1 and getattr(self, "analysis_anchors", None):
+                self.flash_message("Out of bounds")
             return
         H, W = self.kymoCanvas.image.shape[:2]
         if not (0 <= event.xdata <= W and 0 <= event.ydata <= H):
+            if event.button == 1 and getattr(self, "analysis_anchors", None):
+                self.flash_message("Out of bounds")
             return
         
         # 1) if we just picked a label, consume this click and reset the flag
@@ -493,6 +687,7 @@ class NavigatorKymoMixin:
         num_frames = self.movie.shape[0]
         frame_idx = (num_frames - 1) - int(round(event.ydata))
         if frame_idx < 0 or frame_idx >= num_frames:
+            self.flash_message("Out of bounds")
             return
 
         # — look up ROI →
@@ -535,6 +730,12 @@ class NavigatorKymoMixin:
                             pass
             force_add = True
 
+        if self.analysis_anchors:
+            last_f, _last_x, _last_y = self.analysis_anchors[-1]
+            if frame_idx <= last_f:
+                self.flash_message("Bad anchor order")
+                return
+
         should_add = True
         if not force_add and self.analysis_anchors:
             last_f, last_x, last_y = self.analysis_anchors[-1]
@@ -548,6 +749,7 @@ class NavigatorKymoMixin:
             self.analysis_anchors.append((frame_idx, event.xdata, event.ydata))
             self.analysis_points.append((frame_idx, x_orig, y_orig))
             self._last_kymo_anchor_time = time.perf_counter()
+            self._set_kymo_sequence_cursor(True)
 
         # — draw a small circle there —
         if should_add:
@@ -622,6 +824,7 @@ class NavigatorKymoMixin:
 
             # — force a full redraw so canvas is clean —
             self.kymoCanvas.draw_idle()
+            self._set_kymo_sequence_cursor(False)
 
 
     def on_kymo_release(self, event):
@@ -735,7 +938,8 @@ class NavigatorKymoMixin:
         frame_number = frame_idx+1
         self.movieCanvas.overlay_rectangle(x_orig, y_orig, search_crop_size)
 
-        self.zoomInsetFrame.setVisible(True)
+        if not getattr(self, "hide_inset", False):
+            self.zoomInsetFrame.setVisible(True)
         self.movieCanvas.update_inset(frame_image, (x_orig, y_orig), zoom_crop_size, zoom_factor=2)
 
         self.analysis_peak = None
@@ -826,15 +1030,18 @@ class NavigatorKymoMixin:
         # Check that the event is in the kymograph canvas and has valid data
         if event.inaxes != self.kymoCanvas.ax or event.xdata is None or event.ydata is None:
             self.pixelValueLabel.setText("")
+            self._set_kymo_label_hover_cursor(False, in_image=False)
             return
 
         kymograph = self.kymoCanvas.image
         if kymograph is None:
             self.pixelValueLabel.setText("")
+            self._set_kymo_label_hover_cursor(False, in_image=False)
             return
 
         if self.looping:
             self.pixelValueLabel.setText("")
+            self._set_kymo_label_hover_cursor(False, in_image=False)
             return
         
         # Convert floating point coordinates to integer indices for the kymograph
@@ -845,6 +1052,25 @@ class NavigatorKymoMixin:
         # Check if the computed indices are within image bounds
         if not (0 <= x < kymograph.shape[1] and 0 <= y < kymograph.shape[0]):
             self.pixelValueLabel.setText("")
+            self._set_kymo_label_hover_cursor(False, in_image=False)
+            return
+
+        hovering_label = False
+        if getattr(self, "analysis_anchors", None) and not getattr(self, "trajectory_finalized", False):
+            hovering_label = False
+        else:
+            for _lbl, bbox in self.kymoCanvas._kymo_label_bboxes.items():
+                if bbox.contains(event.x, event.y):
+                    hovering_label = True
+                    break
+        self._set_kymo_label_hover_cursor(hovering_label, in_image=True)
+
+        if getattr(self, "kymo_anchor_edit_mode", False):
+            return
+        if getattr(self, "analysis_anchors", None) and not getattr(self, "trajectory_finalized", False):
+            return
+
+        if hovering_label:
             return
 
         # For a vertically flipped kymograph, the frame index is computed as below:
@@ -1044,6 +1270,7 @@ class NavigatorKymoMixin:
         """Callback for when the mouse leaves the kymograph axes.
         This removes the blue X marker from the movie canvas."""
         self.pixelValueLabel.setText("")
+        self._set_kymo_label_hover_cursor(False, in_image=False)
         if self.movieCanvas is not None:
             self.movieCanvas.draw_idle()
 

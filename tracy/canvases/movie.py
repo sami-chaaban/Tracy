@@ -394,6 +394,11 @@ class MovieCanvas(ImageCanvas):
         self._last_inset_params = (image, center, crop_size, zoom_factor,
                                 fitted_center, fitted_sigma,
                                 fitted_peak, offset, intensity_value, pointcolor)
+
+        if getattr(self.navigator, "hide_inset", False):
+            if hasattr(self.navigator, "zoomInsetFrame"):
+                self.navigator.zoomInsetFrame.setVisible(False)
+            return
         
         widget = self.navigator.zoomInsetWidget
         fig = widget.figure
@@ -616,6 +621,10 @@ class MovieCanvas(ImageCanvas):
     def _throttled_update_inset(self):
         """Perform the heavy inset update using the most recent parameters."""
         self._inset_update_pending = False
+        if getattr(self.navigator, "hide_inset", False):
+            if hasattr(self.navigator, "zoomInsetFrame"):
+                self.navigator.zoomInsetFrame.setVisible(False)
+            return
         params = self._last_inset_params
         if not params or not isinstance(params, tuple) or len(params) !=10:
             return
@@ -1337,6 +1346,32 @@ class MovieCanvas(ImageCanvas):
             spot_centers = traj.get('spot_centers', [])
             xs_pts = [pt[0] if pt is not None else np.nan for pt in spot_centers]
             ys_pts = [pt[1] if pt is not None else np.nan for pt in spot_centers]
+            frames = traj.get("frames", [])
+
+            fade_range = 20
+            min_alpha = 0.05
+            current_frame = None
+            try:
+                current_frame = int(self.navigator.frameSlider.value())
+            except Exception:
+                current_frame = None
+            point_alphas = None
+            if (
+                current_frame is not None
+                and isinstance(frames, (list, tuple))
+                and len(frames) == len(xs_pts)
+            ):
+                point_alphas = []
+                for f in frames:
+                    try:
+                        dist = abs(int(f) - current_frame)
+                    except Exception:
+                        dist = fade_range
+                    if dist >= fade_range:
+                        alpha = min_alpha
+                    else:
+                        alpha = 1.0 - (dist / fade_range) * (1.0 - min_alpha)
+                    point_alphas.append(alpha)
 
             scatter_kwargs, line_color = self.navigator._get_traj_colors(traj)
 
@@ -1351,40 +1386,62 @@ class MovieCanvas(ImageCanvas):
 
             line = None
             pts_colors = scatter_kwargs.get("c")
-            if isinstance(pts_colors, (list, tuple, np.ndarray)) and len(pts_colors) == len(xs_pts):
-                segs = []
-                seg_colors = []
-                for i in range(len(xs_pts) - 1):
-                    if (np.isnan(xs_pts[i]) or np.isnan(ys_pts[i])
-                            or np.isnan(xs_pts[i + 1]) or np.isnan(ys_pts[i + 1])):
-                        continue
-                    segs.append([[xs_pts[i], ys_pts[i]], [xs_pts[i + 1], ys_pts[i + 1]]])
-                    seg_colors.append(pts_colors[i])
-                if segs:
-                    line = LineCollection(
-                        segs,
-                        colors=seg_colors,
-                        linewidths=lw_line,
-                        alpha=alpha_line,
-                        zorder=z_line
-                    )
-                    self.ax.add_collection(line)
+            segs = []
+            seg_colors = []
+            for i in range(len(xs_pts) - 1):
+                if (np.isnan(xs_pts[i]) or np.isnan(ys_pts[i])
+                        or np.isnan(xs_pts[i + 1]) or np.isnan(ys_pts[i + 1])):
+                    continue
+                segs.append([[xs_pts[i], ys_pts[i]], [xs_pts[i + 1], ys_pts[i + 1]]])
+                base_color = None
+                if isinstance(pts_colors, (list, tuple, np.ndarray)) and len(pts_colors) == len(xs_pts):
+                    base_color = pts_colors[i]
+                else:
+                    base_color = line_color
+                seg_alpha = alpha_line
+                if point_alphas is not None:
+                    try:
+                        seg_alpha = 0.5 * (point_alphas[i] + point_alphas[i + 1])
+                    except Exception:
+                        seg_alpha = alpha_line
+                seg_colors.append(mcolors.to_rgba(base_color, seg_alpha))
 
-            if line is None:
-                line, = self.ax.plot(
-                    xs_pts, ys_pts,
-                    linestyle='-',
-                    color=(line_color),
-                    linewidth=lw_line,
-                    alpha=alpha_line,
+            if segs:
+                line = LineCollection(
+                    segs,
+                    colors=seg_colors,
+                    linewidths=lw_line,
                     zorder=z_line
                 )
-            self.movie_trajectory_markers.append(line)
+                self.ax.add_collection(line)
+                self.movie_trajectory_markers.append(line)
 
         # 5e) Draw scatter points ONLY for the highlighted trajectory
             if is_hl and not getattr(self.navigator, "kymo_anchor_edit_mode", False):
                 # Bump size and add black edge
                 scatter_kwargs.update(s=15, edgecolors='black', linewidths=0.5)
+                if point_alphas is not None:
+                    base_colors = None
+                    if isinstance(pts_colors, (list, tuple, np.ndarray)) and len(pts_colors) == len(xs_pts):
+                        base_colors = pts_colors
+                    else:
+                        base = scatter_kwargs.get("color", line_color)
+                        base_colors = [base] * len(xs_pts)
+                    rgba = []
+                    for i, c in enumerate(base_colors):
+                        try:
+                            rgba.append(mcolors.to_rgba(c, point_alphas[i]))
+                        except Exception:
+                            rgba.append(mcolors.to_rgba(c))
+                    scatter_kwargs.pop("color", None)
+                    scatter_kwargs["c"] = rgba
+                    edge_rgba = []
+                    for i in range(len(xs_pts)):
+                        try:
+                            edge_rgba.append(mcolors.to_rgba("black", point_alphas[i]))
+                        except Exception:
+                            edge_rgba.append(mcolors.to_rgba("black"))
+                    scatter_kwargs["edgecolors"] = edge_rgba
                 z_scatter = 6
                 scatter = self.ax.scatter(
                     xs_pts, ys_pts,

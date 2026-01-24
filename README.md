@@ -32,6 +32,7 @@
 5. [Loading & Saving](#loading--saving)
    * [Load Trajectories](#load-trajectories)
    * [Save Trajectories](#save-trajectories)
+   * [Save Kymographs](#save-kymographs)
    * [Import TrackMate Data](#import-trackmate-data)
 6. [License](#license)
 
@@ -68,7 +69,7 @@ tracy &                    # run in the background
 
 ### 2. Loading Your Movie <a name="loading-your-movie"></a>
 
-1. Click **Load Movie** (or use **Load » Movie**).
+1. Click **LOAD** (or use **Load » Movie**).
 2. Select a single- or multi-channel TIFF movie.
 3. If necessary, enter pixel size and frame interval when prompted.
 4. Pan by holding down the middle button (or `Ctrl/Cmd`) and dragging, zoom with the mouse wheel.
@@ -94,6 +95,7 @@ Other load options are available under **Load** — see [Loading & Saving](#load
 
 > The **spot histogram** shows intensities in the search area and highlights values in the spot.
 > Inset size can be changed under **View » Inset size**; this only affects visualization and does not change calculations.
+> Use **View » Inset** to show or hide the inset panel.
 
 ### 4. Generating Kymographs <a name="generating-kymographs"></a>
 
@@ -103,6 +105,7 @@ Other load options are available under **Load** — see [Loading & Saving](#load
 4. Double‑click to finish and generate the kymograph.
 5. For multi‑channel movies, a kymograph is generated for each channel (toggle with `1`, `2`, …).
 6. Cycle through kymographs with `,` (previous) and `.` (next) or use the dropdown menu.
+7. Use the **Invert** button (left of the kymograph delete button) to horizontally flip the kymograph. This also reverses the line direction and mirrors any kymograph anchors so overlays stay aligned.
 
 > *Tip:* Apply a LoG filter via **Kymograph » Apply LoG filter** for clearer tracks (applies to subsequent kymographs).
 
@@ -150,6 +153,7 @@ Other load options are available under **Load** — see [Loading & Saving](#load
 * The blue circles are anchor points: direct kymograph clicks, or movie‑click anchors projected onto the current kymograph. Anchors are only shown when the selected trajectory belongs to the currently displayed kymograph/geometry.
 
 * To edit anchors, hold **Shift**. Only the selected trajectory’s dotted line and blue anchor circles are shown. Drag any circle to move that anchor; the dotted line updates live. Release **Shift** to exit edit mode and recalculate if anchors changed. Shift also cancels any active left‑click sequence. Use the **ANCHORS** toggle below the kymograph to hide/show anchor overlays.
+* While holding **Shift**, you can **right‑click** an anchor to remove it, or right‑click the dotted line to insert a new anchor. (Tracy keeps at least two anchors and will warn if an insertion breaks anchor order.)
 
 * Anchors define track segments (i.e. between anchors), which allow for per-segment analysis during saving see [Loading & Saving](#loading--saving) as well as per-segment diffusion analysis when requested.
 
@@ -490,6 +494,12 @@ Tracy can optionally include empty kymographs (no trajectories) as blank rows so
 * **Overlapping kymograph geometries / shared trajectories:** if the same trajectory is associated with multiple kymographs, the **Per-kymograph** sheet can double-count trajectories and bias the averages.
 
 </details>
+
+### Save Kymographs <a name="save-kymographs"></a>
+
+* Use **Save » Kymographs** to export one or more kymograph images.
+* Choose file type (`tif`, `png`, `jpg`), select a LUT, and optionally overlay trajectories and labels.
+* For TIFF exports, the LUT is embedded for ImageJ; for PNG/JPG exports, the LUT is baked into the pixels.
 
 ### Import TrackMate Data <a name="import-trackmate-data"></a>
 

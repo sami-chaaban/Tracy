@@ -1312,6 +1312,131 @@ class NavigatorIOMixin:
         self.kymo_changed()
         self.update_kymo_visibility()
         self.update_roilist_visibility()
+    def invert_current_kymograph(self):
+        current = self.kymoCombo.currentText()
+        if not current:
+            return
+        info = self.kymo_roi_map.get(current)
+        if not info:
+            return
+        roi_name = info.get("roi")
+        roi = self.rois.get(roi_name)
+        if not roi:
+            return
+
+        def _roi_signature(roi_dict):
+            if not isinstance(roi_dict, dict):
+                return None
+            try:
+                xs = tuple(float(x) for x in roi_dict.get("x", []))
+                ys = tuple(float(y) for y in roi_dict.get("y", []))
+                pts = tuple((float(p[0]), float(p[1])) for p in roi_dict.get("points", []))
+            except Exception:
+                return None
+            return (roi_dict.get("type"), xs, ys, pts)
+
+        sig_before = _roi_signature(roi)
+
+        # Flip ROI direction (reverse points along the line).
+        if "x" in roi:
+            roi["x"] = list(reversed(roi["x"]))
+        if "y" in roi:
+            roi["y"] = list(reversed(roi["y"]))
+        if "points" in roi:
+            roi["points"] = list(reversed(roi["points"]))
+
+        # Flip all kymographs associated with this ROI.
+        for name, mapping in self.kymo_roi_map.items():
+            if mapping.get("roi") == roi_name and name in self.kymographs:
+                self.kymographs[name] = np.fliplr(self.kymographs[name])
+
+        # Determine kymograph width for anchor inversion.
+        kymo_width = None
+        for name, mapping in self.kymo_roi_map.items():
+            if mapping.get("roi") == roi_name and name in self.kymographs:
+                try:
+                    kymo_width = int(self.kymographs[name].shape[1])
+                    break
+                except Exception:
+                    pass
+        if kymo_width is None:
+            try:
+                xs = np.asarray(roi.get("x", []), float)
+                ys = np.asarray(roi.get("y", []), float)
+                if xs.size >= 2:
+                    seg_lengths = np.hypot(np.diff(xs), np.diff(ys))
+                    total_length = float(seg_lengths.sum())
+                    kymo_width = max(int(total_length), 2)
+            except Exception:
+                kymo_width = None
+
+        sig_after = _roi_signature(roi)
+
+        def _roi_matches(traj_roi):
+            if traj_roi is roi:
+                return True
+            if sig_before is not None and _roi_signature(traj_roi) == sig_before:
+                return True
+            if sig_after is not None and _roi_signature(traj_roi) == sig_after:
+                return True
+            return False
+
+        # Update trajectories tied to this ROI (anchors are in kymo coordinates).
+        trajs = getattr(self, "trajectoryCanvas", None)
+        if trajs is not None:
+            for traj in trajs.trajectories:
+                traj_roi = traj.get("roi")
+                if isinstance(traj_roi, dict):
+                    if not _roi_matches(traj_roi):
+                        continue
+                    if traj_roi is not roi:
+                        traj_roi["type"] = roi.get("type", traj_roi.get("type"))
+                        traj_roi["x"] = list(roi.get("x", []))
+                        traj_roi["y"] = list(roi.get("y", []))
+                        if "points" in roi:
+                            traj_roi["points"] = list(roi.get("points", []))
+                else:
+                    # For trajectories without an ROI attached, fall back to the same
+                    # proximity test used for kymo overlays.
+                    if not self._traj_matches_current_kymo(traj, roi):
+                        continue
+                anchors = traj.get("anchors") or []
+                if anchors and kymo_width is not None:
+                    new_anchors = []
+                    for frame, xk, yk in anchors:
+                        if xk is None:
+                            new_anchors.append((frame, xk, yk))
+                            continue
+                        new_xk = (kymo_width - 1) - float(xk)
+                        new_anchors.append((int(frame), float(new_xk), float(yk)))
+                    traj["anchors"] = new_anchors
+
+        # Update any active analysis anchors on this ROI.
+        analysis_roi = getattr(self, "analysis_roi", None)
+        if isinstance(analysis_roi, dict) and _roi_matches(analysis_roi):
+            if analysis_roi is not roi:
+                analysis_roi["type"] = roi.get("type", analysis_roi.get("type"))
+                analysis_roi["x"] = list(roi.get("x", []))
+                analysis_roi["y"] = list(roi.get("y", []))
+                if "points" in roi:
+                    analysis_roi["points"] = list(roi.get("points", []))
+            anchors = getattr(self, "analysis_anchors", None) or []
+            if anchors and kymo_width is not None:
+                new_anchors = []
+                for frame, xk, yk in anchors:
+                    if xk is None:
+                        new_anchors.append((frame, xk, yk))
+                        continue
+                    new_xk = (kymo_width - 1) - float(xk)
+                    new_anchors.append((int(frame), float(new_xk), float(yk)))
+                self.analysis_anchors = new_anchors
+
+        if getattr(self, "roi_overlay_active", False):
+            self.overlay_all_rois()
+
+        # Refresh current kymograph view and overlays.
+        if self.kymoCombo.currentText():
+            self.kymo_changed()
 
     def clear_kymographs(self, prompt=True):
         reply = QMessageBox.Yes
@@ -1437,6 +1562,21 @@ class NavigatorIOMixin:
         sel_names  = opts["selected"]
         ft         = opts["filetype"]
         do_overlay = opts["overlay"]
+        do_labels  = opts.get("labels", True)
+        do_scalebars = opts.get("scalebars", False)
+        lut_label  = opts.get("lut", "Greys")
+        current_inv = bool(getattr(self, "inverted_cmap", False))
+        lut_cmap   = SaveKymographDialog.lut_to_cmap(
+            lut_label,
+            current_inverted=current_inv
+        )
+        lut_table = SaveKymographDialog.lut_to_table(
+            lut_label,
+            current_inverted=current_inv
+        )
+
+        def _build_imagej_lut():
+            return lut_table
         use_pref   = opts.get("use_prefix", False)
         mid        = opts.get("middle", "")
         custom     = opts.get("custom", False)
@@ -1460,6 +1600,12 @@ class NavigatorIOMixin:
         fig = self.kymoCanvas.fig
         orig_size = fig.get_size_inches().copy()
 
+        prev_overlay_mode = None
+        if do_overlay:
+            prev_overlay_mode = self.get_traj_overlay_mode()
+            # Force overlays on for export, independent of current UI overlay mode.
+            self.traj_overlay_mode = "all"
+
         try:
             for i, name in enumerate(sel_names):
                 if prog.wasCanceled():
@@ -1476,12 +1622,13 @@ class NavigatorIOMixin:
 
                 if do_overlay:
                     
-                    # 1) load & flip the raw kymo
+                    # 1) match kymo canvas/preview orientation
                     kymo = np.flipud(self.kymographs[name])
 
                     # 2) ensure display_image does a full reset
                     self.kymoCanvas.manual_zoom = False
                     self.kymoCanvas.display_image(kymo)
+                    self.kymoCanvas.set_cmap(lut_cmap)
 
                     # 3) switch ROI & channel
                     if name in self.kymographs:
@@ -1491,23 +1638,145 @@ class NavigatorIOMixin:
                     # 5) now draw a skinny overlay (axes already off, full‐frame)
                     self.kymoCanvas.draw_trajectories_on_kymo(
                         showsearchline=False,
-                        skinny=True
+                        skinny=True,
+                        show_labels=do_labels
                     )
                     self.kymoCanvas.fig.canvas.draw()
 
                     # 6) save
                     fig = self.kymoCanvas.fig
                     fig.set_size_inches(orig_size)
+                    scale_artists = []
+                    if do_scalebars:
+                        ax = self.kymoCanvas.ax
+                        prev_xlim = ax.get_xlim()
+                        prev_ylim = ax.get_ylim()
+                        scale_artists = SaveKymographDialog.draw_scale_bars(
+                            ax,
+                            kymo.shape,
+                            origin="upper",
+                            pixel_size_nm=getattr(self, "pixel_size", None),
+                            frame_interval_ms=getattr(self, "frame_interval", None),
+                            set_outer_pad=False,
+                        )
                     fig.savefig(out_path, dpi=300,
                                 facecolor=fig.get_facecolor(),
                                 edgecolor="none",
                                 bbox_inches="tight")
+                    for artist in scale_artists:
+                        try:
+                            artist.remove()
+                        except Exception:
+                            pass
+                    if do_scalebars:
+                        ax.set_xlim(prev_xlim)
+                        ax.set_ylim(prev_ylim)
 
                 else:
                     # plain export
                     kymo = self.kymographs[name]
                     if ft == "tif":
-                        tifffile.imwrite(out_path, kymo, imagej=True)
+                        lut = _build_imagej_lut()
+                        lut = np.ascontiguousarray(lut, dtype=np.uint8)
+                        settings = getattr(self, "kymo_contrast_settings", {}).get(name)
+                        # ImageJ metadata/LUTs are ignored for unsupported dtypes (e.g., float64).
+                        # Prefer the movie's integer dtype when possible; otherwise fall back to float32.
+                        kymo_to_save = kymo
+                        if np.issubdtype(kymo_to_save.dtype, np.floating):
+                            target_dtype = None
+                            movie = getattr(self, "movie", None)
+                            if movie is not None and np.issubdtype(movie.dtype, np.integer):
+                                target_dtype = movie.dtype
+                            else:
+                                target_dtype = np.float32
+
+                            if np.issubdtype(target_dtype, np.integer):
+                                info = np.iinfo(target_dtype)
+                                kymo_to_save = np.nan_to_num(
+                                    kymo_to_save,
+                                    nan=0.0,
+                                    posinf=info.max,
+                                    neginf=info.min,
+                                )
+                                kymo_to_save = np.clip(
+                                    np.rint(kymo_to_save),
+                                    info.min,
+                                    info.max,
+                                ).astype(target_dtype)
+                            else:
+                                kymo_to_save = kymo_to_save.astype(target_dtype)
+                        # Compute display range (ImageJ "Ranges") for this kymograph.
+                        disp_vmin = None
+                        disp_vmax = None
+                        if settings:
+                            disp_vmin = settings.get("vmin", None)
+                            disp_vmax = settings.get("vmax", None)
+                        if (disp_vmin is None or disp_vmax is None) and name == current:
+                            try:
+                                if self.kymoCanvas._im is not None:
+                                    disp_vmin, disp_vmax = self.kymoCanvas._im.get_clim()
+                            except Exception:
+                                pass
+                        if disp_vmin is not None and disp_vmax is not None:
+                            # Kymograph display uses an 8-bit preview stretched between p15 and p99.
+                            # Map the preview range back into raw intensity units.
+                            p15, p99 = np.percentile(kymo_to_save, (15, 99))
+                            denom = p99 - p15
+                            if denom == 0:
+                                denom = 1
+                            vmin = p15 + (float(disp_vmin) / 255.0) * denom
+                            vmax = p15 + (float(disp_vmax) / 255.0) * denom
+                        else:
+                            p15, p99 = np.percentile(kymo_to_save, (15, 99))
+                            vmin = float(p15)
+                            vmax = float(p99 * 1.1)
+                        if vmin is None or vmax is None:
+                            vmin, vmax = 0, 0
+                        if vmin >= vmax:
+                            vmax = vmin + 1
+                        if np.issubdtype(kymo_to_save.dtype, np.integer):
+                            info = np.iinfo(kymo_to_save.dtype)
+                            vmin = max(info.min, min(info.max, int(vmin)))
+                            vmax = max(info.min, min(info.max, int(vmax)))
+                        else:
+                            vmin = float(vmin)
+                            vmax = float(vmax)
+                        # If a non-gray LUT is chosen, also embed a ColorMap.
+                        # ImageJ expects colormap shape (3, 256) in ImageJ mode.
+                        colormap = None
+                        if lut_label not in ("Greys", "Greys (inv.)"):
+                            colormap = (lut.astype(np.uint16) * 257)
+                        mode = "grayscale" if lut_label in ("Greys", "Greys (inv.)") else "color"
+                        if lut_label == "Greys (inv.)":
+                            current_lut = "greys (inv.)"
+                        else:
+                            current_lut = lut_label.lower().replace(" (inv.)", "")
+                        write_kwargs = {}
+                        if lut_label == "Greys (inv.)":
+                            # Ensure ImageJ reports an inverting grayscale LUT.
+                            write_kwargs["photometric"] = "miniswhite"
+                        metadata = {
+                            "mode": mode,
+                            "axes": "YX",
+                            "Info": f"CurrentLUT={current_lut}\n",
+                            # ImageJ expects list of per-channel ranges.
+                            "Ranges": [(float(vmin), float(vmax))],
+                            # Also write explicit min/max for single-channel ImageJ.
+                            "min": float(vmin),
+                            "max": float(vmax),
+                        }
+                        # For inverting grayscale, rely on Photometric=miniswhite and omit LUTs
+                        # so ImageJ reports an inverting grayscale LUT.
+                        if lut_label != "Greys (inv.)":
+                            metadata["LUTs"] = [lut]
+                        tifffile.imwrite(
+                            out_path,
+                            kymo_to_save,
+                            imagej=True,
+                            colormap=colormap,
+                            metadata=metadata,
+                            **write_kwargs,
+                        )
                     else:
                         settings = getattr(self, "kymo_contrast_settings", {}).get(name)
                         if settings:
@@ -1528,14 +1797,33 @@ class NavigatorIOMixin:
                                 denom = 1
                             disp = np.clip((kymo - p15) / denom, 0, 1)
                         disp = (disp * 255).astype(np.uint8)
-                        cmap     = "gray_r" if getattr(self, "inverted_cmap", False) else "gray"
-                        disp     = np.flipud(disp)
-                        plt.imsave(out_path, disp, cmap=cmap, origin="lower")
+                        cmap     = lut_cmap
+                        if do_scalebars:
+                            dpi = 100
+                            fig = plt.figure(frameon=False)
+                            fig.set_size_inches(disp.shape[1] / dpi, disp.shape[0] / dpi)
+                            ax = fig.add_axes([0, 0, 1, 1])
+                            ax.imshow(disp, cmap=cmap, origin="upper")
+                            ax.axis("off")
+                            SaveKymographDialog.draw_scale_bars(
+                                ax,
+                                disp.shape,
+                                origin="upper",
+                                pixel_size_nm=getattr(self, "pixel_size", None),
+                                frame_interval_ms=getattr(self, "frame_interval", None),
+                                set_outer_pad=False,
+                            )
+                            fig.savefig(out_path, dpi=dpi, facecolor="white", edgecolor="none")
+                            plt.close(fig)
+                        else:
+                            plt.imsave(out_path, disp, cmap=cmap, origin="upper")
 
             prog.setValue(total)
 
         finally:
             prog.close()
+            if prev_overlay_mode is not None:
+                self.traj_overlay_mode = prev_overlay_mode
             # just re-select the original kymo; that will reset ROI, channel, contrast, overlays, etc.
             if current in self.kymographs:
                 self.kymoCombo.setCurrentText(current)

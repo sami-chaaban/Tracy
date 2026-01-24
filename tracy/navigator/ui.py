@@ -76,6 +76,7 @@ class NavigatorUiMixin:
         central.setObjectName("centralContainer")
         self.setCentralWidget(central)
         containerLayout = QVBoxLayout(central)
+        self.hide_inset = False
 
         # videoiconpath = self.resource_path('icons/video-camera.svg')
         crossiconpath = self.resource_path('icons/cross-small.svg')
@@ -87,6 +88,7 @@ class NavigatorUiMixin:
         trajoverlayoneiconpath = self.resource_path('icons/overlay_one.svg')
         roioverlayiconpath = self.resource_path('icons/overlay.svg')
         kymoanchoriconpath = self.resource_path('icons/overlay_anchor.svg')
+        invertkymoiconpath = self.resource_path('icons/invert.svg')
 
         # --- Top Controls Section ---
         topWidget = QWidget()
@@ -202,7 +204,18 @@ class NavigatorUiMixin:
         self.kymoCombo.currentIndexChanged.connect(self.kymo_changed)
         kymoControlLayout.addWidget(self.kymoCombo)
 
-        # Add the kymograph delete and clear buttons
+        # Add the kymograph invert, delete, and clear buttons
+        self.kymoInvertBtn = QPushButton("")
+        self.kymoInvertBtn.setIcon(QIcon(invertkymoiconpath))
+        self.kymoInvertBtn.setIconSize(QSize(14, 14))
+        invertkymo_filter = BubbleTipFilter("Invert this kymograph", self)
+        self.kymoInvertBtn.installEventFilter(invertkymo_filter)
+        self.kymoInvertBtn._bubble_filter = invertkymo_filter
+        self.kymoInvertBtn.setObjectName("Passive")
+        self.kymoInvertBtn.setFixedWidth(32)
+        self.kymoInvertBtn.clicked.connect(self.invert_current_kymograph)
+        kymoControlLayout.addWidget(self.kymoInvertBtn)
+
         self.kymoDeleteBtn = QPushButton("")
         self.kymoDeleteBtn.setIcon(QIcon(crossiconpath))
         self.kymoDeleteBtn.setIconSize(QSize(14, 14))
@@ -495,7 +508,7 @@ class NavigatorUiMixin:
             background: white;
             border-radius: 12px;
             color: black;
-            font-size: 26px;
+            font-size: 18px;
             font-weight: bold;
         """)
         chshadow = QGraphicsDropShadowEffect(self._ch_overlay)
@@ -775,8 +788,8 @@ class NavigatorUiMixin:
         contrastLayout.addSpacing(24)
 
         self.delete_button = AnimatedIconButton("")
-        # self.delete_button.setToolTip("Delete selected trajectory")
-        deletetraj_filter = BubbleTipFilter("Delete selected trajectory", self)
+        # self.delete_button.setToolTip("Delete selected trajectory(ies)")
+        deletetraj_filter = BubbleTipFilter("Delete selected trajectory(ies)", self)
         self.delete_button.installEventFilter(deletetraj_filter)
         self.delete_button._bubble_filter = deletetraj_filter
         self.delete_button.setIcon(QIcon(crossiconpath))
@@ -1076,6 +1089,17 @@ class NavigatorUiMixin:
                     im.set_cmap("gray_r" if checked else "gray")
             canv.draw_idle()
 
+        # Refresh movie-canvas blit backgrounds so stale colormaps aren't restored later.
+        mc = getattr(self, "movieCanvas", None)
+        if mc is not None and mc._im is not None:
+            mc.draw()
+            canvas = mc.figure.canvas
+            if getattr(self, "temp_movie_analysis_line", None) is not None:
+                mc._bg = None
+            else:
+                mc._bg = canvas.copy_from_bbox(mc.ax.bbox)
+            mc._roi_bg = canvas.copy_from_bbox(mc.ax.bbox)
+
     def update_roilist_visibility(self):
         # Check kymo→ROI entries for imported ROIs.
         has_orphaned = any(
@@ -1170,8 +1194,7 @@ class NavigatorUiMixin:
         self.cancel_left_click_sequence()
         self.movieCanvas.roiAddMode = enabled
         if enabled:
-            cursor = self._make_colored_circle_cursor(shade='green')
-            self.movieCanvas.setCursor(cursor)
+            self._set_movie_roi_cursor(False)
             self.movieDisplayContainer.setBorderColor("#81C784")
             if not self.roi_overlay_button.isChecked():
                 self.roi_overlay_button.setChecked(True)
@@ -1194,6 +1217,18 @@ class NavigatorUiMixin:
         popup = QWidget(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         popup.setAttribute(Qt.WA_TranslucentBackground)      # let round‑corners show
         popup.setStyleSheet("background: transparent;")      # make sure outer is invisible
+        popup.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        popup.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        popup.setFocusPolicy(Qt.NoFocus)
+        app = QApplication.instance()
+        cursor = app.overrideCursor() if app is not None else None
+        if cursor is None and parent is not None:
+            try:
+                cursor = parent.cursor()
+            except Exception:
+                cursor = None
+        if cursor is not None:
+            popup.setCursor(cursor)
 
         # 2) Inner frame draws the colored, rounded rect
         frame = QFrame(popup)
@@ -1896,6 +1931,12 @@ class NavigatorUiMixin:
         self._apply_checkable_action_style(self.invertAct)
         viewMenu.addAction(self.invertAct)
 
+        self.insetAct = QAction("Inset", self, checkable=True)
+        self.insetAct.setChecked(not self.hide_inset)
+        self.insetAct.toggled.connect(self.toggle_inset_visibility)
+        self._apply_checkable_action_style(self.insetAct)
+        viewMenu.addAction(self.insetAct)
+
         zoomAction = QAction("Inset size", self)
         zoomAction.triggered.connect(self.open_zoom_dialog)
         viewMenu.addAction(zoomAction)
@@ -1931,6 +1972,28 @@ class NavigatorUiMixin:
     def open_shortcuts_dialog(self):
         dialog = ShortcutsDialog(self)
         dialog.exec_()
+
+    def toggle_inset_visibility(self, checked: bool):
+        # Checked means show inset.
+        self.hide_inset = not checked
+        if not checked:
+            if hasattr(self, "zoomInsetFrame"):
+                self.zoomInsetFrame.setVisible(False)
+            return
+
+        params = getattr(self.movieCanvas, "_last_inset_params", None)
+        if not params or not isinstance(params, tuple) or len(params) != 10:
+            return
+        image, center, crop_size, zoom_factor, fcenter, fsigma, fpeak, offset, ivalue, pointcolor = params
+        self.movieCanvas.update_inset(
+            image, center, crop_size, zoom_factor,
+            fitted_center=fcenter,
+            fitted_sigma=fsigma,
+            fitted_peak=fpeak,
+            intensity_value=ivalue,
+            offset=offset,
+            pointcolor=pointcolor,
+        )
 
     def _rebuild_color_by_actions(self):
         # 1) clear old
@@ -2057,22 +2120,33 @@ class NavigatorUiMixin:
 
     def set_search_radius(self):
         current_radius = self.searchWindowSpin.value()
-        dialog = QInputDialog(self)
+        dialog = QDialog(self)
         dialog.setWindowTitle("Set Search Radius")
-        dialog.setLabelText(
+        dialog.setStyleSheet(QApplication.instance().styleSheet())
+
+        layout = QVBoxLayout(dialog)
+        label = QLabel(
             "<b>Search Radius</b><br>"
             "<i>shortcut: r + scroll</i>"
         )
-        dialog.setIntRange(4, 50)
-        dialog.setIntValue(current_radius)
+        label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        layout.addWidget(label)
 
-        # Center the label vertically & horizontally
-        label = dialog.findChild(QLabel)
-        if label:
-            label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        spin = QSpinBox(dialog)
+        spin.setRange(4, 50)
+        spin.setValue(current_radius)
+        spin.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        spin.setFixedWidth(60)
+        spin.setStyleSheet("QSpinBox { padding-left: 8px; }")
+        layout.addWidget(spin, alignment=Qt.AlignHCenter)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
 
         if dialog.exec_() == QDialog.Accepted:
-            self.searchWindowSpin.setValue(dialog.intValue())
+            self.searchWindowSpin.setValue(spin.value())
 
     def set_tracking_mode(self):
         current_mode = getattr(self, "tracking_mode", "Independent")

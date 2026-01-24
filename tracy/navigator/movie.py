@@ -1,6 +1,20 @@
 from ._shared import *
 
 class NavigatorMovieMixin:
+    def _set_movie_roi_cursor(self, in_image: bool):
+        if not hasattr(self, "movieCanvas"):
+            return
+        if not getattr(self.movieCanvas, "roiAddMode", False):
+            return
+        if not in_image:
+            self.movieCanvas.setCursor(Qt.ArrowCursor)
+            return
+        cursor = getattr(self, "_movie_roi_cursor", None)
+        if cursor is None:
+            cursor = self._make_colored_circle_cursor(shade='green')
+            self._movie_roi_cursor = cursor
+        self.movieCanvas.setCursor(cursor)
+
     def on_frame_slider_changed(self, frame_idx):
         """
         Called when the user drags or clicks the frame slider.
@@ -36,6 +50,12 @@ class NavigatorMovieMixin:
         # Restore the saved view limits (thus preserving the manual zoom)
         self.movieCanvas.ax.set_xlim(current_xlim)
         self.movieCanvas.ax.set_ylim(current_ylim)
+
+        # Refresh overlays so frame-dependent styling (e.g., fades) stays in sync.
+        try:
+            self.movieCanvas.draw_trajectories_on_movie()
+        except Exception:
+            pass
 
         self.movieCanvas.draw_idle()
         canvas = self.movieCanvas.figure.canvas
@@ -219,6 +239,9 @@ class NavigatorMovieMixin:
             if hasattr(self, 'analysisSlider'):
                 self.analysisSlider.setValue(index)
 
+            # refresh movie overlays so frame-dependent styling (e.g., fades) stays in sync
+            mc.draw_trajectories_on_movie()
+
         finally:
             mc.setUpdatesEnabled(True)
             kc.setUpdatesEnabled(True)
@@ -360,7 +383,8 @@ class NavigatorMovieMixin:
         # Perform a Gaussian fit on the current frame.
         fitted_center, fitted_sigma, intensity, peak, bkgr = perform_gaussian_fit(frame_image, (x_orig, y_orig), search_crop_size, bg_fixed=bg_guess, pixelsize = self.pixel_size)
 
-        self.zoomInsetFrame.setVisible(True)
+        if not getattr(self, "hide_inset", False):
+            self.zoomInsetFrame.setVisible(True)
         self.movieCanvas.update_inset(frame_image, (x_orig, y_orig), zoom_crop_size, zoom_factor=2,
                                     fitted_center=fitted_center,
                                     fitted_sigma=fitted_sigma,
@@ -474,12 +498,15 @@ class NavigatorMovieMixin:
             self.stoploop()
         if self.movieCanvas.roiAddMode:
             if event.button == 1:  # left click
-                # Always add the current point
                 if not hasattr(self.movieCanvas, 'roiPoints') or not self.movieCanvas.roiPoints:
                     self.movieCanvas.clear_temporary_roi_markers()
                     self.movieCanvas.roiPoints = []
-                self.movieCanvas.roiPoints.append((event.xdata, event.ydata))
-                self.movieCanvas.update_roi_drawing(current_pos=(event.xdata, event.ydata))
+                # On double-click, finish using the first click position to avoid
+                # adding a tiny extra segment if the mouse moved between clicks.
+                skip_add = bool(event.dblclick) and bool(self.movieCanvas.roiPoints)
+                if not skip_add:
+                    self.movieCanvas.roiPoints.append((event.xdata, event.ydata))
+                    self.movieCanvas.update_roi_drawing(current_pos=(event.xdata, event.ydata))
                 if event.dblclick:
                     # On double-click, now finalize the ROI (after adding the current click)
                     self.kymoCanvas.manual_zoom = False
@@ -538,7 +565,8 @@ class NavigatorMovieMixin:
                 frame_image, (x_click, y_click), search_crop_size, bg_fixed=bg_guess, pixelsize = self.pixel_size
             )
 
-            self.zoomInsetFrame.setVisible(True)
+            if not getattr(self, "hide_inset", False):
+                self.zoomInsetFrame.setVisible(True)
             self.movieCanvas.update_inset(
                 frame_image, (x_click, y_click), zoom_crop_size, zoom_factor=2,
                 fitted_center=fitted_center,
@@ -572,13 +600,18 @@ class NavigatorMovieMixin:
         if self.looping:
             self.pixelValueLabel.setText("")
             return
+        in_image = False
         # Check that the event is in the movie canvas and has valid coordinates.
         if event.inaxes == self.movieCanvas.ax and event.xdata is not None and event.ydata is not None:
             # Convert floating point data coordinates to integer indices.
-            x = int(round(event.xdata))
-            y = int(round(event.ydata))
             image = self.movieCanvas.image
-            if image is not None and 0 <= x < image.shape[1] and 0 <= y < image.shape[0]:
+            if image is not None:
+                in_image = (0 <= event.xdata < image.shape[1] and 0 <= event.ydata < image.shape[0])
+                x = int(round(event.xdata))
+                y = int(round(event.ydata))
+            else:
+                x = y = None
+            if image is not None and x is not None and y is not None and 0 <= x < image.shape[1] and 0 <= y < image.shape[0]:
                 pixel_val = image[y, x]
                 current_frame = self.frameSlider.value() + 1
                 text = f"F: {current_frame} X: {x} Y: {y} I: {pixel_val}"
@@ -589,9 +622,10 @@ class NavigatorMovieMixin:
             self._last_hover_xy = (event.xdata, event.ydata)
             if not getattr(self, "analysis_points", None):
                 self.movieCanvas._manual_marker_active = False
-            self.movieCanvas.clear_manual_marker()
+                self.movieCanvas.clear_manual_marker()
         else:
             self.pixelValueLabel.setText("")
+        self._set_movie_roi_cursor(in_image)
 
         self._last_hover_xy = (event.xdata, event.ydata)
 
@@ -619,6 +653,7 @@ class NavigatorMovieMixin:
     def on_movie_leave(self, _event):
         self.pixelValueLabel.setText("")
         self._last_hover_xy = None
+        self._set_movie_roi_cursor(False)
 
     def on_movie_left_click(self, event):
         # Get the current frame index from the frame slider.
@@ -914,6 +949,8 @@ class NavigatorMovieMixin:
         self.analysis_anchors = []
         self.analysis_roi = None
         # self.kymoCanvas.unsetCursor()
+        if hasattr(self, "_set_kymo_sequence_cursor"):
+            self._set_kymo_sequence_cursor(False)
 
         # self.kymoCanvas.draw_idle()
         # self.movieCanvas.draw_idle()

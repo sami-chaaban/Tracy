@@ -221,11 +221,28 @@ class NavigatorAnalysisMixin:
             self.analysis_motion_segments = None
 
     def _compute_analysis(self, points, bg=None, showprogress=True):
+        def _normalize_result(result):
+            if result is None:
+                return (None, None, None, None, None, None)
+            if not isinstance(result, (tuple, list)):
+                return (None, None, None, None, None, None)
+            if len(result) == 6:
+                return result
+            if len(result) == 5:
+                frames, coords, centers, ints, fit_params = result
+                background = None
+                try:
+                    background = [None] * len(ints) if ints is not None else None
+                except Exception:
+                    background = None
+                return frames, coords, centers, ints, fit_params, background
+            raise ValueError(f"_compute_analysis returned {len(result)} values; expected 6.")
+
         mode = self.tracking_mode
         if mode == "Independent":
-            return self._compute_independent(points, bg, showprogress)
+            return _normalize_result(self._compute_independent(points, bg, showprogress))
         elif mode == "Tracked":
-            return self._compute_tracked(points, bg, showprogress)
+            return _normalize_result(self._compute_tracked(points, bg, showprogress))
         elif mode == "Smooth":
             # 1) do the independent pass
             try:
@@ -236,9 +253,9 @@ class NavigatorAnalysisMixin:
                 print(f"_compute_independent failed: {e}")
                 self._is_canceled = True #REMOVE THIS?
                 return None, None, None, None, None, None
-            return self._postprocess_smooth(frames, coords, ints, fit_params, background, bg)
+            return _normalize_result(self._postprocess_smooth(frames, coords, ints, fit_params, background, bg))
         elif mode == "Same center":
-            return self._compute_same_center(points, bg, showprogress)
+            return _normalize_result(self._compute_same_center(points, bg, showprogress))
         else:
             raise ValueError(f"Unknown mode {mode!r}")
 
@@ -539,7 +556,7 @@ class NavigatorAnalysisMixin:
         valid = ~np.isnan(spot_centers[:,0])
         if valid.sum() < 2:
             # Not enough valid points to interpolate → bail out
-            return all_frames, all_coords, ints, fit_params, background
+            return all_frames, all_coords, all_coords, ints, fit_params, background
 
         x_filled = np.interp(idx, idx[valid], spot_centers[valid,0])
         y_filled = np.interp(idx, idx[valid], spot_centers[valid,1])

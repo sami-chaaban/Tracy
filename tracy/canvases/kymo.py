@@ -174,10 +174,18 @@ class KymoCanvas(ImageCanvas):
         widget_h = self.height()
         view_w   = widget_w * self.scale
         view_h   = widget_h * self.scale
+        outer_pad = getattr(self.ax, "_outer_pad", 0) or 0
+        if outer_pad:
+            view_w += 2 * outer_pad
+            view_h += 2 * outer_pad
         cx, cy   = self.zoom_center
 
         self.ax.set_xlim(cx - view_w/2, cx + view_w/2)
-        self.ax.set_ylim(cy - view_h/2, cy + view_h/2)
+        force_origin = getattr(self, "_force_origin", None)
+        if force_origin == "upper":
+            self.ax.set_ylim(cy + view_h/2, cy - view_h/2)
+        else:
+            self.ax.set_ylim(cy - view_h/2, cy + view_h/2)
 
         # 2) redraw everything (synchronous)
         self.draw()
@@ -352,7 +360,7 @@ class KymoCanvas(ImageCanvas):
         self.draw()
         return [marker]
 
-    def draw_trajectories_on_kymo(self, showsearchline=True, skinny=False):
+    def draw_trajectories_on_kymo(self, showsearchline=True, skinny=False, show_labels=True, invert_y=True):
         
         ax = self.ax
 
@@ -379,6 +387,8 @@ class KymoCanvas(ImageCanvas):
         num_frames = (self.navigator.movie.shape[0]
                     if self.navigator.movie is not None else 0)
         num_frames_m1 = num_frames - 1
+        def frame_to_y(frame):
+            return num_frames_m1 - frame if invert_y else frame
 
         # 3) which trajectory is highlighted?
         selected_idx = self.navigator.trajectoryCanvas.table_widget.currentRow()
@@ -415,7 +425,7 @@ class KymoCanvas(ImageCanvas):
             xs_disp, ys_disp = [], []
             if anchors:
                 xs_disp = [xk for _f, xk, _yk in anchors]
-                ys_disp = [num_frames_m1 - f for f, _xk, _yk in anchors]
+                ys_disp = [yk for _f, _xk, yk in anchors]
             else:
                 nodes = traj.get("nodes", []) or []
                 for f, x, y in nodes:
@@ -423,7 +433,7 @@ class KymoCanvas(ImageCanvas):
                     if xk is None:
                         continue
                     xs_disp.append(xk)
-                    ys_disp.append(num_frames_m1 - f)
+                    ys_disp.append(frame_to_y(f))
 
             if not xs_disp or not ys_disp:
                 return
@@ -471,9 +481,9 @@ class KymoCanvas(ImageCanvas):
 
             # compute kymo coords
             x0 = compute_x(roi_cache, sx, sy, kymo_w)
-            y0 = num_frames_m1 - sf
+            y0 = frame_to_y(sf)
             x1 = compute_x(roi_cache, ex, ey, kymo_w)
-            y1 = num_frames_m1 - ef
+            y1 = frame_to_y(ef)
 
             # styling
             is_hl = (idx == selected_idx)
@@ -488,6 +498,10 @@ class KymoCanvas(ImageCanvas):
             frames = traj["frames"]
             orig = traj["original_coords"]
 
+            anchors = traj.get("anchors", []) or []
+            traj_roi = traj.get("roi")
+            anchors_match_current = bool(anchors) and isinstance(traj_roi, dict) and traj_roi == roi
+
             scattersize = 9
             linesize = 1.5
             if skinny:
@@ -496,13 +510,12 @@ class KymoCanvas(ImageCanvas):
 
 
             if showsearchline and show_anchors:
-                anchors = traj.get("anchors", []) or []
-                if anchors:
+                if anchors_match_current:
                     xs_disp = [xk for _f, xk, _yk in anchors]
-                    ys_disp = [num_frames_m1 - f for f, _xk, _yk in anchors]
+                    ys_disp = [yk for _f, _xk, yk in anchors]
                 else:
                     disp = [
-                        (compute_x_roi(roi, x, y, kymo_w), num_frames_m1 - f)
+                        (compute_x_roi(roi, x, y, kymo_w), frame_to_y(f))
                         for f, (x, y) in zip(frames, orig)
                     ]
                     xs_disp, ys_disp = zip(*disp)
@@ -520,7 +533,7 @@ class KymoCanvas(ImageCanvas):
             spots = traj.get("spot_centers", [None]*len(frames))
             pts = []
             for (x_o, y_o), f, spot in zip(orig, frames, spots):
-                yy = num_frames_m1 - f
+                yy = frame_to_y(f)
                 xo = compute_x_roi(roi, x_o, y_o, kymo_w)
                 if spot is not None:
                     xx = compute_x_roi(roi, spot[0], spot[1], kymo_w)
@@ -572,7 +585,7 @@ class KymoCanvas(ImageCanvas):
                         # get display coord of orig[0]
                         x0_orig, y0_orig = orig[0]
                         xx0 = compute_x_roi(roi, x0_orig, y0_orig, kymo_w)
-                        yy0 = num_frames_m1 - frames[0]
+                        yy0 = frame_to_y(frames[0])
                         # get display coord of the first valid spot
                         gx1, gy1 = pts[first_valid]
                         gap_line, = ax.plot(
@@ -600,7 +613,7 @@ class KymoCanvas(ImageCanvas):
                         # get display coord of orig[-1]
                         xN_orig, yN_orig = orig[-1]
                         xxN = compute_x_roi(roi, xN_orig, yN_orig, kymo_w)
-                        yyN = num_frames_m1 - frames[-1]
+                        yyN = frame_to_y(frames[-1])
                         # get display coord of the last valid spot
                         gx0, gy0 = pts[last_valid]
                         gap_line, = ax.plot(
@@ -618,9 +631,8 @@ class KymoCanvas(ImageCanvas):
             self.scatter_objs_traj.append(scatter)
 
             if is_hl and show_anchors:
-                anchors = traj.get("anchors", []) or []
                 ax_xs, ax_ys = [], []
-                if anchors:
+                if anchors_match_current:
                     ax_xs = [xk for _f, xk, _yk in anchors]
                     ax_ys = [yk for _f, _xk, yk in anchors]
                 else:
@@ -628,7 +640,7 @@ class KymoCanvas(ImageCanvas):
                     for frame, x, y in nodes:
                         try:
                             ax_xs.append(compute_x_roi(roi, x, y, kymo_w))
-                            ax_ys.append(num_frames_m1 - frame)
+                            ax_ys.append(frame_to_y(frame))
                         except Exception:
                             continue
 
@@ -654,33 +666,34 @@ class KymoCanvas(ImageCanvas):
                 markers.append(halo)
 
             # 5d) annotate A/B
-            # compute pixel‐space offsets once
-            dispA = ax.transData.transform((sx0, sy0))
-            dispB = ax.transData.transform((sx1, sy1))
-            v = dispB - dispA
-            norm = np.hypot(*v)
-            u = v / norm if norm else np.array([1.0, 0.0])
-            offset = 15
-            for (cx, cy, suf), sign in [((x0, y0, 'A'), -1), ((x1, y1, 'B'), +1)]:
-                dx, dy = u * (offset * sign)
-                lbl = ax.annotate(
-                    f"{traj_label}{suf}",
-                    xy=(cx, cy),
-                    xytext=(dx, dy),
-                    textcoords='offset pixels',
-                    ha='center', va='center',
-                    color=textcolor, fontsize=8, fontweight='bold',
-                    bbox=dict(
-                        boxstyle='circle,pad=0.3',
-                        facecolor=face,
-                        edgecolor='black',
-                        linewidth=1.5,
-                        alpha=alpha_lbl
-                    ),
-                    picker=10
-                )
-                self.navigator._kymo_label_to_row[lbl] = idx
-                markers.append(lbl)
+            if show_labels:
+                # compute pixel‐space offsets once
+                dispA = ax.transData.transform((sx0, sy0))
+                dispB = ax.transData.transform((sx1, sy1))
+                v = dispB - dispA
+                norm = np.hypot(*v)
+                u = v / norm if norm else np.array([1.0, 0.0])
+                offset = 15
+                for (cx, cy, suf), sign in [((x0, y0, 'A'), -1), ((x1, y1, 'B'), +1)]:
+                    dx, dy = u * (offset * sign)
+                    lbl = ax.annotate(
+                        f"{traj_label}{suf}",
+                        xy=(cx, cy),
+                        xytext=(dx, dy),
+                        textcoords='offset pixels',
+                        ha='center', va='center',
+                        color=textcolor, fontsize=8, fontweight='bold',
+                        bbox=dict(
+                            boxstyle='circle,pad=0.3',
+                            facecolor=face,
+                            edgecolor='black',
+                            linewidth=1.5,
+                            alpha=alpha_lbl
+                        ),
+                        picker=10
+                    )
+                    self.navigator._kymo_label_to_row[lbl] = idx
+                    markers.append(lbl)
 
         # --- single draw + compute all label bboxes at once ---
         canvas = self.figure.canvas
