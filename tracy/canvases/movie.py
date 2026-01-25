@@ -1096,7 +1096,7 @@ class MovieCanvas(ImageCanvas):
             self._idle_positions[:, 1],
             s=self._idle_sizes,
             color=self._idle_color,
-            alpha=0.12,
+            alpha=0.25,
             edgecolors="none"
         )
         if self._idle_timer is None:

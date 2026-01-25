@@ -1599,6 +1599,13 @@ class NavigatorIOMixin:
         # cache figure size for high-DPI save
         fig = self.kymoCanvas.fig
         orig_size = fig.get_size_inches().copy()
+        layout_dpi = 600
+        raster_scale = 3  # boost raster exports without scaling text
+        pdf_raster_scale = raster_scale
+        pdf_label_offset_scale = 0.5
+        overlay_label_scale = 0.58
+        overlay_marker_scale = 0.3
+        overlay_line_scale = 0.65
 
         prev_overlay_mode = None
         if do_overlay:
@@ -1642,11 +1649,222 @@ class NavigatorIOMixin:
                         show_labels=do_labels
                     )
                     self.kymoCanvas.fig.canvas.draw()
+                    ax = self.kymoCanvas.ax
+                    dot_markers = []
+                    try:
+                        from matplotlib.collections import PathCollection
+                        from matplotlib.markers import MarkerStyle
+                    except Exception:
+                        PathCollection = None
+                    if PathCollection is not None:
+                        circle_marker = None
+                        try:
+                            marker = MarkerStyle("o")
+                            circle_marker = marker.get_path().transformed(marker.get_transform())
+                        except Exception:
+                            circle_marker = None
+                        for coll in ax.collections:
+                            if isinstance(coll, PathCollection):
+                                try:
+                                    orig_sizes = coll.get_sizes()
+                                    orig_paths = coll.get_paths()
+                                    orig_edge = coll.get_edgecolors()
+                                    orig_lw = coll.get_linewidths()
+                                    orig_aa = coll.get_antialiaseds()
+                                    if circle_marker is not None:
+                                        coll.set_paths([circle_marker])
+                                    coll.set_edgecolors("none")
+                                    coll.set_linewidths(0)
+                                    try:
+                                        coll.set_antialiaseds(True)
+                                    except Exception:
+                                        pass
+                                    dot_markers.append((coll, orig_sizes, orig_paths, orig_edge, orig_lw, orig_aa))
+                                except Exception:
+                                    pass
+                    preview_ax = self.kymoCanvas.ax
+                    preview_w_px = float(preview_ax.bbox.width) if preview_ax.bbox.width else 0.0
+                    preview_h_px = float(preview_ax.bbox.height) if preview_ax.bbox.height else 0.0
 
                     # 6) save
                     fig = self.kymoCanvas.fig
-                    fig.set_size_inches(orig_size)
+                    dpi = layout_dpi
+                    save_dpi = dpi
+                    if ft in ("png", "jpg"):
+                        save_dpi = int(dpi * raster_scale)
+                    elif ft == "pdf":
+                        save_dpi = int(dpi * pdf_raster_scale)
+                    fig.set_size_inches(kymo.shape[1] / dpi, kymo.shape[0] / dpi)
                     scale_artists = []
+                    scaled_artists = []
+                    pad_xlim = None
+                    pad_ylim = None
+                    if not do_scalebars:
+                        ax = self.kymoCanvas.ax
+                        h, w = kymo.shape[:2]
+                        pad = max(8, int(0.06 * min(w, h)))
+                        text_pad = max(8, int(0.04 * min(w, h)))
+                        outer_pad = pad + text_pad * 4
+                        x0, x1 = ax.get_xlim()
+                        y0, y1 = ax.get_ylim()
+                        x_inc = x1 >= x0
+                        y_inc = y1 >= y0
+                        right_x = w - 1
+                        x_min, x_max = -outer_pad, right_x + outer_pad
+                        y_min, y_max = -outer_pad, h - 1 + outer_pad
+                        pad_xlim = (x0, x1)
+                        pad_ylim = (y0, y1)
+                        ax.set_xlim(x_min, x_max) if x_inc else ax.set_xlim(x_max, x_min)
+                        ax.set_ylim(y_min, y_max) if y_inc else ax.set_ylim(y_max, y_min)
+                    export_w_px = kymo.shape[1] * (float(save_dpi) / float(layout_dpi))
+                    export_h_px = kymo.shape[0] * (float(save_dpi) / float(layout_dpi))
+                    scale_factor = 1.0
+                    if export_w_px > 0 and export_h_px > 0 and preview_w_px > 0 and preview_h_px > 0:
+                        scale_factor = min(preview_w_px / export_w_px, preview_h_px / export_h_px)
+                    apply_overlay_scale = (
+                        scale_factor != 1.0
+                        or overlay_marker_scale != 1.0
+                        or overlay_label_scale != 1.0
+                        or overlay_line_scale != 1.0
+                        or (ft == "pdf" and save_dpi != fig.dpi)
+                    )
+                    if apply_overlay_scale:
+                        ax = self.kymoCanvas.ax
+                        try:
+                            from matplotlib.collections import LineCollection
+                        except Exception:
+                            LineCollection = None
+                        solid_line_styles = ("-", "solid")
+                        target_lw = None
+                        for line in ax.lines:
+                            try:
+                                if line.get_linestyle() in solid_line_styles:
+                                    alpha = line.get_alpha()
+                                    if alpha is None or alpha >= 0.7:
+                                        lw = line.get_linewidth() * scale_factor * overlay_line_scale
+                                        target_lw = lw if target_lw is None else max(target_lw, lw)
+                            except Exception:
+                                pass
+                        if LineCollection is not None:
+                            for coll in ax.collections:
+                                if isinstance(coll, LineCollection):
+                                    try:
+                                        lws = coll.get_linewidths()
+                                        if lws is None:
+                                            continue
+                                        max_lw = float(np.max(lws)) if len(lws) else float(lws)
+                                        lw = max_lw * scale_factor * overlay_line_scale
+                                        target_lw = lw if target_lw is None else max(target_lw, lw)
+                                    except Exception:
+                                        pass
+                        if target_lw is None:
+                            for line in ax.lines:
+                                try:
+                                    if line.get_linestyle() in solid_line_styles:
+                                        lw = line.get_linewidth() * scale_factor * overlay_line_scale
+                                        target_lw = lw if target_lw is None else max(target_lw, lw)
+                                except Exception:
+                                    pass
+                        for line in ax.lines:
+                            try:
+                                orig = line.get_linewidth()
+                                line.set_linewidth(orig * scale_factor * overlay_line_scale)
+                                scaled_artists.append((line, orig, "lw"))
+                            except Exception:
+                                pass
+                            try:
+                                alpha = line.get_alpha()
+                                if (
+                                    target_lw is not None
+                                    and line.get_linestyle() in solid_line_styles
+                                    and alpha is not None
+                                    and alpha <= 0.5
+                                ):
+                                    line.set_linewidth(target_lw)
+                                    scaled_artists.append((line, alpha, "alpha"))
+                                    line.set_alpha(0.8)
+                            except Exception:
+                                pass
+                            try:
+                                marker = line.get_marker()
+                                if marker not in (None, "", "None"):
+                                    orig_ms = line.get_markersize()
+                                    line.set_markersize(orig_ms * scale_factor * overlay_marker_scale)
+                                    scaled_artists.append((line, orig_ms, "ms"))
+                            except Exception:
+                                pass
+                        line_collection_styles = []
+                        for coll in ax.collections:
+                            if LineCollection is not None and isinstance(coll, LineCollection):
+                                try:
+                                    orig_lw = coll.get_linewidths()
+                                    orig_cap = coll.get_capstyle()
+                                    orig_join = coll.get_joinstyle()
+                                    try:
+                                        coll.set_linewidths(orig_lw * scale_factor * overlay_line_scale)
+                                        scaled_artists.append((coll, orig_lw, "lc_lw"))
+                                    except Exception:
+                                        pass
+                                    coll.set_capstyle("round")
+                                    coll.set_joinstyle("round")
+                                    line_collection_styles.append((coll, orig_cap, orig_join))
+                                except Exception:
+                                    pass
+                            try:
+                                sizes = coll.get_sizes()
+                                if sizes is not None and len(sizes):
+                                    coll.set_sizes(sizes * (scale_factor ** 2) * (overlay_marker_scale ** 2))
+                                    scaled_artists.append((coll, sizes, "sizes"))
+                            except Exception:
+                                pass
+                        def _scale_text_obj(txt):
+                            try:
+                                orig = txt.get_fontsize()
+                                txt.set_fontsize(orig * scale_factor * overlay_label_scale)
+                                scaled_artists.append((txt, orig, "fs"))
+                            except Exception:
+                                pass
+                            try:
+                                bbox = txt.get_bbox_patch()
+                                if bbox is not None:
+                                    orig_lw = bbox.get_linewidth()
+                                    bbox.set_linewidth(orig_lw * scale_factor * overlay_label_scale)
+                                    scaled_artists.append((bbox, orig_lw, "lw"))
+                            except Exception:
+                                pass
+                            try:
+                                if ft == "pdf":
+                                    try:
+                                        from matplotlib.text import Annotation
+                                    except Exception:
+                                        Annotation = None
+                                    if Annotation is not None and isinstance(txt, Annotation):
+                                        textcoords = txt.get_anncoords()
+                                        if textcoords == "offset pixels":
+                                            orig_pos = txt.get_position()
+                                            orig_tc = textcoords
+                                            try:
+                                                px_to_pt = 72.0 / float(fig.dpi)
+                                            except Exception:
+                                                px_to_pt = 0.75
+                                            new_pos = (
+                                                orig_pos[0] * px_to_pt * pdf_label_offset_scale,
+                                                orig_pos[1] * px_to_pt * pdf_label_offset_scale,
+                                            )
+                                            try:
+                                                txt.set_anncoords("offset points")
+                                            except Exception:
+                                                pass
+                                            txt.set_position(new_pos)
+                                            scaled_artists.append((txt, orig_pos, "pos"))
+                                            scaled_artists.append((txt, orig_tc, "anncoords"))
+                            except Exception:
+                                pass
+                        for text in ax.texts:
+                            _scale_text_obj(text)
+                        for artist in ax.artists:
+                            if hasattr(artist, "get_fontsize") and hasattr(artist, "set_fontsize"):
+                                _scale_text_obj(artist)
                     if do_scalebars:
                         ax = self.kymoCanvas.ax
                         prev_xlim = ax.get_xlim()
@@ -1658,16 +1876,71 @@ class NavigatorIOMixin:
                             pixel_size_nm=getattr(self, "pixel_size", None),
                             frame_interval_ms=getattr(self, "frame_interval", None),
                             set_outer_pad=False,
+                            dpi=layout_dpi,
+                            size_scale=SaveKymographDialog.SCALEBAR_SIZE_SCALE,
                         )
-                    fig.savefig(out_path, dpi=300,
+                    fig.savefig(out_path, dpi=save_dpi,
                                 facecolor=fig.get_facecolor(),
                                 edgecolor="none",
                                 bbox_inches="tight")
+                    fig.set_size_inches(orig_size)
                     for artist in scale_artists:
                         try:
                             artist.remove()
                         except Exception:
                             pass
+                    for artist, val, kind in scaled_artists:
+                        try:
+                            if kind == "lw":
+                                artist.set_linewidth(val)
+                            elif kind == "sizes":
+                                artist.set_sizes(val)
+                            elif kind == "fs":
+                                artist.set_fontsize(val)
+                            elif kind == "ms":
+                                artist.set_markersize(val)
+                            elif kind == "lc_lw":
+                                artist.set_linewidths(val)
+                            elif kind == "alpha":
+                                artist.set_alpha(val)
+                            elif kind == "pos":
+                                artist.set_position(val)
+                            elif kind == "anncoords":
+                                try:
+                                    from matplotlib.text import Annotation
+                                except Exception:
+                                    Annotation = None
+                                if Annotation is not None and isinstance(artist, Annotation):
+                                    try:
+                                        artist.set_anncoords(val)
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+                    if line_collection_styles:
+                        for coll, cap, join in line_collection_styles:
+                            try:
+                                coll.set_capstyle(cap)
+                                coll.set_joinstyle(join)
+                            except Exception:
+                                pass
+                    if dot_markers:
+                        for coll, sizes, paths, ec, lw, aa in dot_markers:
+                            try:
+                                if sizes is not None and len(sizes):
+                                    coll.set_sizes(sizes)
+                                if paths is not None:
+                                    coll.set_paths(paths)
+                                coll.set_edgecolors(ec)
+                                coll.set_linewidths(lw)
+                                if aa is not None:
+                                    coll.set_antialiaseds(aa)
+                            except Exception:
+                                pass
+                    if pad_xlim is not None and pad_ylim is not None:
+                        ax = self.kymoCanvas.ax
+                        ax.set_xlim(pad_xlim)
+                        ax.set_ylim(pad_ylim)
                     if do_scalebars:
                         ax.set_xlim(prev_xlim)
                         ax.set_ylim(prev_ylim)
@@ -1797,13 +2070,41 @@ class NavigatorIOMixin:
                                 denom = 1
                             disp = np.clip((kymo - p15) / denom, 0, 1)
                         disp = (disp * 255).astype(np.uint8)
-                        cmap     = lut_cmap
-                        if do_scalebars:
-                            dpi = 100
+                        cmap = lut_cmap
+                        if ft == "pdf":
+                            dpi = layout_dpi
+                            save_dpi = int(dpi * pdf_raster_scale)
                             fig = plt.figure(frameon=False)
                             fig.set_size_inches(disp.shape[1] / dpi, disp.shape[0] / dpi)
                             ax = fig.add_axes([0, 0, 1, 1])
                             ax.imshow(disp, cmap=cmap, origin="upper")
+                            ax.set_xlim(0, disp.shape[1])
+                            ax.set_ylim(disp.shape[0], 0)
+                            ax.axis("off")
+                            if do_scalebars:
+                                SaveKymographDialog.draw_scale_bars(
+                                    ax,
+                                    disp.shape,
+                                    origin="upper",
+                                    pixel_size_nm=getattr(self, "pixel_size", None),
+                                    frame_interval_ms=getattr(self, "frame_interval", None),
+                                    set_outer_pad=False,
+                                    dpi=layout_dpi,
+                                    size_scale=SaveKymographDialog.SCALEBAR_SIZE_SCALE,
+                                )
+                            fig.savefig(out_path, dpi=save_dpi, facecolor="white", edgecolor="none")
+                            plt.close(fig)
+                        elif do_scalebars:
+                            dpi = layout_dpi
+                            save_dpi = dpi
+                            if ft in ("png", "jpg"):
+                                save_dpi = int(dpi * raster_scale)
+                            fig = plt.figure(frameon=False)
+                            fig.set_size_inches(disp.shape[1] / dpi, disp.shape[0] / dpi)
+                            ax = fig.add_axes([0, 0, 1, 1])
+                            ax.imshow(disp, cmap=cmap, origin="upper")
+                            ax.set_xlim(0, disp.shape[1])
+                            ax.set_ylim(disp.shape[0], 0)
                             ax.axis("off")
                             SaveKymographDialog.draw_scale_bars(
                                 ax,
@@ -1812,10 +2113,16 @@ class NavigatorIOMixin:
                                 pixel_size_nm=getattr(self, "pixel_size", None),
                                 frame_interval_ms=getattr(self, "frame_interval", None),
                                 set_outer_pad=False,
+                                dpi=layout_dpi,
+                                size_scale=SaveKymographDialog.SCALEBAR_SIZE_SCALE,
                             )
-                            fig.savefig(out_path, dpi=dpi, facecolor="white", edgecolor="none")
+                            fig.savefig(out_path, dpi=save_dpi, facecolor="white", edgecolor="none")
                             plt.close(fig)
                         else:
+                            if ft in ("png", "jpg"):
+                                scale = int(raster_scale)
+                                if scale > 1:
+                                    disp = np.repeat(np.repeat(disp, scale, axis=0), scale, axis=1)
                             plt.imsave(out_path, disp, cmap=cmap, origin="upper")
 
             prog.setValue(total)

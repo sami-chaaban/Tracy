@@ -289,6 +289,7 @@ class RadiusDialog(QDialog):
         super().closeEvent(ev)
 
 class SaveKymographDialog(QDialog):
+    SCALEBAR_SIZE_SCALE = 2.3
     # Class‐level storage of the last settings
     _last_use_prefix = False
     _last_middle    = ""
@@ -427,6 +428,8 @@ class SaveKymographDialog(QDialog):
         pixel_size_nm=None,
         frame_interval_ms=None,
         set_outer_pad=True,
+        dpi=None,
+        size_scale=3.2,
     ):
         if shape is None or len(shape) < 2:
             return []
@@ -434,10 +437,19 @@ class SaveKymographDialog(QDialog):
         if h <= 0 or w <= 0:
             return []
 
+        scale = float(size_scale) if size_scale else 1.0
+        if scale <= 0:
+            scale = 1.0
         pad = max(8, int(0.06 * min(w, h)))
         text_pad = max(8, int(0.04 * min(w, h)))
-        label_pad = text_pad * 1.8
-        lw = max(1.5, min(w, h) * 0.002)
+        label_pad = text_pad * 2.0
+        lw_px = max(1.5, min(w, h) * 0.002) * scale
+        font_px = max(11, min(18, int(min(w, h) * 0.02))) * scale
+        fig = getattr(ax, "figure", None)
+        dpi_value = float(dpi) if dpi else float(getattr(fig, "dpi", 100.0))
+        pt_per_px = 72.0 / dpi_value
+        lw = lw_px * pt_per_px
+        font_size = font_px * pt_per_px
 
         dist_unit = "nm" if pixel_size_nm else "px"
         dist_per_px = pixel_size_nm if pixel_size_nm else 1.0
@@ -468,10 +480,8 @@ class SaveKymographDialog(QDialog):
         y_h = y_bottom_vis + y_out
         y_v_bottom = y_bottom_vis
         y_v_top = y_v_bottom + y_up
-        h_text_y = y_h + (-text_pad if y_inc else text_pad)
         v_text_y = (y_v_bottom + y_v_top) / 2.0
         v_text_x = x_v + label_pad
-        h_text_va = "top" if y_inc else "bottom"
 
         x_end = right_x
         x_start = x_end - h_len_px
@@ -499,14 +509,17 @@ class SaveKymographDialog(QDialog):
             line.set_clip_on(False)
         artists.extend([h_line, v_line])
 
-        h_text = ax.text(
-            x_start + h_len_px / 2.0,
-            h_text_y,
+        text_offset_px = max(4, font_px * 0.45)
+        text_offset_pt = text_offset_px * pt_per_px
+        h_text = ax.annotate(
             h_label,
+            xy=(x_start + h_len_px / 2.0, y_h),
+            xytext=(0, -text_offset_pt),
+            textcoords="offset points",
             color="black",
             ha="center",
-            va=h_text_va,
-            fontsize=8,
+            va="top",
+            fontsize=font_size,
         )
         v_text = ax.text(
             v_text_x,
@@ -517,7 +530,7 @@ class SaveKymographDialog(QDialog):
             va="center",
             rotation=-90,
             rotation_mode="anchor",
-            fontsize=8,
+            fontsize=font_size,
         )
         for txt in (h_text, v_text):
             txt.set_clip_on(False)
@@ -579,7 +592,7 @@ class SaveKymographDialog(QDialog):
             self.directory = os.getcwd()
         self.dir_le = QLineEdit(self.directory)
 
-        self._all_formats = ["tif","png","jpg"]
+        self._all_formats = ["tif", "pdf", "png", "jpg"]
 
         outer_h = QHBoxLayout(self)
         outer_h.setContentsMargins(0, 0, 0, 0)
@@ -896,7 +909,7 @@ class SaveKymographDialog(QDialog):
     def _on_filetype_changed(self, ext: str):
         """
         - If TIFF is selected, disable and uncheck the overlay option.
-        - For PNG/JPG, enable the overlay checkbox.
+        - For PDF/PNG/JPG, enable the overlay checkbox.
         """
         is_tif = ext.lower() == "tif"
 
@@ -1009,6 +1022,7 @@ class SaveKymographDialog(QDialog):
                 pixel_size_nm=px,
                 frame_interval_ms=ms,
                 set_outer_pad=True,
+                size_scale=self.__class__.SCALEBAR_SIZE_SCALE,
             )
         else:
             self.kymo_preview_canvas.ax._outer_pad = 0
@@ -1048,6 +1062,7 @@ class SaveKymographDialog(QDialog):
                 pixel_size_nm=px,
                 frame_interval_ms=ms,
                 set_outer_pad=True,
+                size_scale=self.__class__.SCALEBAR_SIZE_SCALE,
             )
         else:
             self.kymo_preview_canvas.ax._outer_pad = 0
