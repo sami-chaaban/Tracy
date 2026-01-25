@@ -81,6 +81,7 @@ class MovieCanvas(ImageCanvas):
         self._idle_tracy_path = None
         self._idle_tracy_purple = "#8b7dff"
         self._idle_base_speeds = None
+        self._bg_refresh_timer = None
 
     def mousePressEvent(self, event):
         # Ctrl+Left → pretend it was Middle
@@ -416,6 +417,11 @@ class MovieCanvas(ImageCanvas):
             self.inset_ax3d = fig.add_subplot(111, projection='3d')
             self.inset_ax3d.set_axis_off()
             self.inset_ax3d.set_visible(False)
+            try:
+                # Keep left-drag rotation, disable right-click zoom/pan.
+                self.inset_ax3d.mouse_init(rotate_btn=1, pan_btn=[], zoom_btn=[])
+            except Exception:
+                pass
 
             # hook enter/leave
             cid = fig.canvas
@@ -892,42 +898,7 @@ class MovieCanvas(ImageCanvas):
 
         kymo = np.vstack(kymo_rows)
 
-        if self.navigator.applylogfilter:
-
-            # kymo is the generated 2D NumPy array
-            sigma = getattr(self.navigator, 'log_sigma', 1.5)
-
-            # convert to float to avoid clipping
-            kymo_f = kymo.astype(np.float32)
-
-            # apply LoG (invert for positive edges)
-            log_kymo = -gaussian_laplace(kymo_f, sigma=sigma)
-
-            # normalize back to 1–255
-            minv, maxv = log_kymo.min(), log_kymo.max()
-            if maxv > minv:
-                log_kymo = (log_kymo - minv) / (maxv - minv) * 254 + 1
-            else:
-                log_kymo = np.ones_like(log_kymo) * 128
-            log_kymo = log_kymo.astype(np.uint8)
-
-            # from bm3d import bm3d
-            # from skimage.restoration import estimate_sigma
-            # sigma_est = estimate_sigma(
-            #     log_kymo,
-            #     channel_axis=None,     # grayscale
-            #     average_sigmas=True    # get one scalar back
-            # )
-            # denoised = bm3d(log_kymo, sigma_psd=sigma_est)
-
-            # # return log_kymo
-            # return overlay_trace_centers(denoised)
-        
-            return(log_kymo)
-        
-        else:
-
-            return kymo
+        return kymo
 
     def clear_temporary_roi_markers(self):
         # Clear any temporary ROI dotted line.
@@ -1018,6 +989,29 @@ class MovieCanvas(ImageCanvas):
         if self._im is not None:
             self._im.set_clim(self._vmin, self._vmax)
             self.draw_idle()
+            self._schedule_bg_refresh()
+
+    def _schedule_bg_refresh(self):
+        if self._bg_refresh_timer is None:
+            self._bg_refresh_timer = QTimer(self)
+            self._bg_refresh_timer.setSingleShot(True)
+            self._bg_refresh_timer.timeout.connect(self._refresh_blit_background)
+        self._bg_refresh_timer.start(30)
+
+    def _refresh_blit_background(self):
+        # Rebuild blit backgrounds so contrast changes don't restore stale frames.
+        try:
+            if self.navigator is not None and getattr(self.navigator, "temp_movie_analysis_line", None) is not None:
+                self.navigator._rebuild_movie_blit_background()
+            else:
+                self.draw()
+                canvas = self.figure.canvas
+                self._bg = canvas.copy_from_bbox(self.ax.bbox)
+            canvas = self.figure.canvas
+            self._roi_bbox = self.ax.bbox
+            self._roi_bg = canvas.copy_from_bbox(self._roi_bbox)
+        except Exception:
+            pass
 
     def overlay_rectangle(self, cx, cy, size, color='#7da1ff'):
         # remove old
@@ -1348,7 +1342,7 @@ class MovieCanvas(ImageCanvas):
             ys_pts = [pt[1] if pt is not None else np.nan for pt in spot_centers]
             frames = traj.get("frames", [])
 
-            fade_range = 20
+            fade_range = 5
             min_alpha = 0.05
             current_frame = None
             try:

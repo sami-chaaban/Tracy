@@ -79,6 +79,7 @@ class NavigatorUiMixin:
         self.hide_inset = False
 
         # videoiconpath = self.resource_path('icons/video-camera.svg')
+        tracybuttoniconpath = self.resource_path('icons/tracybutton.svg')
         crossiconpath = self.resource_path('icons/cross-small.svg')
         crossdoticonpath = self.resource_path('icons/cross-dot.svg')
         resetcontrastpath = self.resource_path('icons/contrast.svg')
@@ -89,6 +90,7 @@ class NavigatorUiMixin:
         roioverlayiconpath = self.resource_path('icons/overlay.svg')
         kymoanchoriconpath = self.resource_path('icons/overlay_anchor.svg')
         invertkymoiconpath = self.resource_path('icons/invert.svg')
+        logiconpath = self.resource_path('icons/log.svg')
 
         # --- Top Controls Section ---
         topWidget = QWidget()
@@ -96,6 +98,27 @@ class NavigatorUiMixin:
         topLayout.setSpacing(5)
         topLayout.setContentsMargins(20, 6, 0, 0)
         topLayout.setAlignment(Qt.AlignLeft)
+
+        self.movieLoadButton = QPushButton("")
+        self.movieLoadButton.setIcon(QIcon(tracybuttoniconpath))
+        self.movieLoadButton.setIconSize(QSize(32, 32))
+        self.movieLoadButton.setObjectName("Passive")
+        self.movieLoadButton.setProperty("iconOnly", True)
+        self.movieLoadButton.setFixedSize(48, 36)
+        self.movieLoadButton.setVisible(False)
+        self.movieLoadButton.clicked.connect(self.handle_movie_load)
+        self.movieLoadButton.setStyleSheet("""
+        QPushButton:hover {
+            background-color: rgb(215, 225, 252);
+        }
+        QPushButton:pressed {
+            background-color: #97b4ff;
+        }
+        """)
+        load_another_filter = BubbleTipFilter("Load another movie", self, placement="right")
+        self.movieLoadButton.installEventFilter(load_another_filter)
+        self.movieLoadButton._bubble_filter = load_another_filter
+        topLayout.addWidget(self.movieLoadButton)
 
         self.movieNameLabel = ElidedClickableLabel("LOAD")
         self.movieNameLabel.setObjectName("movieNameLabel")
@@ -149,7 +172,7 @@ class NavigatorUiMixin:
         self.pixelValueLabel = ElidedLabel("")
         self.pixelValueLabel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.pixelValueLabel.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.pixelValueLabel.setStyleSheet("color: #444444; background: transparent; padding-right: 25px;")
+        self.pixelValueLabel.setStyleSheet("color: #666666; background: transparent; padding-right: 25px;")
         topLayout.addWidget(self.pixelValueLabel)
 
         self.scaleLabel = ElidedClickableLabel("")
@@ -407,7 +430,7 @@ class NavigatorUiMixin:
         kymo_reset_layout.addWidget(kymo_reset_label, alignment=Qt.AlignHCenter)
         kymocontrastLayout.addWidget(kymo_reset_container)
         kymocontrastLayout.setAlignment(kymo_reset_container, Qt.AlignBottom)
-        kymocontrastLayout.addSpacing(6)
+        kymocontrastLayout.addSpacing(2)
 
         self.kymo_anchor_overlay_button = AnimatedIconButton("")
         kymoanchorfilter = BubbleTipFilter("Show anchors (hold shift key to edit them)", self, placement="right")
@@ -431,9 +454,35 @@ class NavigatorUiMixin:
         anchor_layout.addSpacing(kymo_label_spacer)
         anchor_layout.addWidget(self.kymo_anchor_overlay_button, alignment=Qt.AlignHCenter)
         anchor_layout.addWidget(anchor_label, alignment=Qt.AlignHCenter)
-        kymocontrastLayout.addSpacing(18)
+        kymocontrastLayout.addSpacing(10)
         kymocontrastLayout.addWidget(anchor_container)
         kymocontrastLayout.setAlignment(anchor_container, Qt.AlignBottom)
+
+        self.kymo_log_filter_button = AnimatedIconButton("")
+        kymologfilter = BubbleTipFilter("Show LoG filtered kymograph", self, placement="right")
+        self.kymo_log_filter_button.installEventFilter(kymologfilter)
+        self.kymo_log_filter_button._bubble_filter = kymologfilter
+        self.kymo_log_filter_button.setIcon(QIcon(logiconpath))
+        self.kymo_log_filter_button.setIconSize(QSize(16, 16))
+        self.kymo_log_filter_button.setFixedSize(36, 36)
+        self.kymo_log_filter_button.setCheckable(True)
+        self.kymo_log_filter_button.setChecked(False)
+        self.kymo_log_filter_button.setObjectName("Toggle")
+        self.kymo_log_filter_button.toggled.connect(self.on_toggle_log_filter)
+        log_container = QWidget()
+        log_layout = QVBoxLayout(log_container)
+        log_layout.setContentsMargins(0, 0, 0, 0)
+        log_layout.setSpacing(0)
+        log_layout.setAlignment(Qt.AlignHCenter)
+        log_label = QLabel("FILTER")
+        log_label.setStyleSheet("color: black; font-size: 10px;")
+        log_label.adjustSize()
+        log_layout.addSpacing(kymo_label_spacer)
+        log_layout.addWidget(self.kymo_log_filter_button, alignment=Qt.AlignHCenter)
+        log_layout.addWidget(log_label, alignment=Qt.AlignHCenter)
+        kymocontrastLayout.addSpacing(8)
+        kymocontrastLayout.addWidget(log_container)
+        kymocontrastLayout.setAlignment(log_container, Qt.AlignBottom)
 
         leftLayout.addSpacing(2)
         leftLayout.addWidget(kymocontrastwidget, alignment=Qt.AlignCenter)
@@ -444,6 +493,8 @@ class NavigatorUiMixin:
         # RIGHT SPLITTER: Two columns — the movie widget and the right panel.
         self.rightVerticalSplitter = CustomSplitter(Qt.Vertical)
         self.topRightSplitter = CustomSplitter(Qt.Horizontal)
+        self.topRightSplitter.splitterMoved.connect(self._remember_right_panel_width)
+        self.topRightSplitter.splitterMoved.connect(self._enforce_right_panel_min_width)
         
         # 2nd Column: Movie widget
         self.movieWidget = QWidget()
@@ -777,7 +828,7 @@ class NavigatorUiMixin:
         roi_overlay_layout.setContentsMargins(0, 0, 0, 0)
         roi_overlay_layout.setSpacing(0)
         roi_overlay_layout.setAlignment(Qt.AlignHCenter)
-        roi_label = QLabel("LINES")
+        roi_label = QLabel("KYMOS")
         roi_label.setStyleSheet("color: black; font-size: 10px;")
         roi_label.adjustSize()
         roi_overlay_layout.addSpacing(movie_label_spacer)
@@ -841,8 +892,10 @@ class NavigatorUiMixin:
 
         # Column 3: Right Panel with additional canvases.
         self._right_panel_width = 500
+        self._right_panel_min_width = 220
         self.rightPanel = QWidget()
-        self.rightPanel.setFixedWidth(self._right_panel_width)
+        self.rightPanel.setMinimumWidth(0)
+        self.rightPanel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         rightPanelLayout = QVBoxLayout(self.rightPanel)
         rightPanelLayout.setContentsMargins(6, 6, 6, 6)
         rightPanelLayout.setSpacing(10)
@@ -977,6 +1030,14 @@ class NavigatorUiMixin:
         self.movieCanvas.mpl_connect("motion_notify_event", self.on_movie_hover)
         self.movieCanvas.mpl_connect("axes_leave_event", self.on_movie_leave)
 
+        # Ensure right panel never ends up as a thin sliver after window resizes.
+        original_resize = self.resizeEvent
+        def new_resize(event):
+            original_resize(event)
+            if hasattr(self, "_enforce_right_panel_min_width"):
+                QTimer.singleShot(0, self._enforce_right_panel_min_width)
+        self.resizeEvent = new_resize
+
         # Create a container (QFrame) for the zoom inset.
         self.zoomInsetFrame = QFrame(self.movieDisplayContainer)
         # Set the overall size and a rounded border.
@@ -1056,6 +1117,10 @@ class NavigatorUiMixin:
 
         # Initially hide the zoom inset frame.
         self.zoomInsetFrame.setVisible(False)
+        self.zoomInsetFrame.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.zoomInsetFrame.customContextMenuRequested.connect(
+            lambda pos, w=self.zoomInsetFrame: self._show_inset_context_menu(pos, w)
+        )
 
         # Reposition the zoom inset frame when the movieDisplayContainer is resized.
         original_resize = self.movieDisplayContainer.resizeEvent
@@ -1147,16 +1212,17 @@ class NavigatorUiMixin:
 
     def _make_colored_circle_cursor(self, size=12, thickness=2, shade='green'):
         """
-        Create a smooth, anti‑aliased circular cursor in either 'green' or 'blue':
-          - green → outline & fill from "#81C784"
-          - blue  → outline & fill from "#7DA1FF"
+        Create a smooth, anti‑aliased circular cursor.
+        Accepts named shades ("green"/"blue") or any valid Qt color string (e.g. "#7DA1FF").
         """
-        # Choose hex color.
         color_map = {
             'green': '#81C784',
             'blue':  '#7DA1FF',
         }
-        hex_color = color_map.get(shade.lower(), color_map['green'])
+        hex_color = color_map.get(str(shade).lower(), shade)
+        color = QtGui.QColor(hex_color)
+        if not color.isValid():
+            color = QtGui.QColor(color_map['green'])
 
         # Create a square ARGB pixmap
         pix = QtGui.QPixmap(size, size)
@@ -1167,12 +1233,12 @@ class NavigatorUiMixin:
         painter.setRenderHint(QtGui.QPainter.HighQualityAntialiasing, True)
 
         # Outline pen
-        pen = QtGui.QPen(QtGui.QColor(hex_color))
+        pen = QtGui.QPen(color)
         pen.setWidth(thickness)
         painter.setPen(pen)
 
         # Semi‑transparent fill
-        fill_color = QtGui.QColor(hex_color)
+        fill_color = QtGui.QColor(color)
         fill_color.setAlpha(80)  
         brush = QtGui.QBrush(fill_color)
         painter.setBrush(brush)
@@ -1878,12 +1944,6 @@ class NavigatorUiMixin:
 
         kymoMenu = menubar.addMenu("Kymograph")
 
-        kymoLoGAction = QAction("Apply LoG filter", self, checkable=True)
-        kymoLoGAction.setChecked(False)
-        kymoLoGAction.toggled.connect(self.on_toggle_log_filter)
-        self._apply_checkable_action_style(kymoLoGAction)
-        kymoMenu.addAction(kymoLoGAction)
-
         kymopreferencesAction = QAction("Line options", self)
         kymopreferencesAction.triggered.connect(self.open_kymopreferences_dialog)
         kymoMenu.addAction(kymopreferencesAction)
@@ -1994,6 +2054,19 @@ class NavigatorUiMixin:
             offset=offset,
             pointcolor=pointcolor,
         )
+
+    def _show_inset_context_menu(self, pos, widget):
+        menu = QMenu(widget)
+        menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint)
+        menu.setAttribute(Qt.WA_TranslucentBackground)
+
+        hide_action = menu.addAction("Hide")
+        hide_action.triggered.connect(lambda _chk=False: self.insetAct.setChecked(False))
+
+        size_action = menu.addAction("Size")
+        size_action.triggered.connect(self.open_zoom_dialog)
+
+        menu.exec_(widget.mapToGlobal(pos))
 
     def _rebuild_color_by_actions(self):
         # 1) clear old
@@ -2237,6 +2310,13 @@ class NavigatorUiMixin:
 
     def on_toggle_log_filter(self, checked: bool):
         self.applylogfilter = checked
+        btn = getattr(self, "kymo_log_filter_button", None)
+        if btn is not None and btn.isChecked() != checked:
+            btn.blockSignals(True)
+            btn.setChecked(checked)
+            btn.blockSignals(False)
+        if getattr(self, "kymoCombo", None) is not None and self.kymoCombo.currentText():
+            self.kymo_changed()
 
     def on_colocalization_toggled(self, checked: bool):
         if self.movie is None or self.movie.ndim != 4:

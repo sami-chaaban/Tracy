@@ -221,8 +221,39 @@ class NavigatorInputMixin:
         if getattr(self, "rightPanel", None) is not None:
             self.rightPanel.setVisible(True)
         target_width = getattr(self, "_right_panel_width", 0) or 0
+        if target_width <= 0:
+            target_width = int(0.35 * total_width)
         target_width = max(0, min(int(target_width), total_width))
         splitter.setSizes([max(0, total_width - target_width), target_width])
+
+    def _remember_right_panel_width(self, *_args):
+        splitter = getattr(self, "topRightSplitter", None)
+        if splitter is None:
+            return
+        sizes = splitter.sizes()
+        if len(sizes) < 2:
+            return
+        right_w = int(sizes[1])
+        min_w = getattr(self, "_right_panel_min_width", 0) or 0
+        if right_w >= max(1, min_w):
+            self._right_panel_width = right_w
+
+    def _enforce_right_panel_min_width(self, *_args):
+        splitter = getattr(self, "topRightSplitter", None)
+        if splitter is None:
+            return
+        sizes = splitter.sizes()
+        if len(sizes) < 2:
+            return
+        total_width = sum(sizes)
+        if total_width <= 0:
+            return
+        right_w = int(sizes[1])
+        min_w = getattr(self, "_right_panel_min_width", 0) or 0
+        if min_w <= 0:
+            return
+        if 0 < right_w < min_w:
+            splitter.setSizes([total_width, 0])
 
     # def eventFilter(self, obj, event):
     #     # intercept wheel events when our radius dialog is up
@@ -322,9 +353,13 @@ class NavigatorInputMixin:
         kymo_name = self.kymoCombo.currentText()
         if not kymo_name:
             return
-        p15, p99 = np.percentile(image, (15, 99))
-        
-        new_vmin, new_vmax = int(p15), int(p99 * 1.1)
+        use_log = getattr(self, "applylogfilter", False)
+        if use_log:
+            p15, p99 = np.percentile(image, (35, 98))
+            new_vmin, new_vmax = int(p15), int(p99)
+        else:
+            p15, p99 = np.percentile(image, (15, 99))
+            new_vmin, new_vmax = int(p15), int(p99 * 1.1)
             
         delta = new_vmax - new_vmin
         new_extended_min = new_vmin - int(0.7 * delta)
@@ -338,9 +373,15 @@ class NavigatorInputMixin:
         self.kymocontrastControlsWidget.contrastRangeSlider.blockSignals(False)
         self.kymocontrastControlsWidget.contrastRangeSlider.update()
 
-        if not hasattr(self, "kymo_contrast_settings"):
-            self.kymo_contrast_settings = {}
-        self.kymo_contrast_settings[kymo_name] = {
+        if use_log:
+            if not hasattr(self, "kymo_log_contrast_settings"):
+                self.kymo_log_contrast_settings = {}
+            store = self.kymo_log_contrast_settings
+        else:
+            if not hasattr(self, "kymo_contrast_settings"):
+                self.kymo_contrast_settings = {}
+            store = self.kymo_contrast_settings
+        store[kymo_name] = {
             'vmin': new_vmin,
             'vmax': new_vmax,
             'extended_min': new_extended_min,
@@ -369,13 +410,24 @@ class NavigatorInputMixin:
         image = self.kymoCanvas.image
         if image is None:
             return
-        if not hasattr(self, "kymo_contrast_settings"):
-            self.kymo_contrast_settings = {}
+        use_log = getattr(self, "applylogfilter", False)
+        if use_log:
+            if not hasattr(self, "kymo_log_contrast_settings"):
+                self.kymo_log_contrast_settings = {}
+            store = self.kymo_log_contrast_settings
+        else:
+            if not hasattr(self, "kymo_contrast_settings"):
+                self.kymo_contrast_settings = {}
+            store = self.kymo_contrast_settings
 
-        settings = self.kymo_contrast_settings.get(kymo_name)
+        settings = store.get(kymo_name)
         if settings is None:
-            p15, p99 = np.percentile(image, (15, 99))
-            new_vmin, new_vmax = int(p15), int(p99 * 1.1)
+            if use_log:
+                p15, p99 = np.percentile(image, (35, 98))
+                new_vmin, new_vmax = int(p15), int(p99)
+            else:
+                p15, p99 = np.percentile(image, (15, 99))
+                new_vmin, new_vmax = int(p15), int(p99 * 1.1)
             delta = new_vmax - new_vmin
             settings = {
                 'vmin': new_vmin,
@@ -383,7 +435,7 @@ class NavigatorInputMixin:
                 'extended_min': new_vmin - int(0.7 * delta),
                 'extended_max': new_vmax + int(1.4 * delta)
             }
-            self.kymo_contrast_settings[kymo_name] = settings
+            store[kymo_name] = settings
 
         slider = self.kymocontrastControlsWidget.contrastRangeSlider
         slider.blockSignals(True)

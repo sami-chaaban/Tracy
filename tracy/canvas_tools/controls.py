@@ -255,10 +255,17 @@ class KymoContrastControlsWidget(QWidget):
         if not kymo_name:
             return
 
-        if not hasattr(nav, "kymo_contrast_settings"):
-            nav.kymo_contrast_settings = {}
+        use_log = getattr(nav, "applylogfilter", False)
+        if use_log:
+            if not hasattr(nav, "kymo_log_contrast_settings"):
+                nav.kymo_log_contrast_settings = {}
+            store = nav.kymo_log_contrast_settings
+        else:
+            if not hasattr(nav, "kymo_contrast_settings"):
+                nav.kymo_contrast_settings = {}
+            store = nav.kymo_contrast_settings
 
-        nav.kymo_contrast_settings[kymo_name] = {
+        store[kymo_name] = {
             'vmin': new_low,
             'vmax': new_high,
             'extended_min': self.contrastRangeSlider.minimum(),

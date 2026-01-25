@@ -27,7 +27,6 @@ class VelocityCanvas(FigureCanvas):
         # self.fig.subplots_adjust(left=0.16, right=0.95, bottom=0.3, top=0.9)
         # self.fig.tight_layout()  # Or set constrained_layout=True initially
         super().resizeEvent(event)
-        self.draw_idle()
 
     def plot_velocity_histogram(self, velocities, ax=None):
         """

@@ -45,6 +45,8 @@ class KymographNavigator(
 
         self.movie = None
         self.kymographs = {}
+        self.kymographs_log = {}
+        self.kymo_log_contrast_settings = {}
         self.rois = {}
         self.live_update_mode = False
         self.analysis_start = None  # (frame_idx, x, y)

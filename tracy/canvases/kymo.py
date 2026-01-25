@@ -701,7 +701,20 @@ class KymoCanvas(ImageCanvas):
         renderer = canvas.get_renderer()
         for m in markers:
             if isinstance(m, Text):
-                self._kymo_label_bboxes[m] = m.get_window_extent(renderer)
+                bbox = m.get_window_extent(renderer)
+                try:
+                    patch = m.get_bbox_patch()
+                except Exception:
+                    patch = None
+                if patch is not None:
+                    try:
+                        pb = patch.get_window_extent(renderer)
+                        bbox = bbox.union(pb)
+                    except Exception:
+                        pass
+                # small padding so hover hits the full circle
+                bbox = bbox.expanded(1.5, 1.5)
+                self._kymo_label_bboxes[m] = bbox
 
     def clear_kymo_trajectory_markers(self):
         # Remove start/end circle markers and annotations.

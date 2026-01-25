@@ -94,8 +94,8 @@ Other load options are available under **Load** — see [Loading & Saving](#load
 5. The pixel intensity histogram updates for the current search window; see [Pixel Intensity Histogram](#pixel-intensity-histogram) for details.
 
 > The **spot histogram** shows intensities in the search area and highlights values in the spot.
-> Inset size can be changed under **View » Inset size**; this only affects visualization and does not change calculations.
-> Use **View » Inset** to show or hide the inset panel.
+> Inset size can be changed under **View » Inset size** (or right-click inset); this only affects visualization and does not change calculations.
+> Use **View » Inset** to show or hide the inset panel (or right-click inset).
 
 ### 4. Generating Kymographs <a name="generating-kymographs"></a>
 

@@ -1,20 +1,86 @@
 from ._shared import *
 
 class NavigatorKymoMixin:
-    def _set_kymo_label_hover_cursor(self, hovering: bool, in_image: bool = False):
+    def _set_kymo_label_hover_cursor(self, hovering: bool, in_image: bool = False, color=None):
         if not hasattr(self, "kymoCanvas"):
             return
         if not in_image:
+            self._kymo_hover_cursor_color = None
             self.kymoCanvas.setCursor(Qt.ArrowCursor)
             return
         if hovering:
+            self._kymo_hover_cursor_color = None
             self.kymoCanvas.setCursor(Qt.ArrowCursor)
         else:
-            cursor = getattr(self, "_kymo_sequence_cursor", None)
-            if cursor is None:
-                cursor = self._make_colored_circle_cursor(shade='blue')
-                self._kymo_sequence_cursor = cursor
+            shade = color or "#7DA1FF"
+            if getattr(self, "_kymo_hover_cursor_color", None) == shade:
+                return
+            cursor = self._get_kymo_hover_cursor(shade)
+            self._kymo_hover_cursor_color = shade
             self.kymoCanvas.setCursor(cursor)
+
+    def _get_kymo_hover_cursor(self, shade: str):
+        cache = getattr(self, "_kymo_hover_cursor_cache", None)
+        if cache is None:
+            cache = {}
+            self._kymo_hover_cursor_cache = cache
+        cursor = cache.get(shade)
+        if cursor is None:
+            cursor = self._make_colored_circle_cursor(shade=shade)
+            cache[shade] = cursor
+        return cursor
+
+    def _kymo_scatter_color(self, scatter, idx: int):
+        try:
+            facecolors = scatter.get_facecolors()
+            if facecolors is None or len(facecolors) == 0:
+                facecolors = scatter.get_edgecolors()
+            if facecolors is None or len(facecolors) == 0:
+                return None
+            if len(facecolors) == 1:
+                rgba = facecolors[0]
+            else:
+                rgba = facecolors[int(idx) % len(facecolors)]
+            return mcolors.to_hex(rgba, keep_alpha=False)
+        except Exception:
+            return None
+
+    def _kymo_hover_spot_color(self, event):
+        canvas = getattr(self, "kymoCanvas", None)
+        if canvas is None:
+            return None
+        scatters = getattr(canvas, "scatter_objs_traj", None)
+        if not scatters:
+            return None
+
+        ordered = list(scatters)
+        try:
+            selected_idx = self.trajectoryCanvas.table_widget.currentRow()
+        except Exception:
+            selected_idx = -1
+        if selected_idx is not None and selected_idx >= 0:
+            sel = None
+            for sc in scatters:
+                if getattr(sc, "traj_idx", None) == selected_idx:
+                    sel = sc
+                    break
+            if sel is not None:
+                ordered = [sel] + [sc for sc in scatters if sc is not sel]
+
+        for sc in ordered:
+            if sc is None:
+                continue
+            try:
+                contains, info = sc.contains(event)
+            except Exception:
+                continue
+            if not contains:
+                continue
+            ind = info.get("ind") if isinstance(info, dict) else None
+            if ind is None or len(ind) == 0:
+                return self._kymo_scatter_color(sc, 0)
+            return self._kymo_scatter_color(sc, ind[0])
+        return None
 
     def _handle_kymo_anchor_edit_right_click(self, event):
         if event.inaxes != self.kymoCanvas.ax or event.xdata is None or event.ydata is None:
@@ -287,6 +353,43 @@ class NavigatorKymoMixin:
                     fs,
                     self.intensityCanvas.get_current_point_color()
                 )
+            else:
+                fc = None
+
+            # Restore kymo marker for the current point (cleared during anchor edit).
+            try:
+                kymo_name = self.kymoCombo.currentText()
+                info = self.kymo_roi_map.get(kymo_name, {})
+                current_kymo_ch = info.get("channel", None)
+                if self.analysis_channel == current_kymo_ch or self.analysis_channel is None:
+                    if (
+                        kymo_name
+                        and kymo_name in self.kymographs
+                        and self.rois
+                        and hasattr(self, "analysis_frames")
+                        and idx < len(self.analysis_frames)
+                    ):
+                        roi = self.rois[self.roiCombo.currentText()]
+                        frame = self.analysis_frames[idx]
+                        xk = None
+                        if fc is not None and is_point_near_roi(fc, roi):
+                            xk = self.compute_kymo_x_from_roi(
+                                roi, fc[0], fc[1],
+                                self.kymographs[kymo_name].shape[1]
+                            )
+                        elif centers and idx < len(centers) and is_point_near_roi((cx, cy), roi):
+                            xk = self.compute_kymo_x_from_roi(
+                                roi, cx, cy,
+                                self.kymographs[kymo_name].shape[1]
+                            )
+                        if xk is not None and self.movie is not None:
+                            disp_frame = (self.movie.shape[0] - 1) - frame
+                            self.kymoCanvas.add_circle(
+                                xk, disp_frame,
+                                color=self.intensityCanvas.get_current_point_color() if fc is not None else 'grey'
+                            )
+            except Exception:
+                pass
 
             self.movieCanvas.draw_idle()
             self.kymoCanvas.draw_idle()
@@ -1063,7 +1166,12 @@ class NavigatorKymoMixin:
                 if bbox.contains(event.x, event.y):
                     hovering_label = True
                     break
-        self._set_kymo_label_hover_cursor(hovering_label, in_image=True)
+        hover_color = None
+        if (not hovering_label
+                and not getattr(self, "kymo_anchor_edit_mode", False)
+                and not (getattr(self, "analysis_anchors", None) and not getattr(self, "trajectory_finalized", False))):
+            hover_color = self._kymo_hover_spot_color(event)
+        self._set_kymo_label_hover_cursor(hovering_label, in_image=True, color=hover_color)
 
         if getattr(self, "kymo_anchor_edit_mode", False):
             return

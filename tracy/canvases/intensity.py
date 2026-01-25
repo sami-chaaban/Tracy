@@ -59,13 +59,19 @@ class IntensityCanvas(FigureCanvas):
         self._last_plot_args = None
 
         self._mouse_inside = False
+        self._resize_layout_timer = QTimer(self)
+        self._resize_layout_timer.setSingleShot(True)
+        self._resize_layout_timer.timeout.connect(self._deferred_resize_layout)
+        self._resize_highlight_timer = QTimer(self)
+        self._resize_highlight_timer.setSingleShot(True)
+        self._resize_highlight_timer.timeout.connect(self._deferred_resize_highlight)
 
     # def showEvent(self, event):
     #     super().showEvent(event)
     #     QTimer.singleShot(0, lambda: self.plot_intensity(**self._last_plot_args))
 
     def plot_intensity(self, frames, intensities, avg_intensity=None, median_intensity=None,
-                    colors=None, max_frame=None):
+                    colors=None, max_frame=None, *, relayout=True):
         # Check if there is valid intensity data
         if not intensities or all(val is None for val in intensities):
             self.ax_top.clear()
@@ -297,16 +303,8 @@ class IntensityCanvas(FigureCanvas):
             margin = 0.1 * (ymax - ymin) if ymax > ymin else 1
             self.ax_bottom.set_ylim(ymin - margin, ymax + margin)
         
-        try:
-            self.fig.tight_layout(
-                pad=0.1,      # space around the whole figure
-                w_pad=0.05,   # horizontal padding between subplots
-                h_pad=0.05,   # vertical padding between subplots
-                rect=[0.02, 0.02, 0.98, 0.98]  # left, bottom, right, top fractions
-            )
-        except np.linalg.LinAlgError as e:
-            pass
-            #print("Warning: could not plot run tight_layout on IntensityCanvas:", e)
+        if relayout:
+            self._apply_intensity_layout()
 
         self.fig.canvas.draw()                       # synchronous full draw
         self._background = self.copy_from_bbox(self.fig.bbox)
@@ -351,6 +349,14 @@ class IntensityCanvas(FigureCanvas):
             if self.navigator.sumBtn.isChecked():
                 self.navigator.sumBtn.setChecked(False)
         self.highlight_current_point()
+        if self.navigator is not None:
+            try:
+                self.navigator.kymoCanvas.setFocus()
+            except Exception:
+                try:
+                    self.navigator.setFocus()
+                except Exception:
+                    pass
         
     def highlight_current_point(self, override=False):
         if self.scatter_obj_bottom is None:
@@ -398,13 +404,30 @@ class IntensityCanvas(FigureCanvas):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self._last_plot_args:
-            self.plot_intensity(**self._last_plot_args)
-        # force a full redraw so axes, legend, etc. get laid out
+        # Defer layout to avoid lag; keep data as-is during resize.
+        self._resize_layout_timer.start(30)
+        if self.point_highlighted:
+            self._resize_highlight_timer.start(80)
+
+    def _deferred_resize_layout(self):
+        self._apply_intensity_layout()
         self.fig.canvas.draw_idle()
-        # now replay the highlight exactly as before
+
+    def _deferred_resize_highlight(self):
         if self.point_highlighted:
             self.highlight_current_point(self._last_highlight_override)
+
+    def _apply_intensity_layout(self):
+        try:
+            self.fig.tight_layout(
+                pad=0.1,      # space around the whole figure
+                w_pad=0.05,   # horizontal padding between subplots
+                h_pad=0.05,   # vertical padding between subplots
+                rect=[0.02, 0.02, 0.98, 0.98]  # left, bottom, right, top fractions
+            )
+        except np.linalg.LinAlgError:
+            pass
+            #print("Warning: could not plot run tight_layout on IntensityCanvas:", e)
 
     def clear_highlight(self):
         # 1) Hide the markers

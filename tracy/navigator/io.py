@@ -1,4 +1,5 @@
 from ._shared import *
+from scipy.ndimage import gaussian_laplace
 
 class NavigatorIOMixin:
     def infer_axes_from_shape(shape):
@@ -164,6 +165,8 @@ class NavigatorIOMixin:
             self.movieNameLabel.setStyleSheet("background: transparent; color: black; font-size: 16px; font-weight: bold")
             self.movieNameLabel.setText(os.path.basename(fname))
             self.movieNameLabel.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            if hasattr(self, "movieLoadButton"):
+                self.movieLoadButton.setVisible(True)
             
 
             # ── blank out the histogram canvas entirely ────────────────────────────────
@@ -1255,8 +1258,15 @@ class NavigatorIOMixin:
         self.movieChannelCombo.setCurrentIndex(info["channel"] - 1)
         self.movieChannelCombo.blockSignals(False)
 
-        # — Display the kymograph
-        img = np.flipud(self.kymographs[kymoName])
+        # — Display the kymograph (raw or LoG)
+        img = self.kymographs.get(kymoName)
+        if img is None:
+            return
+        if getattr(self, "applylogfilter", False):
+            img = self._get_log_kymograph(kymoName, base=img)
+        if img is None:
+            return
+        img = np.flipud(img)
         self.kymoCanvas.display_image(img)
         if hasattr(self, "kymocontrastControlsWidget"):
             self._apply_kymo_contrast_settings(kymoName)
@@ -1268,6 +1278,33 @@ class NavigatorIOMixin:
 
         # — Remember for next save
         self._last_roi = roiName
+
+    def _get_log_kymograph(self, kymo_name, base=None):
+        if not kymo_name:
+            return None
+        if not hasattr(self, "kymographs_log"):
+            self.kymographs_log = {}
+        cached = self.kymographs_log.get(kymo_name)
+        if cached is not None:
+            return cached
+        if base is None:
+            base = self.kymographs.get(kymo_name)
+        if base is None:
+            return None
+        log_kymo = self._compute_log_kymograph(base)
+        self.kymographs_log[kymo_name] = log_kymo
+        return log_kymo
+
+    def _compute_log_kymograph(self, kymo):
+        sigma = getattr(self, "log_sigma", 1.5)
+        kymo_f = kymo.astype(np.float32)
+        log_kymo = -gaussian_laplace(kymo_f, sigma=sigma)
+        minv, maxv = log_kymo.min(), log_kymo.max()
+        if maxv > minv:
+            log_kymo = (log_kymo - minv) / (maxv - minv) * 254 + 1
+        else:
+            log_kymo = np.ones_like(log_kymo) * 128
+        return log_kymo.astype(np.uint8)
 
     def delete_current_kymograph(self):
         current = self.kymoCombo.currentText()
@@ -1292,8 +1329,12 @@ class NavigatorIOMixin:
 
         # 2) Delete the kymograph
         self.kymographs.pop(current, None)
+        if hasattr(self, "kymographs_log"):
+            self.kymographs_log.pop(current, None)
         if hasattr(self, "kymo_contrast_settings"):
             self.kymo_contrast_settings.pop(current, None)
+        if hasattr(self, "kymo_log_contrast_settings"):
+            self.kymo_log_contrast_settings.pop(current, None)
 
         # 3) Remove it from the combo
         old_index = self.kymoCombo.currentIndex()
@@ -1349,6 +1390,9 @@ class NavigatorIOMixin:
         for name, mapping in self.kymo_roi_map.items():
             if mapping.get("roi") == roi_name and name in self.kymographs:
                 self.kymographs[name] = np.fliplr(self.kymographs[name])
+            if mapping.get("roi") == roi_name and hasattr(self, "kymographs_log"):
+                if name in self.kymographs_log:
+                    self.kymographs_log[name] = np.fliplr(self.kymographs_log[name])
 
         # Determine kymograph width for anchor inversion.
         kymo_width = None
@@ -1468,11 +1512,15 @@ class NavigatorIOMixin:
                     self.roiCombo.removeItem(idx)
 
         self.kymographs.clear()
+        if hasattr(self, "kymographs_log"):
+            self.kymographs_log.clear()
         self.kymo_roi_map.clear()
         self._roi_zoom_states.clear()
         self._last_roi = None
         if hasattr(self, "kymo_contrast_settings"):
             self.kymo_contrast_settings.clear()
+        if hasattr(self, "kymo_log_contrast_settings"):
+            self.kymo_log_contrast_settings.clear()
         self.kymoCombo.clear()
         self.kymoCanvas.ax.cla()
         self.kymoCanvas.ax.axis("off")
