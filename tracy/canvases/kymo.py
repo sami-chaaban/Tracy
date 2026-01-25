@@ -372,7 +372,7 @@ class KymoCanvas(ImageCanvas):
         # 1) clear any existing overlays
         self.clear_kymo_trajectory_markers()
 
-        overlay_mode = self.navigator.get_traj_overlay_mode() if self.navigator is not None else "all"
+        overlay_mode = self.navigator.get_kymo_traj_overlay_mode() if self.navigator is not None else "all"
         if overlay_mode == "off":
             return
 

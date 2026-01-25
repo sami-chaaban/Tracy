@@ -418,6 +418,9 @@ class IntensityCanvas(FigureCanvas):
             self.highlight_current_point(self._last_highlight_override)
 
     def _apply_intensity_layout(self):
+        # Skip tight_layout when collapsed to (near) zero size to avoid empty bbox errors.
+        if self.width() <= 2 or self.height() <= 2:
+            return
         try:
             self.fig.tight_layout(
                 pad=0.1,      # space around the whole figure
@@ -425,7 +428,7 @@ class IntensityCanvas(FigureCanvas):
                 h_pad=0.05,   # vertical padding between subplots
                 rect=[0.02, 0.02, 0.98, 0.98]  # left, bottom, right, top fractions
             )
-        except np.linalg.LinAlgError:
+        except (np.linalg.LinAlgError, ValueError):
             pass
             #print("Warning: could not plot run tight_layout on IntensityCanvas:", e)
 

@@ -1655,11 +1655,11 @@ class NavigatorIOMixin:
         overlay_marker_scale = 0.3
         overlay_line_scale = 0.65
 
-        prev_overlay_mode = None
+        prev_kymo_overlay_mode = None
         if do_overlay:
-            prev_overlay_mode = self.get_traj_overlay_mode()
-            # Force overlays on for export, independent of current UI overlay mode.
-            self.traj_overlay_mode = "all"
+            prev_kymo_overlay_mode = self.get_kymo_traj_overlay_mode()
+            # Force kymo overlays on for export, independent of current UI overlay mode.
+            self.kymo_traj_overlay_mode = "all"
 
         try:
             for i, name in enumerate(sel_names):
@@ -2177,8 +2177,8 @@ class NavigatorIOMixin:
 
         finally:
             prog.close()
-            if prev_overlay_mode is not None:
-                self.traj_overlay_mode = prev_overlay_mode
+            if prev_kymo_overlay_mode is not None:
+                self.kymo_traj_overlay_mode = prev_kymo_overlay_mode
             # just re-select the original kymo; that will reset ROI, channel, contrast, overlays, etc.
             if current in self.kymographs:
                 self.kymoCombo.setCurrentText(current)

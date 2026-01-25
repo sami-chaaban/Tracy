@@ -162,6 +162,7 @@ Other load options are available under **Load** — see [Loading & Saving](#load
 ### 6. Browsing Trajectories <a name="browsing-trajectories"></a>
 
 * New trajectories append to the **Trajectory Table**.
+* The **SPOTS** buttons under the movie and kymograph control trajectory overlays separately. Each cycles **all → selected → off**; the movie button affects only the movie canvas, and the kymo button affects only the kymograph (defaults: movie = selected, kymo = all).
 * Click trajectories in the table or use the arrow keys (**`↑`**, **`↓`**). Right‑click for options (e.g. Go to kymograph).
 * Delete a trajectory with `Backspace`.
 * Right‑click menu options include saving selected trajectories, jumping to the matching kymograph, and marking/setting custom columns.

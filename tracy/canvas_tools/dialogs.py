@@ -50,12 +50,17 @@ class _KymoPreviewNavigator:
         info = self.kymo_roi_map.get(kymo_name, {}) if kymo_name else {}
         self.roiCombo.setText(info.get("roi", "") or "")
 
-    def get_traj_overlay_mode(self):
+    def get_kymo_traj_overlay_mode(self):
         if self.force_overlay:
             return "all"
+        if self._source and hasattr(self._source, "get_kymo_traj_overlay_mode"):
+            return self._source.get_kymo_traj_overlay_mode()
         if self._source and hasattr(self._source, "get_traj_overlay_mode"):
             return self._source.get_traj_overlay_mode()
         return "all"
+
+    def get_traj_overlay_mode(self):
+        return self.get_kymo_traj_overlay_mode()
 
     def _compute_roi_cache(self, roi):
         if self._source and hasattr(self._source, "_compute_roi_cache"):

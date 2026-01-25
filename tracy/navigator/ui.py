@@ -91,6 +91,10 @@ class NavigatorUiMixin:
         kymoanchoriconpath = self.resource_path('icons/overlay_anchor.svg')
         invertkymoiconpath = self.resource_path('icons/invert.svg')
         logiconpath = self.resource_path('icons/log.svg')
+        self._traj_overlay_icons = {
+            "all": QIcon(trajoverlayiconpath),
+            "selected": QIcon(trajoverlayoneiconpath),
+        }
 
         # --- Top Controls Section ---
         topWidget = QWidget()
@@ -432,6 +436,37 @@ class NavigatorUiMixin:
         kymocontrastLayout.setAlignment(kymo_reset_container, Qt.AlignBottom)
         kymocontrastLayout.addSpacing(2)
 
+        self.kymo_traj_overlay_button = AnimatedIconButton("")
+        kymo_traj_filter = BubbleTipFilter(
+            "Overlay trajectory spots (all > one > none)",
+            self,
+            placement="right"
+        )
+        self.kymo_traj_overlay_button.installEventFilter(kymo_traj_filter)
+        self.kymo_traj_overlay_button._bubble_filter = kymo_traj_filter
+        self.kymo_traj_overlay_button.setIcon(self._traj_overlay_icons["all"])
+        self.kymo_traj_overlay_button.setIconSize(QSize(16, 16))
+        self.kymo_traj_overlay_button.setFixedSize(36, 36)
+        self.kymo_traj_overlay_button.setCheckable(True)
+        self.kymo_traj_overlay_mode = "all"
+        self._apply_kymo_traj_overlay_mode(self.kymo_traj_overlay_mode, redraw=False)
+        self.kymo_traj_overlay_button.setObjectName("Toggle")
+        kymo_traj_container = QWidget()
+        kymo_traj_layout = QVBoxLayout(kymo_traj_container)
+        kymo_traj_layout.setContentsMargins(0, 0, 0, 0)
+        kymo_traj_layout.setSpacing(0)
+        kymo_traj_layout.setAlignment(Qt.AlignHCenter)
+        kymo_traj_label = QLabel("SPOTS")
+        kymo_traj_label.setStyleSheet("color: black; font-size: 10px;")
+        kymo_traj_label.adjustSize()
+        kymo_traj_layout.addSpacing(kymo_label_spacer)
+        kymo_traj_layout.addWidget(self.kymo_traj_overlay_button, alignment=Qt.AlignHCenter)
+        kymo_traj_layout.addWidget(kymo_traj_label, alignment=Qt.AlignHCenter)
+        kymocontrastLayout.addSpacing(8)
+        kymocontrastLayout.addWidget(kymo_traj_container)
+        kymocontrastLayout.setAlignment(kymo_traj_container, Qt.AlignBottom)
+        self.kymo_traj_overlay_container = kymo_traj_container
+
         self.kymo_anchor_overlay_button = AnimatedIconButton("")
         kymoanchorfilter = BubbleTipFilter("Show anchors (hold shift key to edit them)", self, placement="right")
         self.kymo_anchor_overlay_button.installEventFilter(kymoanchorfilter)
@@ -454,7 +489,7 @@ class NavigatorUiMixin:
         anchor_layout.addSpacing(kymo_label_spacer)
         anchor_layout.addWidget(self.kymo_anchor_overlay_button, alignment=Qt.AlignHCenter)
         anchor_layout.addWidget(anchor_label, alignment=Qt.AlignHCenter)
-        kymocontrastLayout.addSpacing(10)
+        kymocontrastLayout.addSpacing(4)
         kymocontrastLayout.addWidget(anchor_container)
         kymocontrastLayout.setAlignment(anchor_container, Qt.AlignBottom)
 
@@ -480,7 +515,7 @@ class NavigatorUiMixin:
         log_layout.addSpacing(kymo_label_spacer)
         log_layout.addWidget(self.kymo_log_filter_button, alignment=Qt.AlignHCenter)
         log_layout.addWidget(log_label, alignment=Qt.AlignHCenter)
-        kymocontrastLayout.addSpacing(8)
+        kymocontrastLayout.addSpacing(4)
         kymocontrastLayout.addWidget(log_container)
         kymocontrastLayout.setAlignment(log_container, Qt.AlignBottom)
 
@@ -735,20 +770,16 @@ class NavigatorUiMixin:
         self.traj_overlay_button = AnimatedIconButton("")
         # self.traj_overlay_button.setToolTip("Overlay trajectories (shortcut: o)")
         traj_filter = BubbleTipFilter(
-            "Overlay trajectories (all > one > none; shortcut: o)",
+            "Overlay trajectory spots (all > one > none; shortcut: o)",
             self
         )
         self.traj_overlay_button.installEventFilter(traj_filter)
         self.traj_overlay_button._bubble_filter = traj_filter
-        self._traj_overlay_icons = {
-            "all": QIcon(trajoverlayiconpath),
-            "selected": QIcon(trajoverlayoneiconpath),
-        }
         self.traj_overlay_button.setIcon(self._traj_overlay_icons["all"])
         self.traj_overlay_button.setIconSize(QSize(16, 16))
         self.traj_overlay_button.setFixedSize(36, 36)
         self.traj_overlay_button.setCheckable(True)
-        self.traj_overlay_mode = "all"
+        self.traj_overlay_mode = "selected"
         self._apply_traj_overlay_mode(self.traj_overlay_mode, redraw=False)
         self.traj_overlay_button.setObjectName("Toggle")
         # self.update_overlay_button_style(self.traj_overlay_button.isChecked())
@@ -1023,6 +1054,7 @@ class NavigatorUiMixin:
             lambda _checked: self.trajectoryCanvas.clear_trajectories()
             )
         self.traj_overlay_button.clicked.connect(self._cycle_traj_overlay_mode)
+        self.kymo_traj_overlay_button.clicked.connect(self._cycle_kymo_traj_overlay_mode)
         self.delete_button.clicked.connect(self.trajectoryCanvas.delete_selected_trajectory)
         
         
@@ -1374,8 +1406,14 @@ class NavigatorUiMixin:
             self.update_roi_overlay_if_active()
             self.update_roilist_visibility()
 
-    def get_traj_overlay_mode(self):
+    def get_movie_traj_overlay_mode(self):
         return getattr(self, "traj_overlay_mode", "all")
+
+    def get_kymo_traj_overlay_mode(self):
+        return getattr(self, "kymo_traj_overlay_mode", "all")
+
+    def get_traj_overlay_mode(self):
+        return self.get_movie_traj_overlay_mode()
 
     def _traj_overlay_has_selection(self):
         tc = getattr(self, "trajectoryCanvas", None)
@@ -1391,20 +1429,38 @@ class NavigatorUiMixin:
             mode = "all"
         return mode
 
-    def _apply_traj_overlay_mode(self, mode, redraw=True):
+    def _apply_traj_overlay_mode_for(self, mode, button_attr, mode_attr, redraw=True):
         mode = self._normalize_traj_overlay_mode(mode)
-        self.traj_overlay_mode = mode
+        setattr(self, mode_attr, mode)
         icon = self._traj_overlay_icons["selected"] if mode == "selected" else self._traj_overlay_icons["all"]
-        self.traj_overlay_button.setIcon(icon)
-        self.traj_overlay_button.setChecked(mode != "off")
+        btn = getattr(self, button_attr, None)
+        if btn is not None:
+            btn.setIcon(icon)
+            btn.setChecked(mode != "off")
         if redraw and getattr(self, "trajectoryCanvas", None) is not None:
             self.trajectoryCanvas.toggle_trajectory_markers()
+
+    def _apply_traj_overlay_mode(self, mode, redraw=True):
+        self._apply_traj_overlay_mode_for(
+            mode,
+            button_attr="traj_overlay_button",
+            mode_attr="traj_overlay_mode",
+            redraw=redraw,
+        )
+
+    def _apply_kymo_traj_overlay_mode(self, mode, redraw=True):
+        self._apply_traj_overlay_mode_for(
+            mode,
+            button_attr="kymo_traj_overlay_button",
+            mode_attr="kymo_traj_overlay_mode",
+            redraw=redraw,
+        )
 
     def _cycle_traj_overlay_mode(self):
         if getattr(self, "trajectoryCanvas", None) is None:
             return
         order = ("off", "all", "selected")
-        current = self.get_traj_overlay_mode()
+        current = self.get_movie_traj_overlay_mode()
         try:
             idx = order.index(current)
         except ValueError:
@@ -1414,11 +1470,33 @@ class NavigatorUiMixin:
             self._apply_traj_overlay_mode(candidate)
             return
 
+    def _cycle_kymo_traj_overlay_mode(self):
+        if getattr(self, "trajectoryCanvas", None) is None:
+            return
+        order = ("off", "all", "selected")
+        current = self.get_kymo_traj_overlay_mode()
+        try:
+            idx = order.index(current)
+        except ValueError:
+            idx = 0
+        for step in range(1, len(order) + 1):
+            candidate = order[(idx + step) % len(order)]
+            self._apply_kymo_traj_overlay_mode(candidate)
+            return
+
     def _ensure_traj_overlay_mode_valid(self, redraw=False):
-        current = self.get_traj_overlay_mode()
+        current = self.get_movie_traj_overlay_mode()
         normalized = self._normalize_traj_overlay_mode(current)
         if normalized != current:
             self._apply_traj_overlay_mode(normalized, redraw=redraw)
+        elif redraw and getattr(self, "trajectoryCanvas", None) is not None:
+            self.trajectoryCanvas.toggle_trajectory_markers()
+
+    def _ensure_kymo_traj_overlay_mode_valid(self, redraw=False):
+        current = self.get_kymo_traj_overlay_mode()
+        normalized = self._normalize_traj_overlay_mode(current)
+        if normalized != current:
+            self._apply_kymo_traj_overlay_mode(normalized, redraw=redraw)
         elif redraw and getattr(self, "trajectoryCanvas", None) is not None:
             self.trajectoryCanvas.toggle_trajectory_markers()
 

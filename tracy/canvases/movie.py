@@ -314,7 +314,7 @@ class MovieCanvas(ImageCanvas):
                     delta = cursor - self._idle_cursor_prev
                     dist = np.linalg.norm(delta)
                     speed = 0.0 if dist < 1e-5 else dist / dt
-                    target = min(speed * 0.02, 1.0)
+                    target = min(speed * 0.06, 1.0)
                     self._idle_cursor_strength = 0.8 * self._idle_cursor_strength + 0.2 * target
                 else:
                     self._idle_cursor_strength = 0.0
@@ -1150,7 +1150,7 @@ class MovieCanvas(ImageCanvas):
             cursor = np.array(self._idle_cursor)
             diff = cursor - pos
             dist = np.linalg.norm(diff, axis=1)
-            influence = dist < 0.07
+            influence = dist < 0.12
             strength = self._idle_cursor_strength
         if self._idle_tracy_path is not None:
             tracy_mask = self._idle_tracy_path.contains_points(pos)
@@ -1166,9 +1166,9 @@ class MovieCanvas(ImageCanvas):
                 scale = np.where(influence, 1.0, scale)
             vel = vel * scale[:, None]
         if influence is not None and np.any(influence) and strength > 0.0:
-            pull = (0.03 * strength) / (0.02 + dist[influence])
+            pull = (0.06 * strength) / (0.02 + dist[influence])
             vel[influence] += diff[influence] * pull[:, None]
-            max_speed = 0.008
+            max_speed = 0.01
             vel_infl = vel[influence]
             speed_infl = np.linalg.norm(vel_infl, axis=1)
             over = speed_infl > max_speed
@@ -1246,7 +1246,7 @@ class MovieCanvas(ImageCanvas):
         self.clear_movie_trajectory_markers()
 
         # 2) If the overlay toggle is off, do nothing
-        overlay_mode = self.navigator.get_traj_overlay_mode() if self.navigator is not None else "all"
+        overlay_mode = self.navigator.get_movie_traj_overlay_mode() if self.navigator is not None else "all"
         if overlay_mode == "off":
             return
 
@@ -1342,8 +1342,10 @@ class MovieCanvas(ImageCanvas):
             ys_pts = [pt[1] if pt is not None else np.nan for pt in spot_centers]
             frames = traj.get("frames", [])
 
-            fade_range = 5
-            min_alpha = 0.05
+            fade_prev = 10
+            fade_next = 0
+            min_alpha_prev = 0.05
+            min_alpha_next = 0.05
             current_frame = None
             try:
                 current_frame = int(self.navigator.frameSlider.value())
@@ -1358,13 +1360,23 @@ class MovieCanvas(ImageCanvas):
                 point_alphas = []
                 for f in frames:
                     try:
-                        dist = abs(int(f) - current_frame)
+                        delta = int(f) - current_frame
                     except Exception:
-                        dist = fade_range
-                    if dist >= fade_range:
-                        alpha = min_alpha
+                        delta = -fade_prev
+                    if delta == 0:
+                        alpha = 1.0
+                    elif delta < 0:
+                        dist = -delta
+                        if fade_prev <= 0 or dist >= fade_prev:
+                            alpha = min_alpha_prev
+                        else:
+                            alpha = 1.0 - (dist / fade_prev) * (1.0 - min_alpha_prev)
                     else:
-                        alpha = 1.0 - (dist / fade_range) * (1.0 - min_alpha)
+                        dist = delta
+                        if fade_next <= 0 or dist >= fade_next:
+                            alpha = min_alpha_next
+                        else:
+                            alpha = 1.0 - (dist / fade_next) * (1.0 - min_alpha_next)
                     point_alphas.append(alpha)
 
             scatter_kwargs, line_color = self.navigator._get_traj_colors(traj)
@@ -1395,7 +1407,10 @@ class MovieCanvas(ImageCanvas):
                 seg_alpha = alpha_line
                 if point_alphas is not None:
                     try:
-                        seg_alpha = 0.5 * (point_alphas[i] + point_alphas[i + 1])
+                        if fade_next <= 0:
+                            seg_alpha = min(point_alphas[i], point_alphas[i + 1])
+                        else:
+                            seg_alpha = 0.5 * (point_alphas[i] + point_alphas[i + 1])
                     except Exception:
                         seg_alpha = alpha_line
                 seg_colors.append(mcolors.to_rgba(base_color, seg_alpha))

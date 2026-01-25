@@ -272,12 +272,15 @@ class NavigatorKymoMixin:
                     "anchors": list(traj.get("anchors", []) or []),
                     "nodes": list(traj.get("nodes", []) or []),
                 }
-        if getattr(self, "traj_overlay_button", None) and self.traj_overlay_button.isChecked():
+        kymo_on = getattr(self, "kymo_traj_overlay_button", None) and self.kymo_traj_overlay_button.isChecked()
+        movie_on = getattr(self, "traj_overlay_button", None) and self.traj_overlay_button.isChecked()
+        if kymo_on:
             if enabled:
                 self._build_kymo_anchor_edit_artists()
             else:
                 self.kymoCanvas.draw_trajectories_on_kymo()
                 self.kymoCanvas.draw_idle()
+        if movie_on:
             try:
                 self.movieCanvas.draw_trajectories_on_movie()
                 self.movieCanvas.draw_idle()
@@ -691,7 +694,9 @@ class NavigatorKymoMixin:
             self._handle_kymo_anchor_edit_right_click(event)
             return
 
-        if event.button == 1 and event.inaxes is self.kymoCanvas.ax and self.traj_overlay_button.isChecked() and len(self.analysis_points) == 0:
+        if (event.button == 1 and event.inaxes is self.kymoCanvas.ax
+                and self.kymo_traj_overlay_button.isChecked()
+                and len(self.analysis_points) == 0):
             current_row = self.trajectoryCanvas.table_widget.currentRow()
             for scatter in self.kymoCanvas.scatter_objs_traj:
                 hit, info = scatter.contains(event)

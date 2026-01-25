@@ -183,6 +183,10 @@ class NavigatorInputMixin:
         self.traj_overlay_button.setVisible(has_rows)
         if hasattr(self, "traj_overlay_container"):
             self.traj_overlay_container.setVisible(has_rows)
+        if hasattr(self, "kymo_traj_overlay_button"):
+            self.kymo_traj_overlay_button.setVisible(has_rows)
+        if hasattr(self, "kymo_traj_overlay_container"):
+            self.kymo_traj_overlay_container.setVisible(has_rows)
         self.delete_button.setVisible(has_rows)
         if hasattr(self, "delete_container"):
             self.delete_container.setVisible(has_rows)
@@ -191,6 +195,8 @@ class NavigatorInputMixin:
             self.clear_container.setVisible(has_rows)
         self.trajectoryCanvas.hide_empty_columns()
         self._ensure_traj_overlay_mode_valid(redraw=False)
+        if hasattr(self, "_ensure_kymo_traj_overlay_mode_valid"):
+            self._ensure_kymo_traj_overlay_mode_valid(redraw=False)
 
     def _collapse_right_panel_on_startup(self):
         if getattr(self, "_right_panel_startup_done", False):

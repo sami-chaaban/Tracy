@@ -1335,9 +1335,12 @@ class TrajectoryCanvas(QWidget):
                 sld.blockSignals(False)
 
             # ——— 5) (Re)draw trajectories, but reuse artists ———
-            if nav.traj_overlay_button.isChecked():
+            movie_on = getattr(nav, "traj_overlay_button", None) and nav.traj_overlay_button.isChecked()
+            kymo_on = getattr(nav, "kymo_traj_overlay_button", None) and nav.kymo_traj_overlay_button.isChecked()
+            if movie_on:
                 mc.clear_movie_trajectory_markers()
                 mc.draw_trajectories_on_movie()
+            if kymo_on:
                 kc.clear_kymo_trajectory_markers()
                 kc.draw_trajectories_on_kymo()
 
@@ -2937,7 +2940,7 @@ class TrajectoryCanvas(QWidget):
             new_traj = self._rebuild_one_trajectory(self.trajectories[row], self.navigator)
             self.trajectories[row] = new_traj
             self.updateTableRow(row, new_traj)
-            if self.navigator.traj_overlay_button.isChecked():
+            if self._any_traj_overlay_enabled():
                 self.on_trajectory_selected_by_index(row)
             return
 
@@ -2993,7 +2996,7 @@ class TrajectoryCanvas(QWidget):
             self.navigator._suppress_internal_progress = False
             thread.quit()
             thread.wait()
-            if self.navigator.traj_overlay_button.isChecked() and rows:
+            if self._any_traj_overlay_enabled() and rows:
                 self.on_trajectory_selected_by_index(rows[0])
             self.navigator._refresh_intensity_canvas()
 
@@ -3431,7 +3434,7 @@ class TrajectoryCanvas(QWidget):
 
             # — swap it in and refresh UI —
             self.updateTableRow(row, traj_data)
-            if self.navigator.traj_overlay_button.isChecked():
+            if self._any_traj_overlay_enabled():
                 self.on_trajectory_selected_by_index(rows[0])
             return
 
@@ -3554,7 +3557,7 @@ class TrajectoryCanvas(QWidget):
             thread.quit()
             thread.wait()
             # redraw if overlay is on
-            if self.navigator.traj_overlay_button.isChecked():
+            if self._any_traj_overlay_enabled():
                 self.on_trajectory_selected_by_index(rows[0])
 
         thread.started.connect(worker.run)
@@ -3653,14 +3656,20 @@ class TrajectoryCanvas(QWidget):
         self._recalc_thread.start()
 
     def toggle_trajectory_markers(self):
-        mode = self.navigator.get_traj_overlay_mode() if self.navigator is not None else "all"
-        if mode == "off":
+        if self.navigator is None:
+            movie_mode = "all"
+            kymo_mode = "all"
+        else:
+            movie_mode = self.navigator.get_movie_traj_overlay_mode()
+            kymo_mode = self.navigator.get_kymo_traj_overlay_mode()
+        if kymo_mode == "off":
             self.kymoCanvas.clear_kymo_trajectory_markers()
-            self.movieCanvas.clear_movie_trajectory_markers()
         else:
             self.kymoCanvas.draw_trajectories_on_kymo()
-            if self.navigator is not None:
-                self.movieCanvas.draw_trajectories_on_movie()
+        if movie_mode == "off":
+            self.movieCanvas.clear_movie_trajectory_markers()
+        else:
+            self.movieCanvas.draw_trajectories_on_movie()
         
         self.movieCanvas.draw()
         self.kymoCanvas.draw()
@@ -3669,6 +3678,14 @@ class TrajectoryCanvas(QWidget):
                 self.navigator._rebuild_movie_blit_background()
             except Exception:
                 pass
+
+    def _any_traj_overlay_enabled(self):
+        nav = self.navigator
+        if nav is None:
+            return False
+        movie_on = getattr(nav, "traj_overlay_button", None) and nav.traj_overlay_button.isChecked()
+        kymo_on = getattr(nav, "kymo_traj_overlay_button", None) and nav.kymo_traj_overlay_button.isChecked()
+        return bool(movie_on or kymo_on)
 
     def delete_selected_trajectory(self):
         # 1) Get all selected rows
