@@ -104,10 +104,10 @@ Other load options are available under **Load** — see [Loading & Saving](#load
 3. Draw a segmented line by clicking anchors (press `Esc` to cancel).
 4. Double‑click to finish and generate the kymograph.
 5. For multi‑channel movies, a kymograph is generated for each channel (toggle with `1`, `2`, …).
-6. Cycle through kymographs with `,` (previous) and `.` (next) or use the dropdown menu.
+6. Cycle through kymographs with `,` (previous) and `.` (next).
 7. Use the **Invert** button (left of the kymograph delete button) to horizontally flip the kymograph. This also reverses the line direction and mirrors any kymograph anchors so overlays stay aligned.
 
-> *Tip:* Apply a LoG filter via **Kymograph » Apply LoG filter** for clearer tracks (applies to subsequent kymographs).
+> *Tip:* Use the **FILTER** button (to the right of **Anchors**) to toggle a LoG‑filtered view of the current kymograph. The filtered view has its own contrast settings and does not change any tracking/analysis.
 
 ### 5. Generating Trajectories <a name="generating-trajectories"></a>
 
