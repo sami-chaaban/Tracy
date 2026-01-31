@@ -78,14 +78,6 @@ class NavigatorColorMixin:
         col = self.color_by_column
         all_trajs = self.trajectoryCanvas.trajectories
 
-        if col == "motion_state":
-            states = traj.get("motion_state", None)
-            if isinstance(states, (list, tuple)) and states:
-                pts = [self.motion_colours.get(s, "grey") for s in states]
-                return {"c": pts, "zorder": 4}, "#7DA1FF"
-            # fallback if missing
-            return {"color": "grey", "zorder": 4}, "grey"
-
         seg_suffix = " (per segment)"
         if isinstance(col, str) and col.endswith(seg_suffix):
             base = col[:-len(seg_suffix)].strip()
@@ -303,13 +295,6 @@ class NavigatorColorMixin:
                 entries = [(color_map[v], v) for v in seen]
             elif mode == "binary":
                 entries = [("#FFC107", col)]
-            elif col == "motion_state":
-                entries = [
-                    (self.motion_colours["processive"], "Processive"),
-                    (self.motion_colours["diffusive"],  "Diffusive"),
-                    (self.motion_colours["paused"],     "Paused"),
-                    (self.motion_colours["ambiguous"],  "Ambiguous"),
-                ]
             else:
                 entries = []
 

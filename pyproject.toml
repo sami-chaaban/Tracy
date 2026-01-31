@@ -1,3 +1,11 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "tracyspot"
+license = { text = "MIT" }
+dynamic = ["version", "description", "readme", "authors", "dependencies", "classifiers", "entry-points", "requires-python"]
+
+[project.urls]
+Homepage = "https://github.com/sami-chaaban/tracy"

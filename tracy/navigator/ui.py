@@ -76,6 +76,7 @@ class NavigatorUiMixin:
         central.setObjectName("centralContainer")
         self.setCentralWidget(central)
         containerLayout = QVBoxLayout(central)
+        containerLayout.setSpacing(2)
         self.hide_inset = False
 
         # videoiconpath = self.resource_path('icons/video-camera.svg')
@@ -1128,8 +1129,7 @@ class NavigatorUiMixin:
         )
         zoomLayout.addWidget(
             self.zoomInsetWidget,
-            stretch=1,
-            alignment=Qt.AlignCenter
+            stretch=1
         )
 
         # Bottom intensity label: no stretch, stays at its size
@@ -1167,8 +1167,11 @@ class NavigatorUiMixin:
         central.setLayout(containerLayout)
 
     def resource_path(self, relative):
-        if getattr(sys, 'frozen', False):
-            base = sys._MEIPASS
+        if getattr(sys, "frozen", False):
+            base = os.path.join(sys._MEIPASS, "tracy")
+            candidate = os.path.join(base, relative)
+            if not os.path.exists(candidate):
+                base = sys._MEIPASS
         else:
             base = os.path.dirname(os.path.dirname(__file__))
         return os.path.join(base, relative)
@@ -2508,8 +2511,7 @@ class NavigatorUiMixin:
             return
 
         message = (
-            f"Version {latest_version} ready, please update with "
-            "pip install tracyspot --upgrade"
+            f"Version {latest_version} ready. Update for the latest features"
         )
         bubble = QFrame(self, Qt.ToolTip | Qt.FramelessWindowHint)
         bubble.setAttribute(Qt.WA_ShowWithoutActivating)

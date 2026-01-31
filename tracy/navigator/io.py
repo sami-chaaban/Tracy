@@ -1589,6 +1589,8 @@ class NavigatorIOMixin:
             QMessageBox.critical(self, "Save Error", f"Could not save ROIs:\n{str(e)}")
 
     def save_kymographs(self):
+        import matplotlib.pyplot as plt
+
         # 1) Nothing to save?
         if not self.kymographs:
             QMessageBox.information(self, "No Kymographs", "Nothing to save.")

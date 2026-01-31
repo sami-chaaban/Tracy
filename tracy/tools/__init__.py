@@ -9,8 +9,6 @@ from .roi_tools import (
     generate_multipoint_roi_bytes,
 )
 from .track_tools import calculate_velocities
-from .classification import MotionClassificationConfig, classify_motion_states
-
 __all__ = [
     "perform_gaussian_fit",
     "filterX",
@@ -22,6 +20,4 @@ __all__ = [
     "parse_roi_blob",
     "generate_multipoint_roi_bytes",
     "calculate_velocities",
-    "MotionClassificationConfig",
-    "classify_motion_states",
 ]

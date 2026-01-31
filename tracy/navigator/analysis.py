@@ -183,42 +183,8 @@ class NavigatorAnalysisMixin:
             s.blockSignals(False)
 
         self.trajectoryCanvas.hide_empty_columns()
-
-        if getattr(self, "categorize_diffusion", False):
-            try:
-                cfg = MotionClassificationConfig(
-                    min_valid_points=getattr(self, "min_track_points", 10),
-                    max_frame_gap=getattr(self, "max_frame_gap", 10),
-
-                    cp_threshold=getattr(self, "cp_threshold", 0.25),
-                    min_segment_length=getattr(self, "min_segment_length", 8),
-
-                    directedness_window=getattr(self, "directedness_window", 15),
-                    directedness_min_path_nm=getattr(self, "directedness_min_path_nm", 300.0),
-
-                    static_total_path_nm=getattr(self, "static_total_path_nm", 300.0),
-
-                    processive_min_directedness=getattr(self, "proc_dir_min", 0.70),
-                    processive_min_persistence=getattr(self, "proc_pers_min", 0.20),
-
-                    alpha_immobile_max=getattr(self, "alpha_immobile_max", 0.35),
-                    alpha_processive_min=getattr(self, "alpha_processive_min", 1.30),
-                )
-
-                self.analysis_motion_state, self.analysis_motion_segments = classify_motion_states(
-                    frames=self.analysis_frames,
-                    centers=spot_centers,
-                    pixel_size_nm=self.pixel_size,
-                    frame_interval_ms=self.frame_interval,
-                    cfg=cfg,
-                )
-            except Exception as e:
-                print(f"Classification failed: {e}")
-                self.analysis_motion_state = ["ambiguous"] * len(self.analysis_frames)
-                self.analysis_motion_segments = []
-        else:
-            self.analysis_motion_state = None
-            self.analysis_motion_segments = None
+        self.analysis_motion_state = None
+        self.analysis_motion_segments = None
 
     def _compute_analysis(self, points, bg=None, showprogress=True):
         def _normalize_result(result):

@@ -1,6 +1,7 @@
+import importlib
 import numpy as np
 import os
-import pandas as pd
+import types
 from PyQt5.QtCore import Qt, QTimer, QThread, QEvent
 from PyQt5.QtWidgets import (QVBoxLayout, QApplication, QDialog,
                              QWidget, QFileDialog, QMessageBox, QTableWidget,
@@ -19,8 +20,41 @@ import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 from matplotlib.gridspec import GridSpec
 from matplotlib.transforms import Bbox
-import scipy
-from scipy.ndimage import map_coordinates, gaussian_laplace
+class _LazyModule(types.ModuleType):
+    def __init__(self, name):
+        super().__init__(name)
+        self.__dict__["_lazy_name"] = name
+        self.__dict__["_lazy_module"] = None
+
+    def _load(self):
+        module = self.__dict__.get("_lazy_module")
+        if module is None:
+            module = importlib.import_module(self.__dict__["_lazy_name"])
+            self.__dict__["_lazy_module"] = module
+            self.__dict__.update(module.__dict__)
+        return module
+
+    def __getattr__(self, item):
+        return getattr(self._load(), item)
+
+    def __dir__(self):
+        return dir(self._load())
+
+
+def _lazy_map_coordinates(*args, **kwargs):
+    from scipy.ndimage import map_coordinates as _map_coordinates
+    return _map_coordinates(*args, **kwargs)
+
+
+def _lazy_gaussian_laplace(*args, **kwargs):
+    from scipy.ndimage import gaussian_laplace as _gaussian_laplace
+    return _gaussian_laplace(*args, **kwargs)
+
+
+pd = _LazyModule("pandas")
+scipy = _LazyModule("scipy")
+map_coordinates = _lazy_map_coordinates
+gaussian_laplace = _lazy_gaussian_laplace
 import time
 import copy
 import math

@@ -215,7 +215,6 @@ class KymographNavigator(
         self.check_colocalization = False
         self.colocalization_threshold = 4
 
-        self.categorize_diffusion = True
         self._EPS = 1e-12
 
         # diffusion toggle + settings
@@ -241,10 +240,3 @@ class KymographNavigator(
         self.min_step=100
         self.W=15
         self.passes=10
-
-        self.motion_colours = {
-            "ambiguous":  "grey",
-            "paused":     "#EA4343",   # yellow-ish
-            "diffusive":  "#E2D138",   # green-ish
-            "processive": "#4AC32C",   # red-ish
-        }

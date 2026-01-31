@@ -34,7 +34,8 @@
    * [Save Trajectories](#save-trajectories)
    * [Save Kymographs](#save-kymographs)
    * [Import TrackMate Data](#import-trackmate-data)
-6. [License](#license)
+6. [Packaging & Distribution](#packaging--distribution)
+7. [License](#license)
 
 ---
 
@@ -50,8 +51,6 @@ conda activate tracy
 # Install Tracy
 pip install tracyspot
 ```
-
-> *Tip:* On Windows, you can download Anaconda and use the Anaconda Prompt as your terminal.
 
 ---
 
@@ -506,6 +505,12 @@ Tracy can optionally include empty kymographs (no trajectories) as blank rows so
 
 * Load `.csv` from TrackMate (spot file) via **Load » TrackMate spots**; uses `TRACK_ID`, `FRAME`, `POSITION_X`, `POSITION_Y`.
 * TrackMate points are treated like movie anchors and recorded with click source `trackmate`.
+
+---
+
+## Packaging & Distribution <a name="packaging--distribution"></a>
+
+Build and release instructions live in `docs/packaging.md`.
 
 ---
 

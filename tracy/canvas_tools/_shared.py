@@ -19,9 +19,39 @@ from PyQt5.QtGui import (
     QCursor, QPolygonF
     )
 
+import importlib
 import numpy as np
 import os
-from scipy.ndimage import map_coordinates
+import types
+
+class _LazyModule(types.ModuleType):
+    def __init__(self, name):
+        super().__init__(name)
+        self.__dict__["_lazy_name"] = name
+        self.__dict__["_lazy_module"] = None
+
+    def _load(self):
+        module = self.__dict__.get("_lazy_module")
+        if module is None:
+            module = importlib.import_module(self.__dict__["_lazy_name"])
+            self.__dict__["_lazy_module"] = module
+            self.__dict__.update(module.__dict__)
+        return module
+
+    def __getattr__(self, item):
+        return getattr(self._load(), item)
+
+    def __dir__(self):
+        return dir(self._load())
+
+
+def _lazy_map_coordinates(*args, **kwargs):
+    from scipy.ndimage import map_coordinates as _map_coordinates
+    return _map_coordinates(*args, **kwargs)
+
+
+scipy = _LazyModule("scipy")
+map_coordinates = _lazy_map_coordinates
 
 def subpixel_crop(image, x1, x2, y1, y2, output_shape):
     # Create a grid in the output coordinate system.

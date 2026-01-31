@@ -606,6 +606,21 @@ class MovieCanvas(ImageCanvas):
         # tell Qt to redo the layout for its children
         frame.layout().invalidate()
         frame.layout().activate()
+        # defer redraw so resize stays responsive
+        self._schedule_inset_redraw()
+
+    def _schedule_inset_redraw(self, delay_ms=40):
+        if not hasattr(self, "_inset_resize_timer"):
+            self._inset_resize_timer = QTimer(self)
+            self._inset_resize_timer.setSingleShot(True)
+            self._inset_resize_timer.timeout.connect(self._redraw_inset_after_resize)
+        self._inset_resize_timer.start(delay_ms)
+
+    def _redraw_inset_after_resize(self):
+        if getattr(self.navigator, "hide_inset", False):
+            return
+        # redraw with existing artists; avoid recomputing the 3D surface
+        self.navigator.zoomInsetWidget.draw_idle()
 
     def _on_inset_leave(self, event):
         if event.inaxes in (self.inset_ax3d, self.navigator.zoomInsetWidget.ax):
@@ -1164,9 +1179,11 @@ class MovieCanvas(ImageCanvas):
             scale = target / np.maximum(speed, 1e-6)
             if influence is not None:
                 scale = np.where(influence, 1.0, scale)
-            vel = vel * scale[:, None]
+            # Ease velocities back toward their base speeds to avoid snapping.
+            relax = 0.12
+            vel = vel * (1.0 + relax * (scale - 1.0))[:, None]
         if influence is not None and np.any(influence) and strength > 0.0:
-            pull = (0.06 * strength) / (0.02 + dist[influence])
+            pull = (0.025 * strength) / (0.02 + dist[influence])
             vel[influence] += diff[influence] * pull[:, None]
             max_speed = 0.01
             vel_infl = vel[influence]

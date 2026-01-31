@@ -1446,17 +1446,6 @@ class TrajectoryCanvas(QWidget):
             for ch, flags in self.navigator.analysis_colocalized_by_ch.items()
         }
 
-        traj_data["motion_state"] = (
-            list(getattr(self.navigator, "analysis_motion_state", []))
-            if getattr(self.navigator, "analysis_motion_state", None) is not None
-            else None
-        )
-        traj_data["motion_segments"] = (
-            list(getattr(self.navigator, "analysis_motion_segments", []))
-            if getattr(self.navigator, "analysis_motion_segments", None) is not None
-            else None
-        )
-
         traj_data["custom_fields"] = {}
     
         # diffusion: store if toggled
