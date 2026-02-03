@@ -49,7 +49,9 @@
 1. Download the `Tracy.exe` file from [this link](https://cloud3.mrc-lmb.cam.ac.uk/index.php/s/CgbgQyN66Jnkb6j).
 2. Run `Tracy.exe` directly (portable app). You can move it anywhere; create a shortcut if desired.
 
-### Conda (from terminal)
+<details>
+
+<summary>Conda (from terminal)</summary>
 
 1. Download the Miniconda installer for your OS/architecture (example below uses macOS arm64; replace with `x86_64` for Intel or `Linux-x86_64` for Linux):
 
@@ -77,6 +79,8 @@ pip install tracyspot
 
 *Windows note:* `~` does not expand in `cmd.exe`. Use `%USERPROFILE%` (cmd) or `$env:USERPROFILE` (PowerShell). If you install Miniconda elsewhere, update the path accordingly.
 
+</details>
+
 ---
 
 ## Getting Started <a name="getting-started"></a>
@@ -84,7 +88,10 @@ pip install tracyspot
 ### 1. Launching Tracy <a name="launching-tracy"></a>
 
 If you installed the Mac or Windows app, launch Tracy directly.
-If you installed via Conda, run:
+
+<details>
+
+<summary>Launch from Conda (terminal)</summary>
 
 ```bash
 conda activate tracy       # if not already active
@@ -93,6 +100,7 @@ tracy &                    # run in the background
 ```
 
 > *Note:* The first launch may take a few seconds.
+</details>
 
 ### 2. Loading Your Movie <a name="loading-your-movie"></a>
 
@@ -544,4 +552,4 @@ Build and release instructions live in `docs/packaging.md`.
 
 ## License <a name="license"></a>
 
-This project is released under the MIT License — see [LICENSE.txt](https://github.com/sami-chaaban/tracy/blob/main/LICENSE.txt).
+This project is released under the MIT License — see [LICENSE](https://github.com/sami-chaaban/tracy/blob/main/LICENSE).
