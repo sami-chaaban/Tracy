@@ -1,7 +1,5 @@
 ## Tracy
 
-> **Note:** Tracy is currently in **beta** — features and workflows may change regularly.
-
 ![Tracy Interface Overview](Screenshots/Interface-Example.png)
 
 ---
@@ -41,7 +39,34 @@
 
 ## Installation <a name="installation"></a>
 
-Install Tracy with your terminal:
+### Mac (DMG)
+
+1. Download the `Tracy.dmg` file from [this link](https://cloud3.mrc-lmb.cam.ac.uk/index.php/s/bDzNmn4MqfPto4o).
+2. Open the DMG and drag **Tracy** into **Applications**.
+3. Launch **Tracy** from **Applications**.
+
+### Windows (EXE)
+
+1. Download the `Tracy.exe` file from [this link](https://cloud3.mrc-lmb.cam.ac.uk/index.php/s/CgbgQyN66Jnkb6j).
+2. Double-click the installer and follow the prompts.
+3. Launch **Tracy** from the Start Menu.
+
+### Conda (from terminal)
+
+1. Download the Miniconda installer for your OS/architecture (example below uses macOS arm64; replace with `x86_64` for Intel or `Linux-x86_64` for Linux):
+
+```bash
+curl -L -o miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-arm64.sh
+```
+
+2. Install Miniconda and initialize your shell:
+
+```bash
+bash miniconda.sh -b -p ~/miniconda3
+~/miniconda3/bin/conda init
+```
+
+3. Restart your terminal, then create and activate a dedicated environment:
 
 ```bash
 # Create and activate a dedicated environment
@@ -52,11 +77,16 @@ conda activate tracy
 pip install tracyspot
 ```
 
+*Windows note:* `~` does not expand in `cmd.exe`. Use `%USERPROFILE%` (cmd) or `$env:USERPROFILE` (PowerShell). If you install Miniconda elsewhere, update the path accordingly.
+
 ---
 
 ## Getting Started <a name="getting-started"></a>
 
 ### 1. Launching Tracy <a name="launching-tracy"></a>
+
+If you installed the Mac or Windows app, launch Tracy from **Applications** or the **Start Menu**.
+If you installed via Conda, run:
 
 ```bash
 conda activate tracy       # if not already active
