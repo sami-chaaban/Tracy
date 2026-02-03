@@ -39,17 +39,16 @@
 
 ## Installation <a name="installation"></a>
 
-### Mac (DMG)
+### Mac (.dmg)
 
 1. Download the `Tracy.dmg` file from [this link](https://cloud3.mrc-lmb.cam.ac.uk/index.php/s/bDzNmn4MqfPto4o).
 2. Open the DMG and drag **Tracy** into **Applications**.
 3. Launch **Tracy** from **Applications**.
 
-### Windows (EXE)
+### Windows (.exe)
 
 1. Download the `Tracy.exe` file from [this link](https://cloud3.mrc-lmb.cam.ac.uk/index.php/s/CgbgQyN66Jnkb6j).
-2. Double-click the installer and follow the prompts.
-3. Launch **Tracy** from the Start Menu.
+2. Run `Tracy.exe` directly (portable app). You can move it anywhere; create a shortcut if desired.
 
 ### Conda (from terminal)
 
