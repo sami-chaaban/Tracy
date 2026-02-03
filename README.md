@@ -43,7 +43,6 @@
 
 1. Download the `Tracy.dmg` file from [this link](https://cloud3.mrc-lmb.cam.ac.uk/index.php/s/bDzNmn4MqfPto4o).
 2. Open the DMG and drag **Tracy** into **Applications**.
-3. Launch **Tracy** from **Applications**.
 
 ### Windows (.exe)
 
@@ -84,7 +83,7 @@ pip install tracyspot
 
 ### 1. Launching Tracy <a name="launching-tracy"></a>
 
-If you installed the Mac or Windows app, launch Tracy from **Applications** or the **Start Menu**.
+If you installed the Mac or Windows app, launch Tracy directly.
 If you installed via Conda, run:
 
 ```bash
