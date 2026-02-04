@@ -7,6 +7,7 @@
 ### Table of Contents
 
 1. [Installation](#installation)
+
 2. [Getting Started](#getting-started)
    1. [Launching Tracy](#launching-tracy)
    2. [Loading Your Movie](#loading-your-movie)
@@ -33,6 +34,7 @@
    * [Save Kymographs](#save-kymographs)
    * [Import TrackMate Data](#import-trackmate-data)
 6. [Packaging & Distribution](#packaging--distribution)
+
 7. [License](#license)
 
 ---
@@ -107,13 +109,14 @@ tracy &                    # run in the background
 1. Click **LOAD** (or use **Load » Movie**).
 2. Select a single- or multi-channel TIFF movie.
 3. If necessary, enter pixel size and frame interval when prompted.
-4. Pan by holding down the middle button (or `Ctrl/Cmd`) and dragging, zoom with the mouse wheel.
-5. If available, switch channels by clicking the channel label (shortcut: `1`, `2`, …).
+5. Navigate frames with the slider under the movie.
+6. Pan by holding down the middle button (or `Ctrl/Cmd`) and dragging, zoom with the mouse wheel.
+7. If available, switch channels by clicking the channel label (shortcut: `1`, `2`, …).
    If the wrong axis is treated as channels (or the channel list looks off), use **Movie » Change Channel Axis** to select the correct axis (only enabled for 4D movies).
-6. Toggle the maximum projection with the button below the movie (shortcut: `m`).
-7. Adjust the contrast using the slider.
-8. The kymograph view has its own contrast slider and reset button below it; contrast is remembered per kymograph.
-8. **View » Invert** toggles the display colormap (default on) so bright spots appear dark on a light background.
+8. Toggle the maximum projection with the button below the movie (shortcut: `m`).
+9. Adjust the contrast using the slider.
+10. The kymograph view has its own contrast slider and reset button below it; contrast is remembered per kymograph.
+11. **View » Invert** toggles the display colormap (default on) so bright spots appear dark on a light background.
 
 Other load options are available under **Load** — see [Loading & Saving](#loading--saving) for details.
 
@@ -125,10 +128,8 @@ Other load options are available under **Load** — see [Loading & Saving](#load
    * **Magenta circle:** fitted spot (radius = 2σ).
 2. Hover over the inset to view a 3D fit (scroll to zoom, drag to rotate).
 3. Hold `r` + scroll (or use **Spot » Search Radius**) to adjust the search radius.
-4. Navigate frames with the slider under the movie.
-5. The pixel intensity histogram updates for the current search window; see [Pixel Intensity Histogram](#pixel-intensity-histogram) for details.
+4. The pixel intensity histogram updates for the current search window; see [Pixel Intensity Histogram](#pixel-intensity-histogram) for details.
 
-> The **spot histogram** shows intensities in the search area and highlights values in the spot.
 > Inset size can be changed under **View » Inset size** (or right-click inset); this only affects visualization and does not change calculations.
 > Use **View » Inset** to show or hide the inset panel (or right-click inset).
 
