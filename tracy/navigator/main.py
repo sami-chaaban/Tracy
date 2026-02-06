@@ -79,6 +79,12 @@ class KymographNavigator(
         self.invertAct.setChecked(True)
         self.toggle_invert_cmap(True)
 
+        self.flip_movie_y = True
+        if hasattr(self, "flipYAct"):
+            self.flipYAct.blockSignals(True)
+            self.flipYAct.setChecked(False)
+            self.flipYAct.blockSignals(False)
+
         self.cancelShortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
         self.cancelShortcut.activated.connect(self.escape_left_click_sequence)
 

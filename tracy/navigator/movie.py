@@ -1,6 +1,11 @@
 from ._shared import *
 
 class NavigatorMovieMixin:
+    def _maybe_flip_movie_ylim(self, ylim):
+        if getattr(self, "flip_movie_y", False):
+            return (ylim[1], ylim[0])
+        return ylim
+
     def _set_movie_roi_cursor(self, in_image: bool):
         if not hasattr(self, "movieCanvas"):
             return
@@ -99,7 +104,8 @@ class NavigatorMovieMixin:
             # ——— 1) Compute new limits ———
             cur_xlim = mc.ax.get_xlim()
             cur_ylim = mc.ax.get_ylim()
-            w, h = cur_xlim[1] - cur_xlim[0], cur_ylim[1] - cur_ylim[0]
+            w = abs(cur_xlim[1] - cur_xlim[0])
+            h = abs(cur_ylim[1] - cur_ylim[0])
 
             if zoom:
                 r     = self.searchWindowSpin.value()
@@ -122,7 +128,7 @@ class NavigatorMovieMixin:
                 half_y = fov_y / 2.0
 
                 new_xlim = (cx - half_x, cx + half_x)
-                new_ylim = (cy - half_y, cy + half_y)
+                new_ylim = self._maybe_flip_movie_ylim((cy - half_y, cy + half_y))
 
                 # 3) mark manual zoom & animate or set directly
                 mc.manual_zoom = True
@@ -139,7 +145,7 @@ class NavigatorMovieMixin:
 
             else:
                 new_xlim = (cx - w/2, cx + w/2)
-                new_ylim = (cy - h/2, cy + h/2)
+                new_ylim = self._maybe_flip_movie_ylim((cy - h/2, cy + h/2))
                 if animate == "ramp":
                     self.animate_axes_transition(new_xlim, new_ylim, duration=300)
                 elif animate == "linear":

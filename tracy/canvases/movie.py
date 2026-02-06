@@ -83,6 +83,23 @@ class MovieCanvas(ImageCanvas):
         self._idle_base_speeds = None
         self._bg_refresh_timer = None
 
+    def _flip_y_enabled(self):
+        return bool(getattr(self.navigator, "flip_movie_y", False))
+
+    def _image_origin(self):
+        return "lower"
+
+    def _image_extent(self, w, h):
+        return (-0.5, w - 0.5, -0.5, h - 0.5)
+
+    def _extent_from_bounds(self, x1, x2, y1, y2):
+        return [x1, x2, y1, y2]
+
+    def apply_flip_y(self):
+        if self._im is None or self.image is None:
+            return
+        self.update_view()
+
     def mousePressEvent(self, event):
         # Ctrl+Left → pretend it was Middle
         if event.button() == Qt.LeftButton and (event.modifiers() & Qt.ControlModifier):
@@ -162,7 +179,8 @@ class MovieCanvas(ImageCanvas):
         self.image = image
         h, w = image.shape
         # Set the image extent to the full image.
-        extent = (-0.5, w - 0.5, -0.5, h - 0.5)
+        extent = self._image_extent(w, h)
+        origin = self._image_origin()
         # Initialize zoom_center to the image center if not set yet.
         if self.zoom_center is None:
             self.zoom_center = (w/2, h/2)
@@ -180,15 +198,17 @@ class MovieCanvas(ImageCanvas):
             self.ax.clear()
             cmap = "gray_r" if getattr(self.navigator, "inverted_cmap", False) else "gray"
             self._im = self.ax.imshow(image, cmap=cmap, vmin=self._vmin, vmax=self._vmax,
-                                       origin='lower', extent=extent)
+                                       origin=origin, extent=extent)
             self.ax.axis("off")
-            self.draw()
         else:
             self._im.set_data(image)
             self._im.set_extent(extent)
-            self.draw()
-            
+
         # Adjust the view limits based on the new scale and current zoom_center.
+        if self._flip_y_enabled():
+            self.update_view()
+        else:
+            self.draw()
         QTimer.singleShot(1, self.update_view)
 
     def update_image_data(self, image):
@@ -224,7 +244,10 @@ class MovieCanvas(ImageCanvas):
         view_h = widget_h * self.scale
         cx, cy = self.zoom_center
         self.ax.set_xlim(cx - view_w/2, cx + view_w/2)
-        self.ax.set_ylim(cy - view_h/2, cy + view_h/2)
+        if self._flip_y_enabled():
+            self.ax.set_ylim(cy + view_h/2, cy - view_h/2)
+        else:
+            self.ax.set_ylim(cy - view_h/2, cy + view_h/2)
 
         # 2) **blocking** full draw
         self.draw()
@@ -674,9 +697,13 @@ class MovieCanvas(ImageCanvas):
             self.navigator.zoomInsetWidget._im_inset = inset_ax.imshow(
                 zoomed,
                 cmap=("gray_r" if self.navigator.inverted_cmap else "gray"),
-                origin='lower',
-                extent=[x1, x2, y1, y2]
+                origin=self._image_origin(),
+                extent=self._extent_from_bounds(x1, x2, y1, y2)
             )
+            if self._flip_y_enabled():
+                inset_ax.set_ylim(y2, y1)
+            else:
+                inset_ax.set_ylim(y1, y2)
             inset_ax.set_xticks([])
             inset_ax.set_yticks([])
             inset_ax.axis('off')
@@ -704,7 +731,16 @@ class MovieCanvas(ImageCanvas):
         else:
             self.ax.clear()
             cmap = "gray_r" if getattr(self.navigator, "inverted_cmap", False) else "gray"
-            self.ax.imshow(zoomed, cmap=cmap, origin='lower', extent=[x1, x2, y1, y2])
+            self.ax.imshow(
+                zoomed,
+                cmap=cmap,
+                origin=self._image_origin(),
+                extent=self._extent_from_bounds(x1, x2, y1, y2),
+            )
+            if self._flip_y_enabled():
+                self.ax.set_ylim(y2, y1)
+            else:
+                self.ax.set_ylim(y1, y2)
             self.ax.axis('off')
 
     def update_roi_drawing(self, current_pos):
@@ -961,11 +997,19 @@ class MovieCanvas(ImageCanvas):
         self.image = sum_frame
         if self._im is None:
             self.ax.clear()
-            self._im = self.ax.imshow(sum_frame, cmap="gray", origin='lower')
+            h, w = sum_frame.shape[:2]
+            self._im = self.ax.imshow(
+                sum_frame,
+                cmap="gray",
+                origin=self._image_origin(),
+                extent=self._image_extent(w, h),
+            )
             self.ax.axis("off")
             self.draw()
         else:
             self._im.set_data(sum_frame)
+            h, w = sum_frame.shape[:2]
+            self._im.set_extent(self._image_extent(w, h))
             self.draw()
 
         # ── recapture blit backgrounds so future blits use the sum‐mode image ──

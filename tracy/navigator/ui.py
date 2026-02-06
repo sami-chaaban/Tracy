@@ -236,7 +236,7 @@ class NavigatorUiMixin:
         self.kymoInvertBtn = QPushButton("")
         self.kymoInvertBtn.setIcon(QIcon(invertkymoiconpath))
         self.kymoInvertBtn.setIconSize(QSize(14, 14))
-        invertkymo_filter = BubbleTipFilter("Invert this kymograph", self)
+        invertkymo_filter = BubbleTipFilter("Flip this kymograph", self)
         self.kymoInvertBtn.installEventFilter(invertkymo_filter)
         self.kymoInvertBtn._bubble_filter = invertkymo_filter
         self.kymoInvertBtn.setObjectName("Passive")
@@ -1200,6 +1200,19 @@ class NavigatorUiMixin:
                 mc._bg = canvas.copy_from_bbox(mc.ax.bbox)
             mc._roi_bg = canvas.copy_from_bbox(mc.ax.bbox)
 
+    def toggle_flip_y(self, checked: bool):
+        # Checked means "unflip" per UI convention requested.
+        self.flip_movie_y = not checked
+        mc = getattr(self, "movieCanvas", None)
+        if mc is not None:
+            mc.apply_flip_y()
+            params = getattr(mc, "_last_inset_params", None)
+            if params:
+                try:
+                    mc.update_inset(*params)
+                except Exception:
+                    pass
+
     def update_roilist_visibility(self):
         # Check kymo→ROI entries for imported ROIs.
         has_orphaned = any(
@@ -1992,6 +2005,12 @@ class NavigatorUiMixin:
         saveMenu.addAction(saveROIsAction)
 
         movieMenu = menubar.addMenu("Movie")
+        self.flipYAct = QAction("Flip Y", self, checkable=True)
+        self.flipYAct.setChecked(False)
+        self.flipYAct.toggled.connect(self.toggle_flip_y)
+        self._apply_checkable_action_style(self.flipYAct)
+        movieMenu.addAction(self.flipYAct)
+
         correctDriftAction = QAction("Correct Drift", self)
         correctDriftAction.triggered.connect(self.correct_drift)
         movieMenu.addAction(correctDriftAction)
@@ -2066,6 +2085,11 @@ class NavigatorUiMixin:
         self.trajMenu          = trajMenu
 
         viewMenu = menubar.addMenu("View")
+        if sys.platform.startswith("win"):
+            # Windows can under-estimate menu width when checkable items use custom icons.
+            def _fix_view_menu_width(menu=viewMenu):
+                menu.setMinimumWidth(menu.sizeHint().width() + 24)
+            viewMenu.aboutToShow.connect(_fix_view_menu_width)
 
         self.invertAct = QAction("Invert", self, checkable=True)
         self.invertAct.triggered.connect(self.toggle_invert_cmap)

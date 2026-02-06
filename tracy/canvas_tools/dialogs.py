@@ -458,17 +458,27 @@ class SaveKymographDialog(QDialog):
 
         dist_unit = "nm" if pixel_size_nm else "px"
         dist_per_px = pixel_size_nm if pixel_size_nm else 1.0
-        h_target = w * 0.25
+        if w > h:
+            h_target = w * 0.08
+            h_min_frac, h_max_frac = 0.05, 0.1
+        else:
+            h_target = w * 0.25
+            h_min_frac, h_max_frac = 0.2, 0.35
         h_value, h_len_px = cls._choose_scale_value(
-            h_target, w, dist_per_px, min_frac=0.2, max_frac=0.35
+            h_target, w, dist_per_px, min_frac=h_min_frac, max_frac=h_max_frac
         )
         h_label = cls._format_scale_value(h_value, dist_unit)
 
         time_unit = "ms" if frame_interval_ms else "px"
         time_per_px = frame_interval_ms if frame_interval_ms else 1.0
-        v_target = h * 0.08
+        if w > h:
+            v_target = h * 0.25
+            v_min_frac, v_max_frac = 0.2, 0.35
+        else:
+            v_target = h * 0.08
+            v_min_frac, v_max_frac = 0.05, 0.1
         v_value, v_len_px = cls._choose_scale_value(
-            v_target, h, time_per_px, min_frac=0.05, max_frac=0.1
+            v_target, h, time_per_px, min_frac=v_min_frac, max_frac=v_max_frac
         )
         v_label = cls._format_scale_value(v_value, time_unit)
 

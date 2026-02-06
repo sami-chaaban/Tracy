@@ -33,6 +33,7 @@ setup(
         'scipy',
         'pandas',
         'tifffile',
+        'imagecodecs',
         'read-roi',
         'roifile',
         'openpyxl',

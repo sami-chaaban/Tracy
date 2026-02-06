@@ -302,6 +302,34 @@ class NavigatorInputMixin:
         if image is None:
             #print("No movie loaded; cannot reset contrast.")
             return
+
+        # If reference mode is active, reset and store reference contrast only.
+        if hasattr(self, "refBtn") and self.refBtn.isChecked():
+            p15, p99 = np.percentile(image, (15, 99))
+            new_vmin, new_vmax = int(p15), int(p99 * 1.1)
+            delta = new_vmax - new_vmin
+            new_extended_min = new_vmin - int(0.7 * delta)
+            new_extended_max = new_vmax + int(1.4 * delta)
+
+            slider = self.contrastControlsWidget.contrastRangeSlider
+            slider.blockSignals(True)
+            slider.setMinimum(new_extended_min)
+            slider.setMaximum(new_extended_max)
+            slider.setRangeValues(new_vmin, new_vmax)
+            slider.blockSignals(False)
+            slider.update()
+
+            self.reference_contrast_settings = {
+                'vmin': new_vmin,
+                'vmax': new_vmax,
+                'extended_min': new_extended_min,
+                'extended_max': new_extended_max
+            }
+            self.movieCanvas._default_vmin = new_vmin
+            self.movieCanvas._default_vmax = new_vmax
+            self.movieCanvas.set_display_range(new_vmin, new_vmax)
+            return
+
         p15, p99 = np.percentile(image, (15, 99))
         if self.movieCanvas.sum_mode:
             new_vmin, new_vmax = int(p15 * 1.05), int(p99 * 1.2)
@@ -465,7 +493,17 @@ class NavigatorInputMixin:
         if self.sumBtn.isChecked():
             # ----- Sum mode ON -----
             if self.refBtn.isChecked():
+                slider = self.contrastControlsWidget.contrastRangeSlider
+                self.reference_contrast_settings = {
+                    'vmin': slider.lowerValue(),
+                    'vmax': slider.upperValue(),
+                    'extended_min': slider.minimum(),
+                    'extended_max': slider.maximum()
+                }
+                self.refBtn.blockSignals(True)
                 self.refBtn.setChecked(False)
+                self.refBtn.blockSignals(False)
+                self.refBtn.setStyleSheet("")
             self.movieCanvas.sum_mode = True
 
             if self.movie is None:

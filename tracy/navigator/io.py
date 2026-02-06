@@ -804,7 +804,9 @@ class NavigatorIOMixin:
                 self.ref_container.setVisible(False)
             if hasattr(self, "ref_spacer"):
                 self.ref_spacer.setVisible(False)
+            self.refBtn.blockSignals(True)
             self.refBtn.setChecked(False)
+            self.refBtn.blockSignals(False)
             self.refBtn.setVisible(True)
             if hasattr(self, "ref_container"):
                 self.ref_container.setVisible(True)
@@ -824,15 +826,33 @@ class NavigatorIOMixin:
         if checked:
             # Turn off sum mode if active.
             if self.sumBtn.isChecked():
+                self.sumBtn.blockSignals(True)
                 self.sumBtn.setChecked(False)
+                self.sumBtn.blockSignals(False)
+                self.sumBtn.setStyleSheet("")
+                self.movieCanvas.sum_mode = False
             # Apply the reference image and its contrast.
-            settings = self.reference_contrast_settings
-            self.movieCanvas.set_display_range(settings['vmin'], settings['vmax'])
+            settings = getattr(self, "reference_contrast_settings", None) or {}
 
             # Use the raw reference and apply the persistent translation.
             ref_raw = getattr(self, "referenceImage_raw", None)
             if ref_raw is None:
                 ref_raw = getattr(self, "referenceImage", None)
+            if ref_raw is None:
+                return
+
+            if not settings or 'vmin' not in settings or 'vmax' not in settings:
+                p15, p99 = np.percentile(ref_raw, (15, 99))
+                ref_vmin = int(p15)
+                ref_vmax = int(p99 * 1.1)
+                delta = ref_vmax - ref_vmin
+                settings = {
+                    'vmin': ref_vmin,
+                    'vmax': ref_vmax,
+                    'extended_min': ref_vmin - int(0.7 * delta),
+                    'extended_max': ref_vmax + int(1.4 * delta)
+                }
+                self.reference_contrast_settings = settings
 
             dx = int(getattr(self, "_ref_dx", 0))
             dy = int(getattr(self, "_ref_dy", 0))
@@ -841,11 +861,33 @@ class NavigatorIOMixin:
             self.movieCanvas.image = ref_show
             if self.movieCanvas._im is not None:
                 self.movieCanvas._im.set_data(ref_show)
+
+            self.movieCanvas._default_vmin = settings['vmin']
+            self.movieCanvas._default_vmax = settings['vmax']
+            self.movieCanvas.set_display_range(settings['vmin'], settings['vmax'])
+            slider = self.contrastControlsWidget.contrastRangeSlider
+            slider.blockSignals(True)
+            slider.setMinimum(settings['extended_min'])
+            slider.setMaximum(settings['extended_max'])
+            slider.setRangeValues(settings['vmin'], settings['vmax'])
+            slider.blockSignals(False)
+            slider.update()
                 
             self.movieCanvas._bg = None
             self._rebuild_movie_blit_background()
 
         else:
+            # Persist the current reference-contrast settings before switching away.
+            if hasattr(self, "contrastControlsWidget"):
+                slider = self.contrastControlsWidget.contrastRangeSlider
+                vmin = slider.lowerValue()
+                vmax = slider.upperValue()
+                self.reference_contrast_settings = {
+                    'vmin': vmin,
+                    'vmax': vmax,
+                    'extended_min': slider.minimum(),
+                    'extended_max': slider.maximum()
+                }
             self.refBtn.setStyleSheet("")
             # Only revert if sum mode is off.
             if not self.sumBtn.isChecked():
@@ -890,6 +932,13 @@ class NavigatorIOMixin:
                             settings = self.channel_contrast_settings[1]
                     # Now apply the contrast to the movie canvas.
                     self.movieCanvas.set_display_range(settings['vmin'], settings['vmax'])
+                    slider = self.contrastControlsWidget.contrastRangeSlider
+                    slider.blockSignals(True)
+                    slider.setMinimum(settings['extended_min'])
+                    slider.setMaximum(settings['extended_max'])
+                    slider.setRangeValues(settings['vmin'], settings['vmax'])
+                    slider.blockSignals(False)
+                    slider.update()
                     self.movieCanvas.image = frame
                     if self.movieCanvas._im is not None:
                         self.movieCanvas._im.set_data(frame)
@@ -1625,6 +1674,28 @@ class NavigatorIOMixin:
             current_inverted=current_inv
         )
 
+        def _log_kymo_save_error(err, stage, out_path=None, extra=None):
+            log_path = os.path.join(os.path.expanduser("~"), "tracy_kymograph_save_error.log")
+            try:
+                ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                tif_ver = getattr(tifffile, "__version__", "unknown")
+                np_ver = getattr(np, "__version__", "unknown")
+                parts = [
+                    f"[{ts}]",
+                    f"stage={stage}",
+                    f"error={repr(err)}",
+                    f"path={out_path}",
+                    f"tifffile={tif_ver}",
+                    f"numpy={np_ver}",
+                ]
+                if extra is not None:
+                    parts.append(f"extra={extra}")
+                with open(log_path, "a", encoding="utf-8") as fh:
+                    fh.write(" | ".join(parts) + "\n")
+            except Exception:
+                pass
+            return log_path
+
         def _build_imagej_lut():
             return lut_table
         use_pref   = opts.get("use_prefix", False)
@@ -2092,14 +2163,41 @@ class NavigatorIOMixin:
                         # so ImageJ reports an inverting grayscale LUT.
                         if lut_label != "Greys (inv.)":
                             metadata["LUTs"] = [lut]
-                        tifffile.imwrite(
-                            out_path,
-                            kymo_to_save,
-                            imagej=True,
-                            colormap=colormap,
-                            metadata=metadata,
-                            **write_kwargs,
-                        )
+                        try:
+                            tifffile.imwrite(
+                                out_path,
+                                kymo_to_save,
+                                imagej=True,
+                                colormap=colormap,
+                                metadata=metadata,
+                                **write_kwargs,
+                            )
+                        except Exception as e:
+                            _log_kymo_save_error(
+                                e,
+                                stage="tifffile.imwrite(imagej)",
+                                out_path=out_path,
+                                extra={
+                                    "shape": getattr(kymo_to_save, "shape", None),
+                                    "dtype": str(getattr(kymo_to_save, "dtype", "")),
+                                    "mode": mode,
+                                    "lut": lut_label,
+                                },
+                            )
+                            # Fallback: write a minimal TIFF without ImageJ metadata/LUTs.
+                            try:
+                                tifffile.imwrite(out_path, kymo_to_save)
+                            except Exception as e2:
+                                _log_kymo_save_error(
+                                    e2,
+                                    stage="tifffile.imwrite(fallback)",
+                                    out_path=out_path,
+                                    extra={
+                                        "shape": getattr(kymo_to_save, "shape", None),
+                                        "dtype": str(getattr(kymo_to_save, "dtype", "")),
+                                    },
+                                )
+                                raise
                     else:
                         settings = getattr(self, "kymo_contrast_settings", {}).get(name)
                         if settings:
@@ -2176,6 +2274,16 @@ class NavigatorIOMixin:
                             plt.imsave(out_path, disp, cmap=cmap, origin="upper")
 
             prog.setValue(total)
+
+        except Exception as e:
+            log_path = _log_kymo_save_error(e, stage="save_kymographs")
+            QMessageBox.critical(
+                self,
+                "Save Error",
+                "Failed to save kymographs.\n"
+                f"Details were written to:\n{log_path}\n\n"
+                f"Error:\n{e}",
+            )
 
         finally:
             prog.close()

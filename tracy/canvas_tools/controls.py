@@ -179,6 +179,19 @@ class ContrastControlsWidget(QWidget):
         new_high = max(low, high)
         # Update the movie canvas display immediately.
         self.moviecanvas.set_display_range(new_low, new_high)
+
+        # If we're showing the reference image, persist ref contrast settings instead.
+        if hasattr(self.moviecanvas.navigator, "refBtn") and self.moviecanvas.navigator.refBtn.isChecked():
+            self.moviecanvas.navigator.reference_contrast_settings = {
+                'vmin': new_low,
+                'vmax': new_high,
+                'extended_min': self.contrastRangeSlider.minimum(),
+                'extended_max': self.contrastRangeSlider.maximum()
+            }
+            # Keep ref defaults in sync for later restores.
+            self.moviecanvas._default_vmin = new_low
+            self.moviecanvas._default_vmax = new_high
+            return
         
         # Determine the current channel.
         try:
