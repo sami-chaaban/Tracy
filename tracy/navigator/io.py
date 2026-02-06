@@ -1756,12 +1756,13 @@ class NavigatorIOMixin:
                     # 2) ensure display_image does a full reset
                     self.kymoCanvas.manual_zoom = False
                     self.kymoCanvas.display_image(kymo)
-                    self.kymoCanvas.set_cmap(lut_cmap)
 
                     # 3) switch ROI & channel
                     if name in self.kymographs:
                         self.kymoCombo.setCurrentText(name)
                         self.kymo_changed()
+                    # kymo_changed() redraws the image in default gray; apply export LUT last.
+                    self.kymoCanvas.set_cmap(lut_cmap)
 
                     # 5) now draw a skinny overlay (axes already off, full‐frame)
                     self.kymoCanvas.draw_trajectories_on_kymo(
@@ -1841,7 +1842,16 @@ class NavigatorIOMixin:
                     export_h_px = kymo.shape[0] * (float(save_dpi) / float(layout_dpi))
                     scale_factor = 1.0
                     if export_w_px > 0 and export_h_px > 0 and preview_w_px > 0 and preview_h_px > 0:
-                        scale_factor = min(preview_w_px / export_w_px, preview_h_px / export_h_px)
+                        preview_dpi = float(getattr(fig, "dpi", 100) or 100)
+                        scale_factor = min(
+                            export_w_px / preview_w_px,
+                            export_h_px / preview_h_px,
+                        ) * (preview_dpi / float(save_dpi))
+                    min_marker_px = 4.0
+                    min_marker_pts = 0.0
+                    if save_dpi:
+                        min_marker_pts = (min_marker_px * 72.0) / float(save_dpi)
+                    min_marker_size = min_marker_pts ** 2
                     apply_overlay_scale = (
                         scale_factor != 1.0
                         or overlay_marker_scale != 1.0
@@ -1910,7 +1920,10 @@ class NavigatorIOMixin:
                                 marker = line.get_marker()
                                 if marker not in (None, "", "None"):
                                     orig_ms = line.get_markersize()
-                                    line.set_markersize(orig_ms * scale_factor * overlay_marker_scale)
+                                    new_ms = orig_ms * scale_factor * overlay_marker_scale
+                                    if min_marker_pts > 0:
+                                        new_ms = max(new_ms, min_marker_pts)
+                                    line.set_markersize(new_ms)
                                     scaled_artists.append((line, orig_ms, "ms"))
                             except Exception:
                                 pass
@@ -1934,7 +1947,10 @@ class NavigatorIOMixin:
                             try:
                                 sizes = coll.get_sizes()
                                 if sizes is not None and len(sizes):
-                                    coll.set_sizes(sizes * (scale_factor ** 2) * (overlay_marker_scale ** 2))
+                                    scaled_sizes = sizes * (scale_factor ** 2) * (overlay_marker_scale ** 2)
+                                    if min_marker_size > 0:
+                                        scaled_sizes = np.maximum(scaled_sizes, min_marker_size)
+                                    coll.set_sizes(scaled_sizes)
                                     scaled_artists.append((coll, sizes, "sizes"))
                             except Exception:
                                 pass
@@ -1997,8 +2013,9 @@ class NavigatorIOMixin:
                             pixel_size_nm=getattr(self, "pixel_size", None),
                             frame_interval_ms=getattr(self, "frame_interval", None),
                             set_outer_pad=False,
-                            dpi=layout_dpi,
+                            dpi=save_dpi,
                             size_scale=SaveKymographDialog.SCALEBAR_SIZE_SCALE,
+                            text_scale=SaveKymographDialog.SCALEBAR_TEXT_SCALE,
                         )
                     fig.savefig(out_path, dpi=save_dpi,
                                 facecolor=fig.get_facecolor(),
@@ -2237,8 +2254,9 @@ class NavigatorIOMixin:
                                     pixel_size_nm=getattr(self, "pixel_size", None),
                                     frame_interval_ms=getattr(self, "frame_interval", None),
                                     set_outer_pad=False,
-                                    dpi=layout_dpi,
+                                    dpi=save_dpi,
                                     size_scale=SaveKymographDialog.SCALEBAR_SIZE_SCALE,
+                                    text_scale=SaveKymographDialog.SCALEBAR_TEXT_SCALE,
                                 )
                             fig.savefig(out_path, dpi=save_dpi, facecolor="white", edgecolor="none")
                             plt.close(fig)
@@ -2261,8 +2279,9 @@ class NavigatorIOMixin:
                                 pixel_size_nm=getattr(self, "pixel_size", None),
                                 frame_interval_ms=getattr(self, "frame_interval", None),
                                 set_outer_pad=False,
-                                dpi=layout_dpi,
+                                dpi=save_dpi,
                                 size_scale=SaveKymographDialog.SCALEBAR_SIZE_SCALE,
+                                text_scale=SaveKymographDialog.SCALEBAR_TEXT_SCALE,
                             )
                             fig.savefig(out_path, dpi=save_dpi, facecolor="white", edgecolor="none")
                             plt.close(fig)

@@ -295,6 +295,8 @@ class RadiusDialog(QDialog):
 
 class SaveKymographDialog(QDialog):
     SCALEBAR_SIZE_SCALE = 2.3
+    SCALEBAR_TEXT_SCALE = 0.9
+    SCALEBAR_OFFSET_SCALE = 0.82
     # Class‐level storage of the last settings
     _last_use_prefix = False
     _last_middle    = ""
@@ -435,6 +437,7 @@ class SaveKymographDialog(QDialog):
         set_outer_pad=True,
         dpi=None,
         size_scale=3.2,
+        text_scale=1.0,
     ):
         if shape is None or len(shape) < 2:
             return []
@@ -446,10 +449,17 @@ class SaveKymographDialog(QDialog):
         if scale <= 0:
             scale = 1.0
         pad = max(8, int(0.06 * min(w, h)))
+        offset_scale = float(getattr(cls, "SCALEBAR_OFFSET_SCALE", 1.0) or 1.0)
+        if offset_scale <= 0:
+            offset_scale = 1.0
+        edge_pad = max(3.0, pad * offset_scale)
         text_pad = max(8, int(0.04 * min(w, h)))
-        label_pad = text_pad * 2.0
+        label_pad = text_pad * 1.1
         lw_px = max(1.5, min(w, h) * 0.002) * scale
-        font_px = max(11, min(18, int(min(w, h) * 0.02))) * scale
+        tscale = float(text_scale) if text_scale else 1.0
+        if tscale <= 0:
+            tscale = 1.0
+        font_px = max(11, min(18, int(min(w, h) * 0.02))) * scale * tscale
         fig = getattr(ax, "figure", None)
         dpi_value = float(dpi) if dpi else float(getattr(fig, "dpi", 100.0))
         pt_per_px = 72.0 / dpi_value
@@ -483,13 +493,13 @@ class SaveKymographDialog(QDialog):
         v_label = cls._format_scale_value(v_value, time_unit)
 
         right_x = w - 1
-        x_v = right_x + pad
+        x_v = right_x + edge_pad
 
         # Place bars relative to current axis direction (bottom is y0).
         y0, y1 = ax.get_ylim()
         y_inc = y1 >= y0
         y_bottom_vis = y0
-        y_out = -pad if y_inc else pad
+        y_out = -edge_pad if y_inc else edge_pad
         y_up = v_len_px if y_inc else -v_len_px
 
         y_h = y_bottom_vis + y_out
@@ -504,7 +514,7 @@ class SaveKymographDialog(QDialog):
         # Expand axes limits to make room for scale bars outside the image.
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
-        outer_pad = pad + text_pad * 4
+        outer_pad = edge_pad + text_pad * 4
         # Expand limits while preserving current axis direction to avoid flips.
         x0, x1 = ax.get_xlim()
         y0, y1 = ax.get_ylim()
@@ -1038,6 +1048,7 @@ class SaveKymographDialog(QDialog):
                 frame_interval_ms=ms,
                 set_outer_pad=True,
                 size_scale=self.__class__.SCALEBAR_SIZE_SCALE,
+                text_scale=self.__class__.SCALEBAR_TEXT_SCALE,
             )
         else:
             self.kymo_preview_canvas.ax._outer_pad = 0
@@ -1078,6 +1089,7 @@ class SaveKymographDialog(QDialog):
                 frame_interval_ms=ms,
                 set_outer_pad=True,
                 size_scale=self.__class__.SCALEBAR_SIZE_SCALE,
+                text_scale=self.__class__.SCALEBAR_TEXT_SCALE,
             )
         else:
             self.kymo_preview_canvas.ax._outer_pad = 0
