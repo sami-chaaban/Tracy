@@ -279,7 +279,7 @@ Use **Save » Trajectories** (`Ctrl/Cmd+S`) to export your analysis; see [Loadin
 
 * Estimates **anomalous diffusion** parameters from the trajectory’s mean-squared displacement (MSD):
 
-  * **MSD(Δt) = 4D · (Δt)^α** (2D)
+  * **MSD(Δt) = 4D · (Δt)^α**
 
 * Rationale: this is the standard 2D MSD power-law used in single-particle tracking, with **α = 1** for Brownian motion and **α ≠ 1** capturing anomalous diffusion. Tracy uses the imaging plane (x–y), so the 2D prefactor (4) is appropriate for planar motion; if your trajectories are strictly along a filament, a 1D model would use a prefactor of 2, which would scale the reported **D** by about 2. The fit is intentionally simple (no explicit offset term), so localization error or mixed directed/diffusive motion can bias **D** and **α**; in those cases, use shorter lags or interpret values as effective parameters.
 
