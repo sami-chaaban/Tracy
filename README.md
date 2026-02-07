@@ -42,12 +42,12 @@
 
 ### Mac (.dmg)
 
-1. Download the `Tracy.dmg` file from [this link](https://cloud3.mrc-lmb.cam.ac.uk/index.php/s/bDzNmn4MqfPto4o).
+1. Download the `Tracy.dmg` file from [this link](https://cloud3.mrc-lmb.cam.ac.uk/index.php/s/56FrAYFam3pqXme).
 2. Open the DMG and drag **Tracy** into **Applications**.
 
 ### Windows (.exe)
 
-1. Download the `Tracy.exe` file from [this link](https://cloud3.mrc-lmb.cam.ac.uk/index.php/s/CgbgQyN66Jnkb6j).
+1. Download the `Tracy.exe` file from [this link](https://cloud3.mrc-lmb.cam.ac.uk/index.php/s/LfTtRxQtsis6JTJ).
 2. Run `Tracy.exe` directly (portable app). You can move it anywhere; create a shortcut if desired.
 
 <details>
