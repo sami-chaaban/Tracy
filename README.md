@@ -117,7 +117,7 @@ tracy &                    # run in the background
 10. The kymograph view has its own contrast slider and reset button below it; contrast is remembered per kymograph.
 11. **View » Invert** toggles the display colormap (default on) so bright spots appear dark on a light background.
 
-Other load options are available under **Load** — see [Loading & Saving](#loading--saving) for details.
+> *Tip:* Other load options are available under **Load** — see [Loading & Saving](#loading--saving) for details.
 
 ### 3. Browsing Spots <a name="browsing-spots"></a>
 
@@ -129,8 +129,8 @@ Other load options are available under **Load** — see [Loading & Saving](#load
 3. Hold `r` + scroll (or use **Spot » Search Radius**) to adjust the search radius.
 4. The pixel intensity histogram updates for the current search window; see [Pixel Intensity Histogram](#pixel-intensity-histogram) for details.
 
-> Inset size can be changed under **View » Inset size** (or right-click inset); this only affects visualization and does not change calculations.
-> Use **View » Inset** to show or hide the inset panel (or right-click inset).
+> *Tip:* Inset size can be changed under **View » Inset size** (or right-click inset); this only affects visualization and does not change calculations.
+> *Tip:* Use **View » Inset** to show or hide the inset panel (or right-click inset).
 
 ### 4. Generating Kymographs <a name="generating-kymographs"></a>
 
@@ -155,7 +155,7 @@ Other load options are available under **Load** — see [Loading & Saving](#load
 5. If you want to recalculate the trajectory with new tracking options, press `Enter` (or **Trajectory » Recalculate**).
 6. If a spot looks wrong, press `x` to invalidate the highlighted point; press `x` again to re‑fit and restore it.
 
-> Optionally connect gaps via **Kymograph » Connect Spot Gaps**.
+> *Tip:* Optionally connect gaps via **Kymograph » Connect Spot Gaps**.
 
 #### B. Direct Movie Tracking
 
@@ -165,7 +165,7 @@ Other load options are available under **Load** — see [Loading & Saving](#load
 4. Browse, playback, edit tracks as above.
 5. If you want to recalculate the trajectory with new [tracking options](#tracking-options), press `Enter` (or **Trajectory » Recalculate**).
 
-> You can use “video‑game” controls: `w`/`a`/`s`/`d` to move the cursor, `l`/`j` to change frames, `k` to select the spot.
+> *Tip:* You can use “video‑game” controls: `w`/`a`/`s`/`d` to move the cursor, `l`/`j` to change frames, `k` to select the spot.
 
 <details>
 
