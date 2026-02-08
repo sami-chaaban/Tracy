@@ -519,9 +519,10 @@ Tracy can optionally include empty kymographs (no trajectories) as blank rows so
   * **Per-kymograph** rows are kymograph geometries (not separate rows per channel).
   * **Per-kymograph Ch. X** sheets are exported for each channel when you need per-channel analysis.
   * **Total kymographs** counts kymograph geometries (not `kymograph geometry × channels`).
-* **Overlapping kymograph geometries / shared trajectories:** if the same trajectory is associated with multiple kymographs, the **Per-kymograph** sheet can double-count trajectories and bias the averages.
 
 </details>
+
+> *N.B.* **Overlapping kymograph geometries / shared trajectories:** if the same trajectory is associated with multiple kymographs, the **Per-kymograph** sheet can double-count trajectories and bias the averages.
 
 ### Save Kymographs <a name="save-kymographs"></a>
 
