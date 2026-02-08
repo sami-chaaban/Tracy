@@ -117,8 +117,6 @@ tracy &                    # run in the background
 10. The kymograph view has its own contrast slider and reset button below it; contrast is remembered per kymograph.
 11. **View » Invert** toggles the display colormap (default on) so bright spots appear dark on a light background.
 
-> *Tip:* Other load options are available under **Load** — see [Loading & Saving](#loading--saving) for details.
-
 ### 3. Browsing Spots <a name="browsing-spots"></a>
 
 1. Click on the movie to detect a spot at the click location.
@@ -130,7 +128,7 @@ tracy &                    # run in the background
 4. The pixel intensity histogram updates for the current search window; see [Pixel Intensity Histogram](#pixel-intensity-histogram) for details.
 
 > *Tip:* Inset size can be changed under **View » Inset size** (or right-click inset); this only affects visualization and does not change calculations.
-> *Tip:* Use **View » Inset** to show or hide the inset panel (or right-click inset).
+> *Tip:* Use **View » Inset** to show or hide the inset panel (or right-click inset and choose Hide).
 
 ### 4. Generating Kymographs <a name="generating-kymographs"></a>
 
@@ -342,14 +340,8 @@ Use the **Load** and **Save** menus to move data in and out of Tracy.
 
 * **Save » Trajectories** (`Ctrl/Cmd+S`) exports an Excel workbook with five sheets:
 
-  1. **Aggregate Analysis**: a single-row summary across the whole movie.
-  2. **Data Points**: per-frame spot measurements along each trajectory.
-  3. **Per-trajectory**: one-row summary statistics for each trajectory.
-  4. **Per-segment**: one-row summary for each trajectory segment between consecutive anchors.
-  5. **Per-kymograph**: aggregates grouped by kymograph geometry.
-
 <details>
-<summary>Sheet: Aggregate Analysis</summary>
+<summary>Aggregate Analysis: a single-row summary across the whole movie.</summary>
 
 A single row summarizing the whole movie.
 
@@ -374,7 +366,7 @@ A single row summarizing the whole movie.
 </details>
 
 <details>
-<summary>Sheet: Data Points</summary>
+<summary>Data Points: per-frame spot measurements along each trajectory.</summary>
 
 Each row is one frame from one trajectory.
 
@@ -414,7 +406,7 @@ Each row is one frame from one trajectory.
 </details>
 
 <details>
-<summary>Sheet: Per-trajectory</summary>
+<summary>Per-trajectory: one-row summary statistics for each trajectory.</summary>
 
 Each row is one trajectory.
 If `Kymo-Anchors` and `ROI` are present, Tracy can regenerate the kymograph locations on load.
@@ -480,7 +472,7 @@ If `Kymo-Anchors` and `ROI` are present, Tracy can regenerate the kymograph loca
 </details>
 
 <details>
-<summary>Sheet: Per-segment</summary>
+<summary>Per-segment: one-row summary for each trajectory segment between consecutive anchors.</summary>
 
 Each row summarizes one segment between consecutive anchors in a trajectory.
 
@@ -498,7 +490,7 @@ Each row summarizes one segment between consecutive anchors in a trajectory.
 </details>
 
 <details>
-<summary>Sheet: Per-kymograph</summary>
+<summary>Per-kymograph: aggregates grouped by kymograph geometry.</summary>
 
 Each row is one kymograph geometry.
 Tracy can optionally include empty kymographs (no trajectories) as blank rows so distance‑normalized stats still account for kymograph lengths; these rows can be restored on load.
