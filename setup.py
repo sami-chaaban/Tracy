@@ -24,7 +24,7 @@ setup(
     packages=find_packages(),
     include_package_data=True,
     package_data={
-        'tracy': ['icons/*.svg', 'icons/*.png', 'fonts/*.ttf', 'style.qss']
+        'tracy': ['icons/*.svg', 'icons/*.png', 'fonts/*.ttf', 'models/*.onnx', 'style.qss']
     },
     install_requires=[
         'numpy',
@@ -37,7 +37,8 @@ setup(
         'read-roi',
         'roifile',
         'openpyxl',
-        'packaging'
+        'packaging',
+        'onnxruntime>=1.16'
     ],
     entry_points={
         'gui_scripts': [

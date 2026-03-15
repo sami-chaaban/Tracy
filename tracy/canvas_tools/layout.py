@@ -87,4 +87,3 @@ class RoundedFrame(QFrame):
         painter.setBrush(QBrush(self.bg_color))
         painter.setPen(QPen(self.border_color, 6))
         painter.drawRoundedRect(self.rect(), self.radius, self.radius)
-        super().paintEvent(event)

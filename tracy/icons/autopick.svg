@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <style>
+      .s0 {
+        fill: none;
+        stroke: #000;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 38px;
+      }
+    </style>
+  </defs>
+  <circle class="s0" cx="216" cy="216" r="126"/>
+  <line class="s0" x1="305" y1="305" x2="430" y2="430"/>
+  <line class="s0" x1="216" y1="154" x2="216" y2="278"/>
+  <line class="s0" x1="154" y1="216" x2="278" y2="216"/>
+</svg>

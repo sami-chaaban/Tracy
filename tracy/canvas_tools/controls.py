@@ -6,6 +6,7 @@ class RangeSlider(QtWidgets.QSlider):
     lowerValueChanged = pyqtSignal(int)
     upperValueChanged = pyqtSignal(int)
     rangeChanged = pyqtSignal(int, int)
+    autoRequested = pyqtSignal()
 
     def __init__(self, orientation=Qt.Horizontal, parent=None):
         super().__init__(orientation, parent)
@@ -150,6 +151,14 @@ class RangeSlider(QtWidgets.QSlider):
         self._activeHandle = None
         event.accept()
 
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._activeHandle = None
+            self.autoRequested.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
 class ContrastControlsWidget(QWidget):
     def __init__(self, moviecanvas, parent=None):
         super().__init__(parent)
@@ -160,6 +169,7 @@ class ContrastControlsWidget(QWidget):
         self.contrastRangeSlider = RangeSlider(Qt.Horizontal, self)
         # Connect its rangeChanged signal.
         self.contrastRangeSlider.rangeChanged.connect(self.on_slider_range_changed)
+        self.contrastRangeSlider.autoRequested.connect(self.on_auto_requested)
         self.initUI()
 
     def initUI(self):
@@ -233,12 +243,18 @@ class ContrastControlsWidget(QWidget):
             "upper": self.contrastRangeSlider.upperValue(),
         }
 
+    def on_auto_requested(self):
+        nav = getattr(self.moviecanvas, "navigator", None)
+        if nav is not None and hasattr(nav, "reset_contrast"):
+            nav.reset_contrast()
+
 class KymoContrastControlsWidget(QWidget):
     def __init__(self, kymocanvas, parent=None):
         super().__init__(parent)
         self.kymocanvas = kymocanvas
         self.contrastRangeSlider = RangeSlider(Qt.Horizontal, self)
         self.contrastRangeSlider.rangeChanged.connect(self.on_slider_range_changed)
+        self.contrastRangeSlider.autoRequested.connect(self.on_auto_requested)
         self.initUI()
 
     def initUI(self):
@@ -284,6 +300,11 @@ class KymoContrastControlsWidget(QWidget):
             'extended_min': self.contrastRangeSlider.minimum(),
             'extended_max': self.contrastRangeSlider.maximum()
         }
+
+    def on_auto_requested(self):
+        nav = getattr(self.kymocanvas, "navigator", None)
+        if nav is not None and hasattr(nav, "reset_kymo_contrast"):
+            nav.reset_kymo_contrast()
 
 class ToggleSwitch(QAbstractButton):
     def __init__(self, parent=None, total_width=130, total_height=30, show_labels=True):

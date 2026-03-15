@@ -110,6 +110,56 @@ class TrajectoryCanvas(QWidget):
         self._custom_load_map = {}
 
         self.current_index = None
+        self._recalc_thread = None
+        self._recalc_worker = None
+
+    def _cleanup_recalc_thread_objects(self, thread=None, worker=None):
+        thread = thread if thread is not None else getattr(self, "_recalc_thread", None)
+        worker = worker if worker is not None else getattr(self, "_recalc_worker", None)
+        if thread is self._recalc_thread:
+            self._recalc_thread = None
+        if worker is self._recalc_worker:
+            self._recalc_worker = None
+        if worker is not None:
+            try:
+                worker.deleteLater()
+            except Exception:
+                pass
+        if thread is not None:
+            try:
+                thread.deleteLater()
+            except Exception:
+                pass
+
+    def shutdown_recalc_thread(self, timeout_ms: int = 4000) -> bool:
+        thread = getattr(self, "_recalc_thread", None)
+        if thread is None:
+            return True
+        worker = getattr(self, "_recalc_worker", None)
+        if thread.isRunning():
+            if worker is not None and hasattr(worker, "cancel"):
+                try:
+                    worker.cancel()
+                except Exception:
+                    pass
+            try:
+                thread.requestInterruption()
+            except Exception:
+                pass
+            thread.quit()
+            if timeout_ms > 0 and thread.wait(int(timeout_ms)):
+                self._cleanup_recalc_thread_objects(thread=thread, worker=worker)
+                return True
+            try:
+                thread.terminate()
+            except Exception:
+                pass
+            if thread.wait(1500):
+                self._cleanup_recalc_thread_objects(thread=thread, worker=worker)
+                return True
+            return False
+        self._cleanup_recalc_thread_objects(thread=thread, worker=worker)
+        return True
 
     def makeCenteredItem(self, text):
         item = QTableWidgetItem(text)
@@ -1399,6 +1449,10 @@ class TrajectoryCanvas(QWidget):
                     continue
                 nodes.append((int(frame_idx), float(x), float(y)))
 
+        click_source_override = str(getattr(self.navigator, "analysis_click_source_override", "") or "").strip()
+        if click_source_override:
+            click_source = click_source_override
+
         # Store the list of refined spot centers along the trajectory.
         spot_centers = []
         sigmas = []
@@ -1673,7 +1727,10 @@ class TrajectoryCanvas(QWidget):
 
         return df, nodes_map, clicks_map
 
-    def load_trajectories(self):
+    def load_trajectories(self, filename=None):
+        if isinstance(filename, bool):
+            filename = None
+
         if self.navigator.movie is None:
             QMessageBox.warning(self, "", 
                 "Please load a movie before loading trajectories.")
@@ -1681,19 +1738,34 @@ class TrajectoryCanvas(QWidget):
         
         self.navigator.cancel_left_click_sequence()
 
-        # Get the current movie's base name.
-        movie_base = self.navigator.movieNameLabel.text()  # assuming this holds the filename, e.g. "my_movie.tif"
-        # Remove the current extension and add ".csv"
-        default_filename = os.path.splitext(movie_base)[0] + ".csv"
-        default_filename = os.path.join(self.navigator._last_dir, default_filename)
-        filename, _ = QFileDialog.getOpenFileName(
-            self, 
-            "Load Trajectories File", 
-            default_filename,
-            "Excel and CSV Files (*.xlsx *.csv)"
-        )
-        if not filename:
-            return
+        if filename:
+            filename = str(filename)
+            if not os.path.isfile(filename):
+                QMessageBox.critical(self, "Error", "Dropped item is not a valid file.")
+                return
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in (".xlsx", ".csv"):
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    "Unsupported trajectory file type. Use .xlsx or .csv."
+                )
+                return
+            self.navigator._last_dir = os.path.dirname(filename) or self.navigator._last_dir
+        else:
+            # Get the current movie's base name.
+            movie_base = self.navigator.movieNameLabel.text()  # assuming this holds the filename, e.g. "my_movie.tif"
+            # Remove the current extension and add ".csv"
+            default_filename = os.path.splitext(movie_base)[0] + ".csv"
+            default_filename = os.path.join(self.navigator._last_dir, default_filename)
+            filename, _ = QFileDialog.getOpenFileName(
+                self, 
+                "Load Trajectories File", 
+                default_filename,
+                "Excel and CSV Files (*.xlsx *.csv)"
+            )
+            if not filename:
+                return
         
         # try:
         ext = os.path.splitext(filename)[1].lower()
@@ -2985,6 +3057,7 @@ class TrajectoryCanvas(QWidget):
             self.navigator._suppress_internal_progress = False
             thread.quit()
             thread.wait()
+            self._cleanup_recalc_thread_objects(thread=thread, worker=worker)
             if self._any_traj_overlay_enabled() and rows:
                 self.on_trajectory_selected_by_index(rows[0])
             self.navigator._refresh_intensity_canvas()
@@ -3545,6 +3618,7 @@ class TrajectoryCanvas(QWidget):
             self.navigator._suppress_internal_progress = False
             thread.quit()
             thread.wait()
+            self._cleanup_recalc_thread_objects(thread=thread, worker=worker)
             # redraw if overlay is on
             if self._any_traj_overlay_enabled():
                 self.on_trajectory_selected_by_index(rows[0])
@@ -3611,6 +3685,7 @@ class TrajectoryCanvas(QWidget):
             # Now stop the thread we actually used:
             self._recalc_thread.quit()
             self._recalc_thread.wait()
+            self._cleanup_recalc_thread_objects()
 
             # Re-select row 0.
             self.on_trajectory_selected_by_index(0)
@@ -3628,6 +3703,7 @@ class TrajectoryCanvas(QWidget):
             # Also quit the same thread:
             self._recalc_thread.quit()
             self._recalc_thread.wait()
+            self._cleanup_recalc_thread_objects()
 
         # 7) Hook up all signals (including dialog.canceled → worker.cancel)
         self._recalc_worker.progress.connect(progress_dialog.setValue)

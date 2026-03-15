@@ -30,7 +30,7 @@ class NavigatorIOMixin:
         if self.save_and_load_routine:
             # Reset the flag so it only applies once.
             self.save_and_load_routine = False
-        else:
+        elif not fname:
             # Open the file dialog.
             fname, _ = QFileDialog.getOpenFileName(
                 self, "Open Movie TIFF", self._last_dir, "TIFF Files (*.tif *.tiff)"
@@ -1636,6 +1636,60 @@ class NavigatorIOMixin:
             # QMessageBox.information(self, "Saved", f"ROIs successfully saved to {filename}")
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Could not save ROIs:\n{str(e)}")
+
+    def save_movie_frame_png(self):
+        image = getattr(self.movieCanvas, "image", None)
+        if image is None:
+            QMessageBox.information(self, "No Image", "There is no movie image to save.")
+            return
+
+        base_name = os.path.splitext(self.movieNameLabel.text().strip() or "movie")[0]
+        suggested = f"{base_name}_frame.png"
+        start_dir = getattr(self, "_last_dir", "") or str(Path.home())
+        default_path = os.path.join(start_dir, suggested)
+
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Current Frame",
+            default_path,
+            "PNG Files (*.png)",
+        )
+        if not filename:
+            return
+        if not filename.lower().endswith(".png"):
+            filename += ".png"
+
+        try:
+            import matplotlib.pyplot as plt
+
+            arr = np.asarray(image)
+            # Movie canvas renders with origin="lower"; export should match the visible orientation.
+            if not bool(getattr(self, "flip_movie_y", False)):
+                arr = np.flipud(arr)
+            if arr.ndim == 2:
+                im_artist = getattr(self.movieCanvas, "_im", None)
+                cmap = "gray_r" if getattr(self, "inverted_cmap", False) else "gray"
+                vmin = None
+                vmax = None
+                if im_artist is not None:
+                    try:
+                        cmap = im_artist.get_cmap() or cmap
+                    except Exception:
+                        pass
+                    try:
+                        vmin, vmax = im_artist.get_clim()
+                    except Exception:
+                        vmin, vmax = None, None
+                if vmin is not None and vmax is not None and vmin >= vmax:
+                    vmax = vmin + 1e-6
+                plt.imsave(filename, arr, cmap=cmap, vmin=vmin, vmax=vmax)
+            else:
+                plt.imsave(filename, arr)
+
+            self._last_dir = os.path.dirname(filename) or self._last_dir
+            self.flash_message("Frame saved")
+        except Exception as exc:
+            QMessageBox.critical(self, "Save Error", f"Could not save frame as PNG:\n{exc}")
 
     def save_kymographs(self):
         import matplotlib.pyplot as plt

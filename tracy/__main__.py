@@ -64,6 +64,17 @@ def _configure_matplotlib_cache():
     cache_dir = _pick_mpl_cache_dir()
     os.environ["MPLCONFIGDIR"] = cache_dir
 
+
+def _consume_debug_flag(argv):
+    debug_mode = os.environ.get("TRACY_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+    cleaned = []
+    for idx, arg in enumerate(argv):
+        if idx > 0 and arg == "--debug":
+            debug_mode = True
+            continue
+        cleaned.append(arg)
+    return debug_mode, cleaned
+
 def _startup_logger():
     enabled = os.environ.get("TRACY_STARTUP_TRACE", "").lower() in ("1", "true", "yes")
     t0 = time.perf_counter()
@@ -125,6 +136,8 @@ def _ensure_mpl_font_cache(log, mpl, font_manager):
 def main():
     log = _startup_logger()
     log("main start")
+    debug_mode, cleaned_argv = _consume_debug_flag(sys.argv)
+    sys.argv[:] = cleaned_argv
     _configure_matplotlib_cache()
     log(f"matplotlib cache configured: {os.environ.get('MPLCONFIGDIR')}")
 
@@ -228,7 +241,7 @@ def main():
         log("navigator module imported")
         startup.set_message("Preparing workspace…")
         _finalize_ui()
-        navigator = result["navigator_cls"]()
+        navigator = result["navigator_cls"](debug_mode=debug_mode)
         log("navigator initialized")
 
         navigator.showMaximized()

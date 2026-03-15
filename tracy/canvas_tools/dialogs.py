@@ -120,6 +120,7 @@ class SetScaleDialog(QDialog):
         # self.pixelLabel.setFont(bold_font)
         self.pixelLabel.setAlignment(Qt.AlignCenter)
         self.pixelEdit = QLineEdit()
+        self.pixelEdit.setAlignment(Qt.AlignCenter)
         self.pixelEdit.setValidator(QDoubleValidator(0.001, 1_000_000, 2, self))
         self.pixelEdit.setStyleSheet("background-color: white;")
         if current_pixel_size is not None:
@@ -138,6 +139,7 @@ class SetScaleDialog(QDialog):
         # self.frameLabel.setFont(bold_font)
         self.frameLabel.setAlignment(Qt.AlignCenter)  
         self.frameEdit = QLineEdit()
+        self.frameEdit.setAlignment(Qt.AlignCenter)
         self.frameEdit.setValidator(QDoubleValidator(0.001, 1_000_000, 2, self))
         self.frameEdit.setStyleSheet("background-color: white;")
         if current_frame_interval is not None:

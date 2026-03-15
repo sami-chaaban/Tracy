@@ -8,7 +8,8 @@ from PyQt5.QtWidgets import (
     QListView, QSlider, QSizePolicy, QAction, QDialog,
     QProgressDialog, QApplication, QFrame,
     QLineEdit, QFormLayout, QGraphicsDropShadowEffect, QDialogButtonBox,
-    QInputDialog, QMenu, QLayout
+    QInputDialog, QMenu, QLayout, QDoubleSpinBox, QGroupBox, QScrollArea,
+    QAbstractSpinBox
 )
 
 from PyQt5 import QtCore, QtWidgets, QtGui

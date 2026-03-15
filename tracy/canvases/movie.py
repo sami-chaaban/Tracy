@@ -83,8 +83,76 @@ class MovieCanvas(ImageCanvas):
         self._idle_base_speeds = None
         self._bg_refresh_timer = None
 
+        self.setAcceptDrops(True)
+
     def _flip_y_enabled(self):
         return bool(getattr(self.navigator, "flip_movie_y", False))
+
+    def _dropped_load_file(self, mime_data):
+        if mime_data is None or not mime_data.hasUrls():
+            return None, None, "Drop one local file (.tif/.tiff or .xlsx/.csv)."
+
+        local_paths = []
+        for url in mime_data.urls():
+            if url.isLocalFile():
+                local_paths.append(url.toLocalFile())
+
+        if len(local_paths) != 1:
+            return None, None, "Please drop exactly one local file."
+
+        path = local_paths[0]
+        if not path or not os.path.isfile(path):
+            return None, None, "Dropped item is not a valid file."
+
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in (".tif", ".tiff"):
+            if ext in (".xlsx", ".csv"):
+                return path, "trajectories", None
+            return None, None, (
+                "Unsupported file type. Drop a movie (.tif/.tiff) or trajectories (.xlsx/.csv)."
+            )
+
+        return path, "movie", None
+
+    def dragEnterEvent(self, event):
+        dropped_path, _kind, _err = self._dropped_load_file(event.mimeData())
+        if dropped_path:
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event):
+        dropped_path, _kind, _err = self._dropped_load_file(event.mimeData())
+        if dropped_path:
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event):
+        dropped_path, kind, err = self._dropped_load_file(event.mimeData())
+        if not dropped_path:
+            event.ignore()
+            QMessageBox.warning(self.navigator or self, "Invalid file", err or "Invalid file drop.")
+            return
+
+        event.acceptProposedAction()
+        navigator = getattr(self, "navigator", None)
+        if kind == "movie":
+            if navigator is None or not hasattr(navigator, "handle_movie_load"):
+                QMessageBox.warning(self, "Load failed", "Movie loader is unavailable.")
+                return
+            navigator.handle_movie_load(fname=dropped_path)
+            return
+
+        if kind == "trajectories":
+            traj_canvas = getattr(navigator, "trajectoryCanvas", None) if navigator is not None else None
+            if traj_canvas is None or not hasattr(traj_canvas, "load_trajectories"):
+                QMessageBox.warning(self, "Load failed", "Trajectory loader is unavailable.")
+                return
+            traj_canvas.load_trajectories(filename=dropped_path)
+            return
+
+        QMessageBox.warning(self, "Load failed", "Unsupported dropped file.")
 
     def _image_origin(self):
         return "lower"

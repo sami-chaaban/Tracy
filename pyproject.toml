@@ -5,7 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tracyspot"
 license = { text = "MIT" }
-dynamic = ["version", "description", "readme", "authors", "dependencies", "classifiers", "entry-points", "requires-python"]
+dynamic = ["version", "description", "readme", "authors", "dependencies", "classifiers", "requires-python"]
+
+[project.gui-scripts]
+tracy = "tracy.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/sami-chaaban/tracy"

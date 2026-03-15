@@ -9,65 +9,85 @@ def _label_text_rect(widget, option):
     return widget.contentsRect()
 
 
-class ElidedLabel(QLabel):
-    def __init__(self, text="", parent=None, elide_mode=Qt.ElideRight):
-        super().__init__(text, parent)
+class _ElidedTextMixin:
+    def _init_elision(self, text="", elide_mode=Qt.ElideRight):
         self._elide_mode = elide_mode
+        self._full_text = "" if text is None else str(text)
+        self._base_alignment = QLabel.alignment(self)
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setMinimumWidth(0)
+        self._apply_elision()
 
     def minimumSizeHint(self):
         hint = super().minimumSizeHint()
         return QSize(0, hint.height())
 
-    def paintEvent(self, event):
-        painter = QtGui.QPainter(self)
-        option = QtWidgets.QStyleOption()
-        option.initFrom(self)
-        self.style().drawPrimitive(QtWidgets.QStyle.PE_Widget, option, painter, self)
+    def sizeHint(self):
+        base = super().sizeHint()
+        full_text = getattr(self, "_full_text", "")
+        if not full_text:
+            return base
+        text_size = self.fontMetrics().size(Qt.TextSingleLine, full_text)
+        margins = self.contentsMargins()
+        width = text_size.width() + margins.left() + margins.right()
+        height = text_size.height() + margins.top() + margins.bottom()
+        # Preserve a small buffer for stylesheet padding/borders that QLabel does not
+        # expose via contentsMargins().
+        width += 16
+        return QSize(max(base.width(), width), max(base.height(), height))
 
-        text_rect = _label_text_rect(self, option)
-        elided = self.fontMetrics().elidedText(super().text(), self._elide_mode, text_rect.width())
-        self.style().drawItemText(
-            painter,
-            text_rect,
-            self.alignment(),
-            option.palette,
-            self.isEnabled(),
-            elided,
-        )
+    def setText(self, text):
+        self._full_text = "" if text is None else str(text)
+        self._apply_elision()
+
+    def text(self):
+        return getattr(self, "_full_text", super().text())
+
+    def setAlignment(self, alignment):
+        self._base_alignment = alignment
+        super().setAlignment(alignment)
+        self._apply_elision()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_elision()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._apply_elision()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange, QEvent.PaletteChange):
+            self._apply_elision()
+
+    def _effective_alignment(self):
+        alignment = getattr(self, "_base_alignment", QLabel.alignment(self))
+        if self.text().strip().lower() == "load":
+            return Qt.AlignHCenter | Qt.AlignVCenter
+        return alignment
+
+    def _apply_elision(self):
+        full_text = getattr(self, "_full_text", "")
+        available = max(0, self.contentsRect().width())
+        if available <= 0:
+            display_text = full_text
+        else:
+            display_text = self.fontMetrics().elidedText(full_text, self._elide_mode, available)
+        QLabel.setAlignment(self, self._effective_alignment())
+        QLabel.setText(self, display_text)
 
 
-class ElidedClickableLabel(ClickableLabel):
+class ElidedLabel(_ElidedTextMixin, QLabel):
     def __init__(self, text="", parent=None, elide_mode=Qt.ElideRight):
-        super().__init__(text, parent)
-        self._elide_mode = elide_mode
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setMinimumWidth(0)
+        super().__init__("", parent)
+        self._init_elision(text=text, elide_mode=elide_mode)
 
-    def minimumSizeHint(self):
-        hint = super().minimumSizeHint()
-        return QSize(0, hint.height())
 
-    def paintEvent(self, event):
-        painter = QtGui.QPainter(self)
-        option = QtWidgets.QStyleOption()
-        option.initFrom(self)
-        self.style().drawPrimitive(QtWidgets.QStyle.PE_Widget, option, painter, self)
-
-        text_rect = _label_text_rect(self, option)
-        elided = self.fontMetrics().elidedText(super().text(), self._elide_mode, text_rect.width())
-        alignment = self.alignment()
-        if super().text().strip().lower() == "load":
-            alignment = Qt.AlignHCenter | Qt.AlignVCenter
-        self.style().drawItemText(
-            painter,
-            text_rect,
-            alignment,
-            option.palette,
-            self.isEnabled(),
-            elided,
-        )
+class ElidedClickableLabel(_ElidedTextMixin, ClickableLabel):
+    def __init__(self, text="", parent=None, elide_mode=Qt.ElideRight):
+        super().__init__("", parent)
+        self._init_elision(text=text, elide_mode=elide_mode)
 
 class NavigatorUiMixin:
     def create_ui(self):
@@ -83,7 +103,6 @@ class NavigatorUiMixin:
         tracybuttoniconpath = self.resource_path('icons/tracybutton.svg')
         crossiconpath = self.resource_path('icons/cross-small.svg')
         crossdoticonpath = self.resource_path('icons/cross-dot.svg')
-        resetcontrastpath = self.resource_path('icons/contrast.svg')
         maxiconpath = self.resource_path('icons/max.svg')
         referenceiconpath = self.resource_path('icons/reference.svg')
         trajoverlayiconpath = self.resource_path('icons/overlay_traj.svg')
@@ -92,6 +111,7 @@ class NavigatorUiMixin:
         kymoanchoriconpath = self.resource_path('icons/overlay_anchor.svg')
         invertkymoiconpath = self.resource_path('icons/invert.svg')
         logiconpath = self.resource_path('icons/log.svg')
+        autopickiconpath = self.resource_path('icons/find.svg')
         self._traj_overlay_icons = {
             "all": QIcon(trajoverlayiconpath),
             "selected": QIcon(trajoverlayoneiconpath),
@@ -393,9 +413,9 @@ class NavigatorUiMixin:
         kymocontrastwidget = QWidget()
         kymocontrastLayout = QHBoxLayout(kymocontrastwidget)
         kymocontrastLayout.setContentsMargins(0, 0, 0, 0)
-        kymocontrastLayout.setSpacing(4)
+        kymocontrastLayout.setSpacing(8)
         self.kymocontrastControlsWidget = KymoContrastControlsWidget(self.kymoCanvas)
-        kymocontrastsliderfilter = BubbleTipFilter("Adjust contrast range", self, placement="right")
+        kymocontrastsliderfilter = BubbleTipFilter("Adjust contrast range (double-click for auto)", self, placement="right")
         self.kymocontrastControlsWidget.installEventFilter(kymocontrastsliderfilter)
         self.kymocontrastControlsWidget._bubble_filter = kymocontrastsliderfilter
         self.kymocontrastControlsWidget.setMinimumWidth(100)
@@ -413,29 +433,29 @@ class NavigatorUiMixin:
         kymo_contrast_layout.addWidget(kymo_contrast_label, alignment=Qt.AlignHCenter)
         kymocontrastLayout.addWidget(kymo_contrast_container)
         kymocontrastLayout.setAlignment(kymo_contrast_container, Qt.AlignBottom)
-        self.kymoresetBtn = AnimatedIconButton("")
-        self.kymoresetBtn.setIcon(QIcon(resetcontrastpath))
-        self.kymoresetBtn.setIconSize(QSize(16, 16))
-        kymocontrastresetfilter = BubbleTipFilter("Reset contrast", self, placement="left")
-        self.kymoresetBtn.installEventFilter(kymocontrastresetfilter)
-        self.kymoresetBtn._bubble_filter = kymocontrastresetfilter
-        self.kymoresetBtn.clicked.connect(self.reset_kymo_contrast)
-        self.kymoresetBtn.setObjectName("Passive")
-        self.kymoresetBtn.setFixedSize(36, 36)
-        kymo_reset_container = QWidget()
-        kymo_reset_layout = QVBoxLayout(kymo_reset_container)
-        kymo_reset_layout.setContentsMargins(0, 0, 0, 0)
-        kymo_reset_layout.setSpacing(0)
-        kymo_reset_layout.setAlignment(Qt.AlignHCenter)
-        kymo_reset_label = QLabel("AUTO")
-        kymo_reset_label.setStyleSheet("color: black; font-size: 10px;")
-        kymo_reset_label.adjustSize()
-        kymo_reset_layout.addSpacing(kymo_label_spacer)
-        kymo_reset_layout.addWidget(self.kymoresetBtn, alignment=Qt.AlignHCenter)
-        kymo_reset_layout.addWidget(kymo_reset_label, alignment=Qt.AlignHCenter)
-        kymocontrastLayout.addWidget(kymo_reset_container)
-        kymocontrastLayout.setAlignment(kymo_reset_container, Qt.AlignBottom)
-        kymocontrastLayout.addSpacing(2)
+
+        self.autopick_button = AnimatedIconButton("")
+        autopick_filter = BubbleTipFilter("Auto-pick trajectories", self, placement="right")
+        self.autopick_button.installEventFilter(autopick_filter)
+        self.autopick_button._bubble_filter = autopick_filter
+        self.autopick_button.setIcon(QIcon(autopickiconpath))
+        self.autopick_button.setIconSize(QSize(16, 16))
+        self.autopick_button.setFixedSize(36, 36)
+        self.autopick_button.setObjectName("Passive")
+        self.autopick_button.clicked.connect(self.on_autopick_clicked)
+        autopick_container = QWidget()
+        autopick_layout = QVBoxLayout(autopick_container)
+        autopick_layout.setContentsMargins(0, 0, 0, 0)
+        autopick_layout.setSpacing(0)
+        autopick_layout.setAlignment(Qt.AlignHCenter)
+        autopick_label = QLabel("FIND")
+        autopick_label.setStyleSheet("color: black; font-size: 10px;")
+        autopick_label.adjustSize()
+        autopick_layout.addSpacing(kymo_label_spacer)
+        autopick_layout.addWidget(self.autopick_button, alignment=Qt.AlignHCenter)
+        autopick_layout.addWidget(autopick_label, alignment=Qt.AlignHCenter)
+        kymocontrastLayout.addWidget(autopick_container)
+        kymocontrastLayout.setAlignment(autopick_container, Qt.AlignBottom)
 
         self.kymo_traj_overlay_button = AnimatedIconButton("")
         kymo_traj_filter = BubbleTipFilter(
@@ -463,7 +483,6 @@ class NavigatorUiMixin:
         kymo_traj_layout.addSpacing(kymo_label_spacer)
         kymo_traj_layout.addWidget(self.kymo_traj_overlay_button, alignment=Qt.AlignHCenter)
         kymo_traj_layout.addWidget(kymo_traj_label, alignment=Qt.AlignHCenter)
-        kymocontrastLayout.addSpacing(8)
         kymocontrastLayout.addWidget(kymo_traj_container)
         kymocontrastLayout.setAlignment(kymo_traj_container, Qt.AlignBottom)
         self.kymo_traj_overlay_container = kymo_traj_container
@@ -490,7 +509,6 @@ class NavigatorUiMixin:
         anchor_layout.addSpacing(kymo_label_spacer)
         anchor_layout.addWidget(self.kymo_anchor_overlay_button, alignment=Qt.AlignHCenter)
         anchor_layout.addWidget(anchor_label, alignment=Qt.AlignHCenter)
-        kymocontrastLayout.addSpacing(4)
         kymocontrastLayout.addWidget(anchor_container)
         kymocontrastLayout.setAlignment(anchor_container, Qt.AlignBottom)
 
@@ -516,7 +534,6 @@ class NavigatorUiMixin:
         log_layout.addSpacing(kymo_label_spacer)
         log_layout.addWidget(self.kymo_log_filter_button, alignment=Qt.AlignHCenter)
         log_layout.addWidget(log_label, alignment=Qt.AlignHCenter)
-        kymocontrastLayout.addSpacing(4)
         kymocontrastLayout.addWidget(log_container)
         kymocontrastLayout.setAlignment(log_container, Qt.AlignBottom)
 
@@ -662,7 +679,7 @@ class NavigatorUiMixin:
         contrastLayout.setContentsMargins(0, 0, 0, 0)
         contrastLayout.setSpacing(4)
         self.contrastControlsWidget = ContrastControlsWidget(self.movieCanvas)
-        contrastsliderfilter = BubbleTipFilter("Adjust contrast range", self, placement="left")
+        contrastsliderfilter = BubbleTipFilter("Adjust contrast range (double-click for auto)", self, placement="left")
         self.contrastControlsWidget.installEventFilter(contrastsliderfilter)
         self.contrastControlsWidget._bubble_filter = contrastsliderfilter
         self.contrastControlsWidget.setMinimumWidth(100)
@@ -680,29 +697,6 @@ class NavigatorUiMixin:
         contrast_label_layout.addWidget(contrast_label, alignment=Qt.AlignHCenter)
         contrastLayout.addWidget(contrast_container)
         contrastLayout.setAlignment(contrast_container, Qt.AlignBottom)
-        self.resetBtn = AnimatedIconButton("")
-        self.resetBtn.setIcon(QIcon(resetcontrastpath))
-        self.resetBtn.setIconSize(QSize(16, 16))
-        # self.resetBtn.setToolTip("Reset contrast")
-        contrastresetfilter = BubbleTipFilter("Reset contrast", self, placement="left")
-        self.resetBtn.installEventFilter(contrastresetfilter)
-        self.resetBtn._bubble_filter = contrastresetfilter
-        self.resetBtn.clicked.connect(self.reset_contrast)
-        self.resetBtn.setObjectName("Passive")
-        self.resetBtn.setFixedSize(36, 36)
-        reset_container = QWidget()
-        reset_layout = QVBoxLayout(reset_container)
-        reset_layout.setContentsMargins(0, 0, 0, 0)
-        reset_layout.setSpacing(0)
-        reset_layout.setAlignment(Qt.AlignHCenter)
-        reset_label = QLabel("AUTO")
-        reset_label.setStyleSheet("color: black; font-size: 10px;")
-        reset_label.adjustSize()
-        reset_layout.addSpacing(movie_label_spacer)
-        reset_layout.addWidget(self.resetBtn, alignment=Qt.AlignHCenter)
-        reset_layout.addWidget(reset_label, alignment=Qt.AlignHCenter)
-        contrastLayout.addWidget(reset_container)
-        contrastLayout.setAlignment(reset_container, Qt.AlignBottom)
         contrastLayout.addSpacing(16)
         self.sumBtn = AnimatedIconButton("", self)
         self.sumBtn.setIcon(QIcon(maxiconpath))
@@ -1983,14 +1977,24 @@ class NavigatorUiMixin:
         loadMenu.addAction(loadTrackMateAction)
 
         saveMenu = menubar.addMenu("Save")
-        saveTrajectoriesAction = QAction("Trajectories", self)
-        saveTrajectoriesAction.setShortcut(QKeySequence.Save)
-        saveTrajectoriesAction.triggered.connect(lambda: self.trajectoryCanvas.save_trajectories())
-        saveMenu.addAction(saveTrajectoriesAction)
+        saveFrameAction = QAction("Frame", self)
+        saveFrameAction.triggered.connect(self.save_movie_frame_png)
 
         saveKymosAction = QAction("Kymographs", self)
         saveKymosAction.triggered.connect(self.save_kymographs)
+
+        saveROIsAction = QAction("Line ROIs", self)
+        saveROIsAction.triggered.connect(self.save_rois)
+
+        saveTrajectoriesAction = QAction("Trajectories", self)
+        saveTrajectoriesAction.setShortcut(QKeySequence.Save)
+        saveTrajectoriesAction.triggered.connect(lambda: self.trajectoryCanvas.save_trajectories())
+
+        # Alphabetical order in Save menu.
+        saveMenu.addAction(saveFrameAction)
         saveMenu.addAction(saveKymosAction)
+        saveMenu.addAction(saveROIsAction)
+        saveMenu.addAction(saveTrajectoriesAction)
 
         # saveAllKymosAction = QAction("Kymographs (all)", self)
         # saveAllKymosAction.triggered.connect(partial(self.save_kymographs, False))
@@ -1999,10 +2003,6 @@ class NavigatorUiMixin:
         # saveKymosOverlaysAction = QAction("Kymographs w/Overlays", self)
         # saveKymosOverlaysAction.triggered.connect(self.save_kymographs_with_overlays)
         # saveMenu.addAction(saveKymosOverlaysAction)
-
-        saveROIsAction = QAction("Line ROIs", self)
-        saveROIsAction.triggered.connect(self.save_rois)
-        saveMenu.addAction(saveROIsAction)
 
         movieMenu = menubar.addMenu("Movie")
         self.flipYAct = QAction("Flip Y", self, checkable=True)
@@ -2059,6 +2059,11 @@ class NavigatorUiMixin:
         kymoMenu.addAction(connectgapsAction)
 
         trajMenu = menubar.addMenu("Trajectories")
+
+        if getattr(self, "debug_mode", False):
+            editFindSettingsAction = QAction("Edit Find settings", self)
+            editFindSettingsAction.triggered.connect(self.open_find_settings_dialog)
+            trajMenu.addAction(editFindSettingsAction)
 
         recalcAction = QAction("Recalculate selected", self)
         recalcAction.triggered.connect(self.trajectoryCanvas.recalculate_trajectory)

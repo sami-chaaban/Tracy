@@ -3,19 +3,15 @@
   <!-- Generator: Adobe Illustrator 29.7.1, SVG Export Plug-In . SVG Version: 2.1.1 Build 8)  -->
   <defs>
     <style>
-      .st0 {
-        stroke-width: 40px;
-      }
-
       .st0, .st1 {
         fill: none;
         stroke: #000;
         stroke-miterlimit: 10;
+        stroke-width: 40px;
       }
 
       .st1 {
         stroke-linecap: round;
-        stroke-width: 50px;
       }
     </style>
   </defs>
@@ -23,9 +19,9 @@
   <line class="st1" x1="147.6" y1="257.3" x2="367.6" y2="257.3"/>
   <line class="st1" x1="257.6" y1="149.5" x2="257.6" y2="365.1"/>
   <g>
-    <circle cx="347.1" cy="175.5" r="36.4"/>
-    <circle cx="168.1" cy="175.5" r="36.4"/>
-    <circle cx="168.1" cy="339.1" r="36.4"/>
-    <circle cx="347.1" cy="339.1" r="36.4"/>
+    <circle cx="339.2" cy="181.9" r="29.1"/>
+    <circle cx="176" cy="181.9" r="29.1"/>
+    <circle cx="176" cy="332.7" r="29.1"/>
+    <circle cx="339.2" cy="332.7" r="29.1"/>
   </g>
 </svg>

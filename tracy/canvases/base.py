@@ -29,8 +29,6 @@ class ImageCanvas(FigureCanvas):
         super().draw()
 
     def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setClipRect(self.rect())  # This restricts drawing to the visible area.
         super().paintEvent(event)
 
     def display_image(self, image, title=""):

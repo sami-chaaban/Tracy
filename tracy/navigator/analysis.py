@@ -1458,7 +1458,7 @@ class NavigatorAnalysisMixin:
     def compute_diffusion_for_data(self, frames, spot_centers):
         """
         Estimate anomalous diffusion parameters from MSD:
-            MSD(dt) = 4 * D * dt^alpha   (2D)
+            MSD(dt) = 4 * D * dt^alpha
         Returns (D, alpha).
 
         Requires calibration (pixel size + frame interval). If scale is not set,

@@ -3,6 +3,7 @@ from .. import __version__
 from .ui import NavigatorUiMixin
 from .io import NavigatorIOMixin
 from .kymo import NavigatorKymoMixin
+from .autopick import NavigatorAutoPickMixin
 from .movie import NavigatorMovieMixin
 from .analysis import NavigatorAnalysisMixin
 from .roi import NavigatorRoiMixin
@@ -14,6 +15,7 @@ class KymographNavigator(
     NavigatorUiMixin,
     NavigatorIOMixin,
     NavigatorKymoMixin,
+    NavigatorAutoPickMixin,
     NavigatorMovieMixin,
     NavigatorAnalysisMixin,
     NavigatorRoiMixin,
@@ -24,8 +26,9 @@ class KymographNavigator(
     # debugPlotRequested = pyqtSignal(list, list, list)
     # debug_plot_motion_segmentation_requested = pyqtSignal(list, list, list, list)
     # debug_plot_hmm_segmentation_requested = pyqtSignal(np.ndarray, np.ndarray, np.ndarray, list, np.ndarray)
-    def __init__(self):
+    def __init__(self, debug_mode: bool = False):
         super().__init__()
+        self.debug_mode = bool(debug_mode)
         self.setWindowTitle(f"Tracy {__version__}")
         self.resize(1000, 1200)
 
@@ -72,6 +75,7 @@ class KymographNavigator(
         self.kymo_roi_map = {}
 
         self.create_ui()
+        self.init_autopick()
         self.create_menu()
         QTimer.singleShot(1500, self._schedule_update_check)
 
@@ -246,3 +250,37 @@ class KymographNavigator(
         self.min_step=100
         self.W=15
         self.passes=10
+
+    def closeEvent(self, event):
+        thread = getattr(self, "_autopick_thread", None)
+        if thread is not None and thread.isRunning():
+            stopped = False
+            try:
+                stopped = self.shutdown_autopick_thread(timeout_ms=12000)
+            except Exception:
+                stopped = False
+            if not stopped:
+                self._autopick_pending_close = True
+                try:
+                    self.flash_message("Stopping background FIND before exit...")
+                except Exception:
+                    pass
+                event.ignore()
+                return
+
+        traj_canvas = getattr(self, "trajectoryCanvas", None)
+        traj_thread = getattr(traj_canvas, "_recalc_thread", None) if traj_canvas is not None else None
+        if traj_thread is not None and traj_thread.isRunning():
+            stopped = False
+            try:
+                stopped = bool(traj_canvas.shutdown_recalc_thread(timeout_ms=12000))
+            except Exception:
+                stopped = False
+            if not stopped:
+                try:
+                    self.flash_message("Stopping background trajectory recalculation before exit...")
+                except Exception:
+                    pass
+                event.ignore()
+                return
+        super().closeEvent(event)

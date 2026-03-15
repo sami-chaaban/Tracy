@@ -105,17 +105,17 @@ tracy &                    # run in the background
 
 ### 2. Loading Your Movie <a name="loading-your-movie"></a>
 
-1. Click **LOAD** (or use **Load » Movie**).
+1. Click **LOAD** (or use **Load » Movie**), or drag and drop a single TIFF movie directly onto the movie panel.
 2. Select a single- or multi-channel TIFF movie.
 3. If necessary, enter pixel size and frame interval when prompted.
-5. Navigate frames with the slider under the movie.
-6. Pan by holding down the middle button (or `Ctrl/Cmd`) and dragging, zoom with the mouse wheel.
-7. If available, switch channels by clicking the channel label (shortcut: `1`, `2`, …).
+4. Navigate frames with the slider under the movie.
+5. Pan by holding down the middle button (or `Ctrl/Cmd`) and dragging, zoom with the mouse wheel.
+6. If available, switch channels by clicking the channel label (shortcut: `1`, `2`, …).
    If the wrong axis is treated as channels (or the channel list looks off), use **Movie » Change Channel Axis** to select the correct axis (only enabled for 4D movies).
-8. Toggle the maximum projection with the button below the movie (shortcut: `m`).
-9. Adjust the contrast using the slider.
-10. The kymograph view has its own contrast slider and reset button below it; contrast is remembered per kymograph.
-11. **View » Invert** toggles the display colormap (default on) so bright spots appear dark on a light background.
+7. Toggle the maximum projection with the button below the movie (shortcut: `m`).
+8. Adjust the contrast using the slider.
+9. The kymograph view has its own contrast slider and reset button below it; contrast is remembered per kymograph.
+10. **View » Invert** toggles the display colormap (default on) so bright spots appear dark on a light background.
 
 ### 3. Browsing Spots <a name="browsing-spots"></a>
 
@@ -165,6 +165,14 @@ tracy &                    # run in the background
 
 > *Tip:* You can use “video‑game” controls: `w`/`a`/`s`/`d` to move the cursor, `l`/`j` to change frames, `k` to select the spot.
 
+#### C. Automatic FIND from a Kymograph
+
+1. Generate or select a kymograph, then click **FIND**.
+2. Tracy uses a trained U‑Net model on the current kymograph to automatically propose trajectory anchors.
+3. Review the proposed anchors in the popup window.
+4. Use the **Minimum confidence** slider to hide weaker candidates if needed, and edit or remove any anchors you do not want to keep.
+5. Click **Add Trajectories** to add only the anchors that remain visible in the review window.
+
 <details>
 
 <summary>Tracking Options <a name="tracking-options"></a></summary>
@@ -202,7 +210,7 @@ tracy &                    # run in the background
 
 ### 7. Saving <a name="saving"></a>
 
-Use **Save » Trajectories** (`Ctrl/Cmd+S`) to export your analysis; see [Loading & Saving](#loading--saving) for all save/load options and details.
+Use the **Save** menu to export the current movie display, kymographs, ROIs, or trajectory analysis. See [Loading & Saving](#loading--saving) for the available save options and details.
 
 ---
 
@@ -326,6 +334,7 @@ Use the **Load** and **Save** menus to move data in and out of Tracy.
 * **TrackMate spots**: TrackMate-generated `.csv` spot file (see [Import TrackMate Data](#import-trackmate-data)).
 
 **Save menu options:**
+* **Frame**: exports the image currently shown in the movie panel as a PNG. If maximum projection or the reference image is currently shown, that is what will be exported. The saved PNG uses the current movie contrast and orientation, but it does not include overlay graphics.
 * **Trajectories**: exports a `.xlsx` workbook with all trajectory data (details below).
 * **Kymographs**: exports selected kymograph images (with optional overlays).
 * **Line ROIs**: exports an ImageJ ROI `.zip` that can be reopened in ImageJ later.
