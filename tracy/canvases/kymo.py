@@ -10,6 +10,14 @@ class KymoCanvas(ImageCanvas):
         self._pan_start = None
         self._orig_xlim = None
         self._orig_ylim = None
+        self._last_pan = 0.0
+        self._interaction_finish_timer = QTimer(self)
+        self._interaction_finish_timer.setSingleShot(True)
+        self._interaction_finish_timer.timeout.connect(self._finish_kymo_interaction)
+        self._view_redraw_timer = QTimer(self)
+        self._view_redraw_timer.setSingleShot(True)
+        self._view_redraw_timer.timeout.connect(self._perform_deferred_view_draw)
+        self._deferred_cache_background = False
         self.scale = 1.0  # Data units per pixel (uniform in x and y)
         self.padding = 1.25
         self.zoom_center = None  # in data coordinates
@@ -19,14 +27,12 @@ class KymoCanvas(ImageCanvas):
 
         self._kymo_label_bboxes: dict[Text, Bbox] = {}
 
-        self.fig.patch.set_alpha(0)
-        self.ax.patch.set_alpha(0)
+        self.navigator = navigator
+        self._apply_kymo_canvas_background()
 
         self.setFocusPolicy(Qt.StrongFocus)
         self.setFocus()
 
-        self.navigator = navigator
-        
         self.mpl_connect("scroll_event", self.on_scroll)
         self.mpl_connect("button_press_event", self.on_mouse_press)
         self.mpl_connect("motion_notify_event", self.on_mouse_move)
@@ -36,6 +42,84 @@ class KymoCanvas(ImageCanvas):
         self.scatter_objs_traj = []
 
         self._ctrl_panning = False
+
+    def _kymo_interaction_bg_color(self):
+        nav = getattr(self, "navigator", None)
+        settings = getattr(nav, "settings", {}) if nav is not None else {}
+        color = settings.get("widget-bg") if isinstance(settings, dict) else None
+        if color:
+            return color
+        try:
+            return self.palette().window().color().name()
+        except Exception:
+            return "white"
+
+    def _apply_kymo_canvas_background(self):
+        color = self._kymo_interaction_bg_color()
+        try:
+            self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+            self.setStyleSheet(f"background-color: {color};")
+        except Exception:
+            pass
+        for patch in (self.fig.patch, self.ax.patch):
+            try:
+                patch.set_facecolor(color)
+                patch.set_alpha(1.0)
+            except Exception:
+                pass
+
+    def _finish_kymo_interaction(self, redraw=True):
+        if hasattr(self, "_interaction_finish_timer") and self._interaction_finish_timer.isActive():
+            self._interaction_finish_timer.stop()
+        if hasattr(self, "_view_redraw_timer") and self._view_redraw_timer.isActive():
+            self._view_redraw_timer.stop()
+        self._deferred_cache_background = False
+
+        if redraw:
+            self.update_view(cache_background=True)
+
+    def _schedule_kymo_interaction_finish(self, delay_ms=90):
+        if not self._is_panning:
+            self._interaction_finish_timer.start(delay_ms)
+
+    def _schedule_deferred_view_draw(self, cache_background=False):
+        self._deferred_cache_background = (
+            self._deferred_cache_background or bool(cache_background)
+        )
+        if not self._view_redraw_timer.isActive():
+            self._view_redraw_timer.start(8)
+
+    def _perform_deferred_view_draw(self):
+        cache_background = bool(self._deferred_cache_background)
+        self._deferred_cache_background = False
+        self.draw()
+        if cache_background:
+            self._bg = self.copy_from_bbox(self.ax.bbox)
+            self._refresh_kymo_label_bboxes()
+
+    def _refresh_kymo_label_bboxes(self):
+        self._kymo_label_bboxes.clear()
+        markers = getattr(self, "kymo_trajectory_markers", None) or []
+        if not markers:
+            return
+        try:
+            renderer = self.figure.canvas.get_renderer()
+        except Exception:
+            return
+        for marker in markers:
+            if not isinstance(marker, Text):
+                continue
+            try:
+                bbox = marker.get_window_extent(renderer)
+                patch = marker.get_bbox_patch()
+                if patch is not None:
+                    try:
+                        bbox = bbox.union(patch.get_window_extent(renderer))
+                    except Exception:
+                        pass
+                self._kymo_label_bboxes[marker] = bbox.expanded(1.5, 1.5)
+            except Exception:
+                pass
 
     def mousePressEvent(self, event):
         # ⇨ Ctrl+Left should act like Middle
@@ -113,6 +197,8 @@ class KymoCanvas(ImageCanvas):
         self._pan_start = None
         self._orig_xlim = None
         self._orig_ylim = None
+        self._last_pan = 0.0
+        self._finish_kymo_interaction(redraw=False)
         self.zoom_center = None
         self.scale = 1.0
 
@@ -121,18 +207,26 @@ class KymoCanvas(ImageCanvas):
         if image is None:
             return
 
+        p15, p99 = np.percentile(image, (15, 99))
+        if p99 > p15:
+            img8 = np.clip((image - p15) / (p99 - p15), 0, 1) * 255
+        else:
+            img8 = np.zeros_like(image, dtype=np.float32)
+        img8 = img8.astype(np.uint8)
+        h, w = img8.shape
+
         # If we’re already in a manual zoom state, just update the data
         if self._im is not None and self.manual_zoom:
-            self._im.set_data(image)
+            self._im.set_data(img8)
+            self.image = img8
+            widget_w = max(self.width(), 1)
+            widget_h = max(self.height(), 1)
+            self.max_scale = max(w / widget_w, h / widget_h) * self.padding
             self.draw()
             return
 
         # Otherwise do the initial full reset + fit
         self.reset_canvas()
-        p15, p99 = np.percentile(image, (15, 99))
-        img8     = np.clip((image - p15)/(p99-p15), 0, 1)*255
-        img8     = img8.astype(np.uint8)
-        h, w     = img8.shape
         # if img8.ndim == 3:
         #     h, w, _ = img8.shape
         # else:
@@ -165,7 +259,7 @@ class KymoCanvas(ImageCanvas):
     #     self.max_scale = self.scale * self.padding
     #     self.update_view()
 
-    def update_view(self):
+    def update_view(self, cache_background=True, defer=False, blit=False):
         if self.image is None or self.zoom_center is None:
             return
 
@@ -187,12 +281,21 @@ class KymoCanvas(ImageCanvas):
         else:
             self.ax.set_ylim(cy - view_h/2, cy + view_h/2)
 
+        if defer or blit:
+            self._schedule_deferred_view_draw(cache_background=cache_background)
+            return
+
         # 2) redraw everything (synchronous)
+        if self._view_redraw_timer.isActive():
+            self._view_redraw_timer.stop()
+            self._deferred_cache_background = False
         self.draw()
 
-        # 3) grab a fresh background for blit loop
-        #    this background now includes the image + any permanent lines
-        self._bg = self.copy_from_bbox(self.ax.bbox)
+        if cache_background:
+            # Grab a fresh background for blit loops. During pan this is deferred
+            # until release because copying the bbox on every drag event is costly.
+            self._bg = self.copy_from_bbox(self.ax.bbox)
+            self._refresh_kymo_label_bboxes()
 
     def on_scroll(self, event):
         # only zoom when we have an image and are over the axes
@@ -232,7 +335,8 @@ class KymoCanvas(ImageCanvas):
         # 4) Store and schedule the redraw
         self.scale       = new_scale
         self.zoom_center = (new_cx, new_cy)
-        self.update_view()
+        self.update_view(cache_background=False, defer=True)
+        self._schedule_kymo_interaction_finish()
         # schedule a single zoom/pan update per event loop
     #     if not self._update_pending:
     #         self._update_pending = True
@@ -256,12 +360,19 @@ class KymoCanvas(ImageCanvas):
             self._pan_start = (event.x, event.y)
             self._orig_xlim = self.ax.get_xlim()
             self._orig_ylim = self.ax.get_ylim()
+            self._last_pan = time.perf_counter()
+            if self._interaction_finish_timer.isActive():
+                self._interaction_finish_timer.stop()
         elif event.button == 1:
             if hasattr(self.parent(), 'on_kymo_left_click'):
                 self.parent().on_kymo_left_click(event)
 
     def on_mouse_move(self, event):
         if self._is_panning and event.inaxes == self.ax:
+            now = time.perf_counter()
+            if now - self._last_pan < 0.008:
+                return
+            self._last_pan = now
             self.manual_zoom = True
             inv = self.ax.transData.inverted()
             start_data = inv.transform(self._pan_start)
@@ -269,24 +380,27 @@ class KymoCanvas(ImageCanvas):
             ddata = (current_data[0] - start_data[0], current_data[1] - start_data[1])
             new_xlim = (self._orig_xlim[0] - ddata[0], self._orig_xlim[1] - ddata[0])
             new_ylim = (self._orig_ylim[0] - ddata[1], self._orig_ylim[1] - ddata[1])
-            self.ax.set_xlim(new_xlim)
-            self.ax.set_ylim(new_ylim)
             # Also update the zoom_center to match the new center.
             cx = (new_xlim[0] + new_xlim[1]) / 2.0
             cy = (new_ylim[0] + new_ylim[1]) / 2.0
             self.zoom_center = (cx, cy)
-            self.update_view()
+            self.update_view(cache_background=False, defer=True)
             # Update pan origin for incremental panning (prevents anchor sticking)
             self._pan_start = (event.x, event.y)
             self._orig_xlim = self.ax.get_xlim()
             self._orig_ylim = self.ax.get_ylim()
 
     def on_mouse_release(self, event):
+        was_panning = bool(self._is_panning)
         self._is_panning = False
-        # Force a final synchronous redraw and update the background
-        self.update_view()
+        if was_panning:
+            self._finish_kymo_interaction(redraw=True)
+        else:
+            # Force a final synchronous redraw and update the background
+            self.update_view()
 
     def resizeEvent(self, event):
+        self._finish_kymo_interaction(redraw=False)
         super().resizeEvent(event)
         # Recompute max_scale on resize so zoom-out still fills the new widget size
         if self.image is not None:
@@ -361,6 +475,7 @@ class KymoCanvas(ImageCanvas):
         return [marker]
 
     def draw_trajectories_on_kymo(self, showsearchline=True, skinny=False, show_labels=True, invert_y=True):
+        self._finish_kymo_interaction(redraw=False)
         
         ax = self.ax
 
@@ -399,6 +514,16 @@ class KymoCanvas(ImageCanvas):
         compute_x_roi = self.navigator.compute_kymo_x_from_roi
         ax = self.ax
 
+        def project_movie_point(x, y):
+            try:
+                xk = compute_x_roi(roi, x, y, kymo_w)
+                if xk is None:
+                    return None
+                xk = float(xk)
+            except (TypeError, ValueError):
+                return None
+            return xk if np.isfinite(xk) else None
+
         # 4) prepare marker storage
         self.scatter_objs_traj= []
         markers = []
@@ -429,7 +554,7 @@ class KymoCanvas(ImageCanvas):
             else:
                 nodes = traj.get("nodes", []) or []
                 for f, x, y in nodes:
-                    xk = compute_x_roi(roi, x, y, kymo_w)
+                    xk = project_movie_point(x, y)
                     if xk is None:
                         continue
                     xs_disp.append(xk)
@@ -484,6 +609,8 @@ class KymoCanvas(ImageCanvas):
             y0 = frame_to_y(sf)
             x1 = compute_x(roi_cache, ex, ey, kymo_w)
             y1 = frame_to_y(ef)
+            if x0 is None or x1 is None:
+                continue
 
             # styling
             is_hl = (idx == selected_idx)
@@ -500,7 +627,11 @@ class KymoCanvas(ImageCanvas):
 
             anchors = traj.get("anchors", []) or []
             traj_roi = traj.get("roi")
-            anchors_match_current = bool(anchors) and isinstance(traj_roi, dict) and traj_roi == roi
+            anchors_match_current = (
+                bool(anchors)
+                and isinstance(traj_roi, dict)
+                and self.navigator._roi_matches(traj_roi, roi)
+            )
 
             scattersize = 9
             linesize = 1.5
@@ -514,121 +645,139 @@ class KymoCanvas(ImageCanvas):
                     xs_disp = [xk for _f, xk, _yk in anchors]
                     ys_disp = [yk for _f, _xk, yk in anchors]
                 else:
-                    disp = [
-                        (compute_x_roi(roi, x, y, kymo_w), frame_to_y(f))
-                        for f, (x, y) in zip(frames, orig)
-                    ]
-                    xs_disp, ys_disp = zip(*disp)
+                    disp = []
+                    for f, point in zip(frames, orig):
+                        if not isinstance(point, (tuple, list)) or len(point) < 2:
+                            continue
+                        xx = project_movie_point(point[0], point[1])
+                        if xx is None:
+                            continue
+                        disp.append((xx, frame_to_y(f)))
+                    if not disp:
+                        xs_disp, ys_disp = [], []
+                    else:
+                        xs_disp, ys_disp = zip(*disp)
 
                 # 5a) dotted start/end connector
-                dotted, = ax.plot(
-                    xs_disp, ys_disp,
-                    color="#7da1ff", linestyle="--", linewidth=2,
-                    alpha=0.8, zorder=2,
-                    solid_capstyle='round', dash_capstyle='round'
-                )
-                markers.append(dotted)
+                if xs_disp and ys_disp:
+                    dotted, = ax.plot(
+                        xs_disp, ys_disp,
+                        color="#7da1ff", linestyle="--", linewidth=2,
+                        alpha=0.8, zorder=2,
+                        solid_capstyle='round', dash_capstyle='round'
+                    )
+                    markers.append(dotted)
 
             # 5b) magenta line through spot centers
             spots = traj.get("spot_centers", [None]*len(frames))
             pts = []
-            for (x_o, y_o), f, spot in zip(orig, frames, spots):
+            for f, spot in zip(frames, spots):
                 yy = frame_to_y(f)
-                xo = compute_x_roi(roi, x_o, y_o, kymo_w)
-                if spot is not None:
-                    xx = compute_x_roi(roi, spot[0], spot[1], kymo_w)
-                    pts.append((xx, yy))
+                if isinstance(spot, (tuple, list, np.ndarray)) and len(spot) >= 2:
+                    xx = project_movie_point(spot[0], spot[1])
+                    if xx is not None:
+                        pts.append((xx, yy))
+                    else:
+                        pts.append((np.nan, np.nan))
                 else:
                     pts.append((np.nan, np.nan))
-            xs_pts, ys_pts = map(np.array, zip(*pts))
-
-            scatter_kwargs, line_color = self.navigator._get_traj_colors(traj)
-
-            line = None
-            pts_colors = scatter_kwargs.get("c")
-            if isinstance(pts_colors, (list, tuple, np.ndarray)) and len(pts_colors) == len(xs_pts):
-                segs = []
-                seg_colors = []
-                for i in range(len(xs_pts) - 1):
-                    if (np.isnan(xs_pts[i]) or np.isnan(ys_pts[i])
-                            or np.isnan(xs_pts[i + 1]) or np.isnan(ys_pts[i + 1])):
-                        continue
-                    segs.append([[xs_pts[i], ys_pts[i]], [xs_pts[i + 1], ys_pts[i + 1]]])
-                    seg_colors.append(pts_colors[i])
-                if segs:
-                    line = LineCollection(
-                        segs,
-                        colors=seg_colors,
-                        linewidths=linesize,
-                        alpha=0.8,
-                        zorder=3
-                    )
-                    ax.add_collection(line)
-
-            if line is None:
-                line, = ax.plot(xs_pts, ys_pts, linestyle='-', color=line_color,
-                                linewidth=linesize, alpha=0.8, zorder=3)
-
-            markers.append(line)
+            if not pts:
+                continue
+            xs_pts, ys_pts = (np.asarray(vals, dtype=float) for vals in zip(*pts))
 
             sx0, sy0 = x0, y0
             sx1, sy1 = x1, y1
 
-            if getattr(self.navigator, "connect_all_spots", False):
-                # find the indices of all actually-fitted spots
-                valid_idxs = [i for i,(x,y) in enumerate(pts) if not np.isnan(x)]
+            hide_spots = getattr(self.navigator, "hide_kymo_spots", False)
+            if not hide_spots:
+                scatter_kwargs, line_color = self.navigator._get_traj_colors(traj)
 
-                if valid_idxs:
-                    # ––– connect from VERY FIRST search-center to first valid spot –––
-                    first_valid = valid_idxs[0]
-                    if first_valid != 0:
-                        # get display coord of orig[0]
-                        x0_orig, y0_orig = orig[0]
-                        xx0 = compute_x_roi(roi, x0_orig, y0_orig, kymo_w)
-                        yy0 = frame_to_y(frames[0])
-                        # get display coord of the first valid spot
-                        gx1, gy1 = pts[first_valid]
-                        gap_line, = ax.plot(
-                            [xx0, gx1], [yy0, gy1],
-                            linestyle='-', color=line_color,
-                            linewidth=linesize, alpha=0.8, zorder=2
+                line = None
+                pts_colors = scatter_kwargs.get("c")
+                if isinstance(pts_colors, (list, tuple, np.ndarray)) and len(pts_colors) == len(xs_pts):
+                    segs = []
+                    seg_colors = []
+                    for i in range(len(xs_pts) - 1):
+                        if (np.isnan(xs_pts[i]) or np.isnan(ys_pts[i])
+                                or np.isnan(xs_pts[i + 1]) or np.isnan(ys_pts[i + 1])):
+                            continue
+                        segs.append([[xs_pts[i], ys_pts[i]], [xs_pts[i + 1], ys_pts[i + 1]]])
+                        seg_colors.append(pts_colors[i])
+                    if segs:
+                        line = LineCollection(
+                            segs,
+                            colors=seg_colors,
+                            linewidths=linesize,
+                            alpha=0.8,
+                            zorder=3
                         )
-                        markers.append(gap_line)
+                        ax.add_collection(line)
 
-                    # ––– gaps BETWEEN valid spots (as before) –––
-                    for a, b in zip(valid_idxs, valid_idxs[1:]):
-                        if b != a + 1:
-                            gx0, gy0 = pts[a]
-                            gx1, gy1 = pts[b]
-                            gap_line, = ax.plot(
-                                [gx0, gx1], [gy0, gy1],
-                                linestyle='-', color=line_color,
-                                linewidth=1.1, alpha=0.4, zorder=2
-                            )
-                            markers.append(gap_line)
+                if line is None:
+                    line, = ax.plot(xs_pts, ys_pts, linestyle='-', color=line_color,
+                                    linewidth=linesize, alpha=0.8, zorder=3)
 
-                    # ––– connect from last valid spot to VERY LAST search-center –––
-                    last_valid = valid_idxs[-1]
-                    if last_valid != len(pts) - 1:
-                        # get display coord of orig[-1]
-                        xN_orig, yN_orig = orig[-1]
-                        xxN = compute_x_roi(roi, xN_orig, yN_orig, kymo_w)
-                        yyN = frame_to_y(frames[-1])
-                        # get display coord of the last valid spot
-                        gx0, gy0 = pts[last_valid]
-                        gap_line, = ax.plot(
-                            [gx0, xxN], [gy0, yyN],
-                            linestyle='-', color=line_color,
-                            linewidth=1.1, alpha=0.4, zorder=2
-                        )
-                        markers.append(gap_line)
+                markers.append(line)
+
+                if getattr(self.navigator, "connect_all_spots", False):
+                    # find the indices of all actually-fitted spots
+                    valid_idxs = [i for i,(x,y) in enumerate(pts) if not np.isnan(x)]
+
+                    if valid_idxs:
+                        # ––– connect from VERY FIRST search-center to first valid spot –––
+                        first_valid = valid_idxs[0]
+                        if first_valid != 0:
+                            # get display coord of orig[0]
+                            if orig and isinstance(orig[0], (tuple, list, np.ndarray)) and len(orig[0]) >= 2:
+                                x0_orig, y0_orig = orig[0]
+                                xx0 = project_movie_point(x0_orig, y0_orig)
+                                if xx0 is not None:
+                                    yy0 = frame_to_y(frames[0])
+                                    # get display coord of the first valid spot
+                                    gx1, gy1 = pts[first_valid]
+                                    gap_line, = ax.plot(
+                                        [xx0, gx1], [yy0, gy1],
+                                        linestyle='-', color=line_color,
+                                        linewidth=linesize, alpha=0.8, zorder=2
+                                    )
+                                    markers.append(gap_line)
+
+                        # ––– gaps BETWEEN valid spots (as before) –––
+                        for a, b in zip(valid_idxs, valid_idxs[1:]):
+                            if b != a + 1:
+                                gx0, gy0 = pts[a]
+                                gx1, gy1 = pts[b]
+                                gap_line, = ax.plot(
+                                    [gx0, gx1], [gy0, gy1],
+                                    linestyle='-', color=line_color,
+                                    linewidth=1.1, alpha=0.4, zorder=2
+                                )
+                                markers.append(gap_line)
+
+                        # ––– connect from last valid spot to VERY LAST search-center –––
+                        last_valid = valid_idxs[-1]
+                        if last_valid != len(pts) - 1:
+                            # get display coord of orig[-1]
+                            if orig and isinstance(orig[-1], (tuple, list, np.ndarray)) and len(orig[-1]) >= 2:
+                                xN_orig, yN_orig = orig[-1]
+                                xxN = project_movie_point(xN_orig, yN_orig)
+                                if xxN is not None:
+                                    yyN = frame_to_y(frames[-1])
+                                    # get display coord of the last valid spot
+                                    gx0, gy0 = pts[last_valid]
+                                    gap_line, = ax.plot(
+                                        [gx0, xxN], [gy0, yyN],
+                                        linestyle='-', color=line_color,
+                                        linewidth=1.1, alpha=0.4, zorder=2
+                                    )
+                                    markers.append(gap_line)
+                    
+                # per-point coloring
+                scatter = ax.scatter(xs_pts, ys_pts, s=scattersize, picker=True, **scatter_kwargs)
                 
-            # per-point coloring
-            scatter = ax.scatter(xs_pts, ys_pts, s=scattersize, picker=True, **scatter_kwargs)
-            
-            scatter.traj_idx = idx
-            markers.append(scatter)
-            self.scatter_objs_traj.append(scatter)
+                scatter.traj_idx = idx
+                markers.append(scatter)
+                self.scatter_objs_traj.append(scatter)
 
             if is_hl and show_anchors:
                 ax_xs, ax_ys = [], []
@@ -639,7 +788,10 @@ class KymoCanvas(ImageCanvas):
                     nodes = traj.get("nodes", []) or []
                     for frame, x, y in nodes:
                         try:
-                            ax_xs.append(compute_x_roi(roi, x, y, kymo_w))
+                            xx = project_movie_point(x, y)
+                            if xx is None:
+                                continue
+                            ax_xs.append(xx)
                             ax_ys.append(frame_to_y(frame))
                         except Exception:
                             continue
@@ -656,7 +808,7 @@ class KymoCanvas(ImageCanvas):
                     markers.append(anchor_scatter)
 
             # 5c) optional halo behind
-            if is_hl and halo_lw:
+            if not hide_spots and is_hl and halo_lw:
                 halo, = ax.plot(
                     xs_pts, ys_pts,
                     linestyle='-', color="#7da1ff",
@@ -695,28 +847,10 @@ class KymoCanvas(ImageCanvas):
                     self.navigator._kymo_label_to_row[lbl] = idx
                     markers.append(lbl)
 
-        # --- single draw + compute all label bboxes at once ---
-        canvas = self.figure.canvas
-        # canvas.draw()
-        renderer = canvas.get_renderer()
-        for m in markers:
-            if isinstance(m, Text):
-                bbox = m.get_window_extent(renderer)
-                try:
-                    patch = m.get_bbox_patch()
-                except Exception:
-                    patch = None
-                if patch is not None:
-                    try:
-                        pb = patch.get_window_extent(renderer)
-                        bbox = bbox.union(pb)
-                    except Exception:
-                        pass
-                # small padding so hover hits the full circle
-                bbox = bbox.expanded(1.5, 1.5)
-                self._kymo_label_bboxes[m] = bbox
+        self._refresh_kymo_label_bboxes()
 
     def clear_kymo_trajectory_markers(self):
+        self._finish_kymo_interaction(redraw=False)
         # Remove start/end circle markers and annotations.
         if hasattr(self.navigator, "trajectory_markers"):
             for marker in self.navigator.trajectory_markers:

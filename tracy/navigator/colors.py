@@ -508,6 +508,10 @@ class NavigatorColorMixin:
         if col == d_col or lk in ("d", "diffusion", "diffusion d", "diffusion_d"):
             return getattr(self, "_D_RANGES", None)
 
+        compact = lk.replace(" ", "")
+        if compact.startswith("ch.") and compact.endswith("co.%"):
+            return getattr(self, "_COLOCALIZATION_PERCENT_RANGES", None)
+
         return None
 
     def _color_for_binned_value(self, v, spec):
@@ -539,4 +543,12 @@ class NavigatorColorMixin:
         (0.01, 0.1,  "#F57C00", "0.01–0.1 μm²/s"),
         (0.1,  1.0,  "#FBC02D", "0.1–1 μm²/s"),
         (1.0,  None, "#388E3C", "D ≥ 1 μm²/s"),
+    ]
+
+    _COLOCALIZATION_PERCENT_RANGES = [
+        (None, 1.0,  "#339CBF", "<1% coloc."),
+        (1.0,  25.0, "#7DA1FF", "1–25% coloc."),
+        (25.0, 50.0, "#FBC02D", "25–50% coloc."),
+        (50.0, 75.0, "#F57C00", "50–75% coloc."),
+        (75.0, None, "#D32F2F", "≥75% coloc."),
     ]

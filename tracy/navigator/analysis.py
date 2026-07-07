@@ -113,7 +113,11 @@ class NavigatorAnalysisMixin:
         try:
             frames, coords, search_centers, ints, fits, background = self._compute_analysis(points, trajectory_background)
         except Exception as e:
-            QMessageBox.warning(self, "", "There was an error adding computing this trajectory. Please try again (consider a longer trajectory or different radius).")
+            QMessageBox.warning(
+                self,
+                "Could not add trajectory",
+                f"{e}\n\nTry Independent mode if Smooth mode cannot find enough spots."
+            )
             print(f"_compute failed: {e}")
             self._is_canceled = True
         
@@ -216,9 +220,7 @@ class NavigatorAnalysisMixin:
                     self._compute_independent(points, bg, showprogress)
                 )
             except Exception as e:
-                print(f"_compute_independent failed: {e}")
-                self._is_canceled = True #REMOVE THIS?
-                return None, None, None, None, None, None
+                raise RuntimeError(f"Initial spot detection failed before smoothing: {e}") from e
             return _normalize_result(self._postprocess_smooth(frames, coords, ints, fit_params, background, bg))
         elif mode == "Same center":
             return _normalize_result(self._compute_same_center(points, bg, showprogress))
@@ -511,6 +513,11 @@ class NavigatorAnalysisMixin:
 
     def _postprocess_smooth(self, all_frames, all_coords, ints, fit_params, background, bg_fixed=None):
         N = len(fit_params)
+        if N == 0:
+            raise ValueError(
+                "Smooth mode could not detect any spots to smooth. "
+                "Try Independent mode, or use a longer trajectory or larger search radius."
+            )
         # 1) pull out raw spot centers (None → nan, nan)
         spot_centers = np.array([
             (fc[0], fc[1]) if fc is not None else (np.nan, np.nan)
@@ -521,8 +528,11 @@ class NavigatorAnalysisMixin:
         idx = np.arange(N)
         valid = ~np.isnan(spot_centers[:,0])
         if valid.sum() < 2:
-            # Not enough valid points to interpolate → bail out
-            return all_frames, all_coords, all_coords, ints, fit_params, background
+            raise ValueError(
+                f"Smooth mode needs at least two detected spots to interpolate and smooth; "
+                f"only {int(valid.sum())} were detected. Try Independent mode, or use a "
+                "longer trajectory or larger search radius."
+            )
 
         x_filled = np.interp(idx, idx[valid], spot_centers[valid,0])
         y_filled = np.interp(idx, idx[valid], spot_centers[valid,1])

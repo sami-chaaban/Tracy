@@ -855,9 +855,6 @@ class MovieCanvas(ImageCanvas):
             "points": self.roiPoints.copy()
         }
 
-        # Generate the kymograph from the full ROI.
-        kymo = self.generate_kymograph(roi)
-
         # Combine keys from both dictionaries.
         all_names = set(self.navigator.rois.keys()) | set(self.navigator.kymographs.keys())
         numeric_names = []
@@ -890,7 +887,7 @@ class MovieCanvas(ImageCanvas):
             n_chan = 1
 
         for ch in range(n_chan):
-            kymo = self.generate_kymograph(roi, channel_override=ch)
+            kymo = self.generate_kymograph(roi, channel_override=ch + 1)
             kymo_name = f"ch{ch+1}-{name}"
             self.navigator.kymographs[kymo_name] = kymo
             self.navigator.kymo_roi_map[kymo_name] = {
@@ -986,13 +983,17 @@ class MovieCanvas(ImageCanvas):
             # For multi–channel movies, extract the 2D frame for the chosen channel.
             if movie.ndim == 4:
                 frame = movie[i]
-                if hasattr(self.navigator, "movieChannelCombo") and self.navigator.movieChannelCombo.isEnabled():
-                    if channel_override is not None:
-                        channel_index = channel_override
-                    else:
-                        channel_index = int(self.navigator.movieChannelCombo.currentText()) - 1
+                if channel_override is not None:
+                    channel_index = int(channel_override) - 1
+                elif hasattr(self.navigator, "movieChannelCombo") and self.navigator.movieChannelCombo.isEnabled():
+                    channel_index = int(self.navigator.movieChannelCombo.currentText()) - 1
                 else:
                     channel_index = 0
+                n_channels = movie.shape[self.navigator._channel_axis]
+                if channel_index < 0 or channel_index >= n_channels:
+                    raise IndexError(
+                        f"Channel {channel_index + 1} is out of range for movie with {n_channels} channels"
+                    )
                 if self.navigator._channel_axis == 1:
                     frame_2d = frame[channel_index]
                 else:

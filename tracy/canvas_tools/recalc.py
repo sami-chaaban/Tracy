@@ -1,4 +1,5 @@
 from ._shared import *
+import traceback
 
 class RecalcDialog(QDialog):
     def __init__(self, current_mode, current_radius, message = "", parent=None):
@@ -65,19 +66,36 @@ class RecalcWorker(QObject):
     progress = pyqtSignal(int)
     finished = pyqtSignal(list)
     canceled = pyqtSignal()
+    failed = pyqtSignal(str)
 
-    def __init__(self, rows, trajectories, navigator):
+    def __init__(self, rows, trajectories, navigator, rebuild_one=None):
         super().__init__()
         self._rows         = rows
         self._trajectories = trajectories
         self._navigator    = navigator
+        self._rebuild_one  = rebuild_one
         self._is_canceled  = False
 
     @pyqtSlot()
     def run(self):
+        try:
+            self._run()
+        except Exception:
+            self.failed.emit(traceback.format_exc())
+
+    def _run(self):
         total = sum(len(self._trajectories[r]["frames"]) for r in self._rows)
         count = 0
         results = []
+        rebuild_one = self._rebuild_one
+        if rebuild_one is None:
+            canvas = getattr(self._navigator, "trajectoryCanvas", None)
+            rebuild_one = getattr(canvas, "_rebuild_one_trajectory", None)
+        if rebuild_one is None:
+            rebuild_one = getattr(self._navigator, "_rebuild_one_trajectory", None)
+        if rebuild_one is None:
+            raise AttributeError("No trajectory rebuild function is available")
+
         # If diffusion is enabled, require scale to be set (nm/px and ms)
         if getattr(self._navigator, "show_diffusion", False):
             if getattr(self._navigator, "pixel_size", None) is None or getattr(self._navigator, "frame_interval", None) is None:
@@ -89,7 +107,7 @@ class RecalcWorker(QObject):
                 self.canceled.emit()
                 return
             old = self._trajectories[row]
-            new_traj = self._navigator._rebuild_one_trajectory(old, self._navigator)
+            new_traj = rebuild_one(old, self._navigator)
 
             # Preserve / merge custom_fields
             if "custom_fields" not in new_traj:

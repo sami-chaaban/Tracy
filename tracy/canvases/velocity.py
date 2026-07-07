@@ -40,32 +40,53 @@ class VelocityCanvas(FigureCanvas):
 
         # 1) Clear & filter out None / non-finite
         ax.clear()
-        valid = np.asarray([v for v in velocities if v is not None])
-        valid = valid[np.isfinite(valid)]
+        raw_velocities = [] if velocities is None else velocities
+        finite_velocities = []
+        for v in raw_velocities:
+            if v is None:
+                continue
+            try:
+                val = float(v)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(val):
+                finite_velocities.append(val)
+        valid = np.asarray(finite_velocities, dtype=float)
 
         # 2) Compute net_speed exactly as before...
-        net_speed = 0
+        net_speed = 0.0
         nav = self.navigator
         if (nav is not None
             and hasattr(nav, 'analysis_frames') and len(nav.analysis_frames) >= 2
             and hasattr(nav, 'analysis_original_coords') and len(nav.analysis_original_coords) >= 2):
-            start_frame, sx, sy = nav.analysis_start
-            end_frame,   ex, ey = nav.analysis_end
-            dx, dy = ex - sx, ey - sy
-            dt = end_frame - start_frame
-            px_dist = np.hypot(dx, dy)
-            if nav.pixel_size is not None and nav.frame_interval is not None:
-                um_dist = px_dist * nav.pixel_size / 1000.0
-                dt_s = dt * nav.frame_interval / 1000.0
-                net_speed = um_dist / dt_s if dt_s > 0 else 0
-            else:
-                net_speed = px_dist / dt
+            try:
+                start_frame, sx, sy = nav.analysis_start
+                end_frame,   ex, ey = nav.analysis_end
+                dx, dy = float(ex) - float(sx), float(ey) - float(sy)
+                dt = float(end_frame) - float(start_frame)
+                px_dist = np.hypot(dx, dy)
+                if dt > 0:
+                    if nav.pixel_size is not None and nav.frame_interval is not None:
+                        um_dist = px_dist * float(nav.pixel_size) / 1000.0
+                        dt_s = dt * float(nav.frame_interval) / 1000.0
+                        net_speed = um_dist / dt_s if dt_s > 0 else 0.0
+                    else:
+                        net_speed = px_dist / dt
+            except (TypeError, ValueError):
+                net_speed = 0.0
+        if not np.isfinite(net_speed):
+            net_speed = 0.0
 
         # 3) Scale to μm/s if possible
         xlabel = "Speed (px/frame)"
-        if valid.size and nav and nav.pixel_size and nav.frame_interval:
-            valid = valid * (nav.pixel_size / nav.frame_interval)
-            xlabel = r"Speed ($\mathrm{\mu m/s}$)"
+        if valid.size and nav and nav.pixel_size is not None and nav.frame_interval is not None:
+            try:
+                scale = float(nav.pixel_size) / float(nav.frame_interval)
+            except (TypeError, ValueError, ZeroDivisionError):
+                scale = None
+            if scale is not None and np.isfinite(scale):
+                valid = valid * scale
+                xlabel = r"Speed ($\mathrm{\mu m/s}$)"
 
         ax.set_xlabel(xlabel, fontsize=12)
         ax.set_ylabel("Count", fontsize=12)
@@ -76,19 +97,41 @@ class VelocityCanvas(FigureCanvas):
         # 4a) If we have data, plot it + avg line + real net line
         if valid.size > 0:
             ax.hist(valid, bins='auto', color='#7da1ff', edgecolor='black')
-            avg = np.mean(valid)
+            avg = float(np.mean(valid))
+            finite_x = np.asarray([*valid.tolist(), avg, net_speed], dtype=float)
+            finite_x = finite_x[np.isfinite(finite_x)]
+            if finite_x.size:
+                lo = float(np.min(finite_x))
+                hi = float(np.max(finite_x))
+                if lo == hi:
+                    pad = max(abs(lo) * 0.05, 0.5)
+                else:
+                    pad = max((hi - lo) * 0.1, 0.05)
+                ax.set_xlim(lo - pad, hi + pad)
+
+            def _safe_vline(x, color):
+                if not np.isfinite(x):
+                    return
+                y0, y1 = ax.get_ylim()
+                if not (np.isfinite(y0) and np.isfinite(y1)) or y0 == y1:
+                    y0, y1 = 0.0, 1.0
+                    ax.set_ylim(y0, y1)
+                try:
+                    ax.plot(
+                        [x, x], [y0, y1],
+                        color=color, linestyle='--',
+                        linewidth=1.5, solid_capstyle='round',
+                        dash_capstyle='round'
+                    )
+                except np.linalg.LinAlgError:
+                    pass
+
             # net line
-            net_line = ax.axvline(net_speed,
-                                color='black', linestyle='--',
-                                linewidth=1.5, solid_capstyle='round',
-                                dash_capstyle='round')
+            _safe_vline(net_speed, 'black')
             legend_handles.append(Line2D([], [], color='black', linestyle='--',
                                         label=f"Net: {net_speed:.2f}"))
             # avg line
-            avg_line = ax.axvline(avg,
-                                color='grey', linestyle='--',
-                                linewidth=1.5, solid_capstyle='round',
-                                dash_capstyle='round')
+            _safe_vline(avg, 'grey')
             legend_handles.append(Line2D([], [], color='grey', linestyle='--',
                                         label=f"Avg: {avg:.2f}"))
 
@@ -113,4 +156,7 @@ class VelocityCanvas(FigureCanvas):
         frame.set_boxstyle("round,pad=0.2")
 
         ax.figure.subplots_adjust(left=0.17, right=0.95, bottom=0.3, top=0.9)
-        self.draw_idle()
+        try:
+            self.draw_idle()
+        except np.linalg.LinAlgError:
+            pass

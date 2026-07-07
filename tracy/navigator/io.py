@@ -67,7 +67,9 @@ class NavigatorIOMixin:
             self.clear_flag = True
 
         if fname:
-            self._last_dir = os.path.dirname(fname)
+            self.movie_path = os.path.abspath(fname)
+            self.movie_dir = os.path.dirname(self.movie_path)
+            self._last_dir = self.movie_dir
             # try:
             with tifffile.TiffFile(fname) as tif:
                 temp_movie = tif.asarray()
@@ -274,7 +276,7 @@ class NavigatorIOMixin:
                     if prev_px is not None or prev_ft is not None:
                         self.pixel_size = None
                         self.frame_interval = None
-                        self.update_scale_label()
+                    self.update_scale_label()
 
             # self.last_kymo_by_channel = {}
 
@@ -719,8 +721,12 @@ class NavigatorIOMixin:
             QMessageBox.warning(self, "", 
                 "Please load a movie before loading a reference.")
             return
+        movie_dir = getattr(self, "movie_dir", None)
+        start_dir = movie_dir if movie_dir and os.path.isdir(movie_dir) else (
+            getattr(self, "_last_dir", "") or os.path.expanduser("~")
+        )
         fname, _ = QFileDialog.getOpenFileName(
-            self, "Open Reference Image", "", "Image Files (*.tif *.tiff *.png *.jpg)"
+            self, "Open Reference Image", start_dir, "Image Files (*.tif *.tiff *.png *.jpg)"
         )
         if not fname:
             return
@@ -1220,6 +1226,9 @@ class NavigatorIOMixin:
 
     def update_kymo_list_for_channel(self):
         ch = int(self.movieChannelCombo.currentText())
+        if self._last_roi and self.kymoCanvas.zoom_center is not None:
+            self._save_zoom_for_roi(self._last_roi)
+
         self.kymoCombo.blockSignals(True)
         self.kymoCombo.clear()
 
@@ -1227,18 +1236,18 @@ class NavigatorIOMixin:
         for name, info in self.kymo_roi_map.items():
             if info["channel"] == ch and not info.get("orphaned", False):
                 self.kymoCombo.addItem(name)
-        self.kymoCombo.blockSignals(False)
 
         # Get all names in this channel
         names = [self.kymoCombo.itemText(i) for i in range(self.kymoCombo.count())]
+        self.kymoCombo.setEnabled(bool(names))
 
         # 2) If there are no kymographs at all, clear and return
         if not names:
             self.kymoCombo.setCurrentIndex(-1)
+            self.kymoCombo.blockSignals(False)
             self.kymoCanvas.ax.cla()
             self.kymoCanvas.ax.axis("off")
             self.kymoCanvas.draw_idle()
-            # self._last_roi = None
             return
 
         # 3) Try to find a “sister” matching the last ROI
@@ -1249,10 +1258,13 @@ class NavigatorIOMixin:
                 if self.kymo_roi_map[name]["roi"] == last_roi:
                     sel = name
                     break
+        else:
+            sel = names[0]
 
         # 4) If no sister found, we want a blank canvas
         if sel is None:
             self.kymoCombo.setCurrentIndex(-1)
+            self.kymoCombo.blockSignals(False)
             self.kymoCanvas.ax.cla()
             self.kymoCanvas.ax.axis("off")
             self.kymoCanvas.draw_idle()
@@ -1262,6 +1274,7 @@ class NavigatorIOMixin:
 
         # 5) Otherwise select & display the sister
         self.kymoCombo.setCurrentText(sel)
+        self.kymoCombo.blockSignals(False)
         self.kymo_changed()
 
     def _save_zoom_for_roi(self, roiName):
@@ -1296,7 +1309,6 @@ class NavigatorIOMixin:
             self.kymoCanvas.ax.cla()
             self.kymoCanvas.ax.axis("off")
             self.kymoCanvas.draw_idle()
-            self._last_roi = None
             return
 
         roiName = info["roi"]

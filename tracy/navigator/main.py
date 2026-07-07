@@ -47,6 +47,8 @@ class KymographNavigator(
         self.frame_interval = None    # in milliseconds (ms)
 
         self.movie = None
+        self.movie_path = None
+        self.movie_dir = None
         self.kymographs = {}
         self.kymographs_log = {}
         self.kymo_log_contrast_settings = {}
@@ -241,6 +243,7 @@ class KymographNavigator(
         self._DIFF_A_COL = "α"
 
         self.connect_all_spots = False
+        self.hide_kymo_spots = False
 
         self.color_by_column = None
 

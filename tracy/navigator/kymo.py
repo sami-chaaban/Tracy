@@ -298,6 +298,7 @@ class NavigatorKymoMixin:
         if not getattr(self, "kymo_anchor_edit_mode", False):
             return
         was_dirty = getattr(self, "_kymo_anchor_drag_dirty", False)
+        edited_row = None
         if force_recalc or was_dirty:
             ok, msg = self._validate_kymo_anchor_edit()
             if not ok:
@@ -314,7 +315,7 @@ class NavigatorKymoMixin:
                 return
             ctx = self._get_selected_kymo_traj_context()
             if ctx is not None:
-                _, traj, _roi, _kymo_w, _num_frames_m1 = ctx
+                edited_row, traj, _roi, _kymo_w, _num_frames_m1 = ctx
                 orig = getattr(self, "_kymo_anchor_edit_orig", None)
                 if orig and orig.get("traj") is traj:
                     anchors = list(traj.get("anchors", []) or [])
@@ -322,9 +323,22 @@ class NavigatorKymoMixin:
                     if anchors == orig.get("anchors") and nodes == orig.get("nodes"):
                         was_dirty = False
                         self._kymo_anchor_drag_dirty = False
+        edit_orig = getattr(self, "_kymo_anchor_edit_orig", None)
         self._set_kymo_anchor_edit_mode(False)
         if force_recalc or was_dirty:
-            self.add_or_recalculate()
+            if edited_row is None:
+                row = self.trajectoryCanvas.table_widget.currentRow()
+                if 0 <= row < len(self.trajectoryCanvas.trajectories):
+                    edited_row = row
+            if edited_row is not None:
+                self.trajectoryCanvas.recalculate_anchor_edit_trajectory(
+                    edited_row,
+                    original_anchors=(edit_orig or {}).get("anchors"),
+                    original_nodes=(edit_orig or {}).get("nodes"),
+                )
+                self.flash_message("Recalculated")
+            else:
+                self.add_or_recalculate()
         else:
             self._restore_anchor_edit_view()
 
@@ -422,6 +436,25 @@ class NavigatorKymoMixin:
             return None
         return selected_idx, traj, roi, kymo_w, num_frames_m1
 
+    @staticmethod
+    def _roi_matches(left: dict, right: dict) -> bool:
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            return False
+        try:
+            lx = [float(v) for v in left.get("x", [])]
+            ly = [float(v) for v in left.get("y", [])]
+            rx = [float(v) for v in right.get("x", [])]
+            ry = [float(v) for v in right.get("y", [])]
+        except Exception:
+            return False
+        if len(lx) < 2 or len(lx) != len(ly) or len(rx) != len(ry):
+            return False
+        if len(lx) != len(rx):
+            return False
+        left_type = str(left.get("type", "line"))
+        right_type = str(right.get("type", "line"))
+        return left_type == right_type and np.allclose(lx, rx) and np.allclose(ly, ry)
+
     def _traj_matches_current_kymo(self, traj: dict, roi: dict) -> bool:
         if not isinstance(traj, dict) or not isinstance(roi, dict):
             return False
@@ -448,7 +481,7 @@ class NavigatorKymoMixin:
                     and is_point_near_roi((ex, ey), roi, search_radius=radius)
                 )
             return False
-        return traj_roi == roi
+        return self._roi_matches(traj_roi, roi)
 
     def _start_kymo_anchor_drag(self, event):
         if event.inaxes != self.kymoCanvas.ax:

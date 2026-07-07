@@ -39,6 +39,8 @@ class _ElidedTextMixin:
     def setText(self, text):
         self._full_text = "" if text is None else str(text)
         self._apply_elision()
+        self.updateGeometry()
+        self.update()
 
     def text(self):
         return getattr(self, "_full_text", super().text())
@@ -112,6 +114,8 @@ class NavigatorUiMixin:
         invertkymoiconpath = self.resource_path('icons/invert.svg')
         logiconpath = self.resource_path('icons/log.svg')
         autopickiconpath = self.resource_path('icons/find.svg')
+        # Keep autopick wired in code, but keep the button out of the shipped UI for now.
+        show_autopick_button = False
         self._traj_overlay_icons = {
             "all": QIcon(trajoverlayiconpath),
             "selected": QIcon(trajoverlayoneiconpath),
@@ -434,28 +438,29 @@ class NavigatorUiMixin:
         kymocontrastLayout.addWidget(kymo_contrast_container)
         kymocontrastLayout.setAlignment(kymo_contrast_container, Qt.AlignBottom)
 
-        self.autopick_button = AnimatedIconButton("")
-        autopick_filter = BubbleTipFilter("Auto-pick trajectories", self, placement="right")
-        self.autopick_button.installEventFilter(autopick_filter)
-        self.autopick_button._bubble_filter = autopick_filter
-        self.autopick_button.setIcon(QIcon(autopickiconpath))
-        self.autopick_button.setIconSize(QSize(16, 16))
-        self.autopick_button.setFixedSize(36, 36)
-        self.autopick_button.setObjectName("Passive")
-        self.autopick_button.clicked.connect(self.on_autopick_clicked)
-        autopick_container = QWidget()
-        autopick_layout = QVBoxLayout(autopick_container)
-        autopick_layout.setContentsMargins(0, 0, 0, 0)
-        autopick_layout.setSpacing(0)
-        autopick_layout.setAlignment(Qt.AlignHCenter)
-        autopick_label = QLabel("FIND")
-        autopick_label.setStyleSheet("color: black; font-size: 10px;")
-        autopick_label.adjustSize()
-        autopick_layout.addSpacing(kymo_label_spacer)
-        autopick_layout.addWidget(self.autopick_button, alignment=Qt.AlignHCenter)
-        autopick_layout.addWidget(autopick_label, alignment=Qt.AlignHCenter)
-        kymocontrastLayout.addWidget(autopick_container)
-        kymocontrastLayout.setAlignment(autopick_container, Qt.AlignBottom)
+        if show_autopick_button:
+            self.autopick_button = AnimatedIconButton("")
+            autopick_filter = BubbleTipFilter("Auto-pick trajectories", self, placement="right")
+            self.autopick_button.installEventFilter(autopick_filter)
+            self.autopick_button._bubble_filter = autopick_filter
+            self.autopick_button.setIcon(QIcon(autopickiconpath))
+            self.autopick_button.setIconSize(QSize(16, 16))
+            self.autopick_button.setFixedSize(36, 36)
+            self.autopick_button.setObjectName("Passive")
+            self.autopick_button.clicked.connect(self.on_autopick_clicked)
+            autopick_container = QWidget()
+            autopick_layout = QVBoxLayout(autopick_container)
+            autopick_layout.setContentsMargins(0, 0, 0, 0)
+            autopick_layout.setSpacing(0)
+            autopick_layout.setAlignment(Qt.AlignHCenter)
+            autopick_label = QLabel("FIND")
+            autopick_label.setStyleSheet("color: black; font-size: 10px;")
+            autopick_label.adjustSize()
+            autopick_layout.addSpacing(kymo_label_spacer)
+            autopick_layout.addWidget(self.autopick_button, alignment=Qt.AlignHCenter)
+            autopick_layout.addWidget(autopick_label, alignment=Qt.AlignHCenter)
+            kymocontrastLayout.addWidget(autopick_container)
+            kymocontrastLayout.setAlignment(autopick_container, Qt.AlignBottom)
 
         self.kymo_traj_overlay_button = AnimatedIconButton("")
         kymo_traj_filter = BubbleTipFilter(
@@ -1220,6 +1225,9 @@ class NavigatorUiMixin:
         self.set_scale()
 
     def update_scale_label(self):
+        if getattr(self, "movie", None) is None:
+            self.scaleLabel.setText("")
+            return
         if self.pixel_size is not None and self.frame_interval is not None:
             self.scaleLabel.setText(f"{self.pixel_size:.1f} nm/pixel, {self.frame_interval:.1f} ms/frame")
         else:
@@ -1239,17 +1247,25 @@ class NavigatorUiMixin:
         filt._showBubble(force=True)
 
     def update_kymo_visibility(self):
-        # Check if there is neither an ROI nor a kymograph loaded.
-        if self.roiCombo.count() == 0 and self.kymoCombo.count() == 0:
-            # Collapse the left column by setting its width to zero.
-            total_width = self.mainSplitter.width()
-            self.mainSplitter.setSizes([0, total_width])
-        else:
-            # Otherwise, restore the left column to a default (say 20% of the total width)
-            total_width = self.mainSplitter.width()
-            left_width = int(0.32 * total_width)
-            right_width = total_width - left_width
-            self.mainSplitter.setSizes([left_width, right_width])
+        has_kymo_content = self.roiCombo.count() > 0 or self.kymoCombo.count() > 0
+        splitter = self.mainSplitter
+        sizes = splitter.sizes()
+        total_width = sum(sizes) if sizes and sum(sizes) > 0 else splitter.width()
+        if total_width <= 0:
+            QTimer.singleShot(0, self.update_kymo_visibility)
+            return
+
+        if not has_kymo_content:
+            splitter.setSizes([0, total_width])
+            return
+
+        # If the kymo side was hidden because there was no content, reveal it.
+        # Otherwise preserve the user's splitter state, including a full-width
+        # kymo canvas with the movie/right panels collapsed.
+        left_width = sizes[0] if len(sizes) >= 2 else 0
+        if left_width <= 0:
+            target_left = int(0.32 * total_width)
+            splitter.setSizes([target_left, max(0, total_width - target_left)])
 
 
     def _make_colored_circle_cursor(self, size=12, thickness=2, shade='green'):
@@ -1402,16 +1418,35 @@ class NavigatorUiMixin:
     def delete_current_roi(self):
         current = self.roiCombo.currentText()
         if current:
+            if hasattr(self, "_roi_zoom_states"):
+                self._roi_zoom_states.pop(current, None)
+            if getattr(self, "_last_roi", None) == current:
+                self._last_roi = None
             # Remove from the dictionary.
             if current in self.rois:
                 del self.rois[current]
+            for kymo_name, info in list(self.kymo_roi_map.items()):
+                roi_name = info.get("roi") if isinstance(info, dict) else info
+                if roi_name != current:
+                    continue
+                self.kymo_roi_map.pop(kymo_name, None)
+                self.kymographs.pop(kymo_name, None)
+                if hasattr(self, "kymographs_log"):
+                    self.kymographs_log.pop(kymo_name, None)
+                if hasattr(self, "kymo_contrast_settings"):
+                    self.kymo_contrast_settings.pop(kymo_name, None)
+                if hasattr(self, "kymo_log_contrast_settings"):
+                    self.kymo_log_contrast_settings.pop(kymo_name, None)
+                idx = self.kymoCombo.findText(kymo_name)
+                if idx >= 0:
+                    self.kymoCombo.removeItem(idx)
             # Remove from the combo box.
             index = self.roiCombo.currentIndex()
             self.roiCombo.removeItem(index)
-            self.kymo_roi_map.pop(current, None)
             # Optionally, reset the selection if needed.
             if self.roiCombo.count() > 0:
                 self.roiCombo.setCurrentIndex(0)
+            self.update_kymo_list_for_channel()
             # Also update any ROI overlays if they are active.
             self.update_roi_overlay_if_active()
             self.update_roilist_visibility()
@@ -1650,11 +1685,41 @@ class NavigatorUiMixin:
 
         # ── 1) Figure out which point & trajectory row we’re on ──
         idx = self.intensityCanvas.current_index
+        if idx is None:
+            return
         row_sel = self.trajectoryCanvas.table_widget.selectionModel().selectedRows()
         if not row_sel:
             return
         row = row_sel[0].row()
+        if row < 0 or row >= len(self.trajectoryCanvas.trajectories):
+            return
         traj = self.trajectoryCanvas.trajectories[row]
+        self.trajectoryCanvas._normalize_trajectory_arrays(traj)
+        if idx < 0 or idx >= len(traj.get("frames", [])):
+            return
+
+        if traj.get("channel") is not None:
+            self._select_channel(traj["channel"])
+        self.analysis_channel         = traj["channel"]
+        self.analysis_start           = traj["start"]
+        self.analysis_end             = traj["end"]
+        self.analysis_roi             = traj["roi"]
+        self.analysis_frames          = list(traj["frames"])
+        self.analysis_search_centers  = list(traj["search_centers"])
+        self.analysis_original_coords = list(traj["original_coords"])
+        self.analysis_intensities     = list(traj["intensities"])
+        self.analysis_background      = list(traj["background"])
+        self.analysis_fit_params      = list(zip(
+            traj["spot_centers"],
+            traj["sigmas"],
+            traj["peaks"],
+        ))
+        self.analysis_velocities      = list(traj["velocities"])
+        self.analysis_colocalized = list(traj.get("colocalization_any", []))
+        self.analysis_colocalized_by_ch = {
+            ch: list(flags)
+            for ch, flags in traj.get("colocalization_by_ch", {}).items()
+        }
 
         # ── 2) Capture “was valid?” before we clobber it ──
         was_valid = (self.analysis_intensities[idx] is not None)
@@ -1662,6 +1727,8 @@ class NavigatorUiMixin:
         # ── 3) Prepare some locals ──
         frame       = self.analysis_frames[idx]
         search_ctr  = self.analysis_search_centers[idx]
+        if search_ctr is None:
+            return
         crop_size   = int(2 * self.searchWindowSpin.value())
         frame_image = self.get_movie_frame(frame)
 
@@ -2058,6 +2125,12 @@ class NavigatorUiMixin:
         self._apply_checkable_action_style(connectgapsAction)
         kymoMenu.addAction(connectgapsAction)
 
+        hideKymoSpotsAction = QAction("Hide Spots", self, checkable=True)
+        hideKymoSpotsAction.setChecked(False)
+        hideKymoSpotsAction.toggled.connect(self.on_hide_kymo_spots_toggled)
+        self._apply_checkable_action_style(hideKymoSpotsAction)
+        kymoMenu.addAction(hideKymoSpotsAction)
+
         trajMenu = menubar.addMenu("Trajectories")
 
         if getattr(self, "debug_mode", False):
@@ -2178,11 +2251,70 @@ class NavigatorUiMixin:
 
         menu.exec_(widget.mapToGlobal(pos))
 
+    @staticmethod
+    def _value_present(value):
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip())
+        try:
+            if pd.isna(value):
+                return False
+        except Exception:
+            pass
+        return True
+
+    def _custom_column_has_value(self, column_name, *, numeric=False):
+        if not column_name:
+            return False
+        for traj in self.trajectoryCanvas.trajectories:
+            value = traj.get("custom_fields", {}).get(column_name)
+            if numeric:
+                if self._safe_float(value) is not None:
+                    return True
+            elif self._value_present(value):
+                return True
+        return False
+
+    def _segment_diffusion_has_value(self, value_key):
+        for traj in self.trajectoryCanvas.trajectories:
+            for entry in (traj.get("segment_diffusion") or []):
+                if not isinstance(entry, dict):
+                    continue
+                if self._safe_float(entry.get(value_key)) is not None:
+                    return True
+        return False
+
+    def _has_colocalization_color_data(self, target_channel=None):
+        for traj in self.trajectoryCanvas.trajectories:
+            if target_channel is None:
+                flags = traj.get("colocalization_any", []) or []
+                if any(flag in ("Yes", "No") for flag in flags):
+                    return True
+            else:
+                flags = (traj.get("colocalization_by_ch", {}) or {}).get(target_channel, []) or []
+                if any(flag in ("Yes", "No") for flag in flags):
+                    return True
+
+        return False
+
     def _rebuild_color_by_actions(self):
         # 1) clear old
         for act in self._colorByActions:
             self.colorByMenu.removeAction(act)
         self._colorByActions.clear()
+
+        def add_color_action(text, key):
+            act = QAction(text, self, checkable=True)
+            act.setData(key)
+            act.toggled.connect(lambda on, a=act:
+                self._on_color_by_toggled(a.data(), a, on)
+            )
+            self._apply_checkable_action_style(act)
+            if self.color_by_column == key:
+                act.setChecked(True)
+            self._colorByActions.append(act)
+            return act
 
         def finalize_menu():
             def sort_key(act):
@@ -2197,41 +2329,35 @@ class NavigatorUiMixin:
         # 2) add custom columns (binary/value)
         for col in self.trajectoryCanvas.custom_columns:
             ctype = self.trajectoryCanvas._column_types[col]
-            if ctype in ("binary", "value"):
-                act = QAction(f"{col}", self, checkable=True)
-                act.setData(col)   # ← store the real key
-                act.toggled.connect(lambda on, a=act: 
-                    self._on_color_by_toggled(a.data(), a, on)
-                )
-                self._apply_checkable_action_style(act)
-                # if already selected, show its checkmark
-                if self.color_by_column == col:
-                    act.setChecked(True)
+            if ctype not in ("binary", "value", "coloc"):
+                continue
 
-                self._colorByActions.append(act)
+            d_col = getattr(self, "_DIFF_D_COL", "D (μm²/s)")
+            a_col = getattr(self, "_DIFF_A_COL", "α")
+            if col in (d_col, a_col):
+                if not (getattr(self, "show_diffusion", False)
+                        or self._custom_column_has_value(col, numeric=True)):
+                    continue
+            elif ctype == "coloc":
+                if not self._custom_column_has_value(col, numeric=True):
+                    continue
+
+            add_color_action(f"{col}", col)
 
         if self.movie is None:
             finalize_menu()
             return
 
-        has_seg_diff = any(
-            isinstance(t.get("segment_diffusion"), (list, tuple)) and t.get("segment_diffusion")
-            for t in self.trajectoryCanvas.trajectories
+        d_col = getattr(self, "_DIFF_D_COL", "D (μm²/s)")
+        a_col = getattr(self, "_DIFF_A_COL", "α")
+        segment_options = (
+            (d_col, "D"),
+            (a_col, "alpha"),
         )
-        if getattr(self, "show_diffusion", False) or has_seg_diff:
-            d_col = getattr(self, "_DIFF_D_COL", "D (μm²/s)")
-            a_col = getattr(self, "_DIFF_A_COL", "α")
-            for base in (d_col, a_col):
+        for base, value_key in segment_options:
+            if getattr(self, "show_diffusion", False) or self._segment_diffusion_has_value(value_key):
                 key = f"{base} (per segment)"
-                act = QAction(f"{key}", self, checkable=True)
-                act.setData(key)
-                act.toggled.connect(lambda on, a=act: 
-                    self._on_color_by_toggled(a.data(), a, on)
-                )
-                self._apply_checkable_action_style(act)
-                if self.color_by_column == key:
-                    act.setChecked(True)
-                self._colorByActions.append(act)
+                add_color_action(f"{key}", key)
 
         # 3) count channels
         if self.movie.ndim == 4 and self._channel_axis is not None:
@@ -2239,38 +2365,36 @@ class NavigatorUiMixin:
         else:
             n_chan = 1
 
-        # 4) add colocalization actions (only when enabled)
-        if getattr(self, "check_colocalization", False):
+        # 4) add point-wise colocalization actions when enabled or loaded.
+        if getattr(self, "check_colocalization", False) or self._has_colocalization_color_data():
             if n_chan == 2:
                 key = "colocalization"
-                act = QAction("Colocalization", self, checkable=True)
-                act.setData(key)
-                act.toggled.connect(lambda on, a=act: 
-                    self._on_color_by_toggled(a.data(), a, on)
-                )
-                self._apply_checkable_action_style(act)
-                if self.color_by_column == key:
-                    act.setChecked(True)
-                self._colorByActions.append(act)
+                add_color_action("Colocalization", key)
 
             elif n_chan > 2:
                 for tgt in range(1, n_chan+1):
+                    if (not getattr(self, "check_colocalization", False)
+                            and not self._has_colocalization_color_data(tgt)):
+                        continue
                     key  = f"coloc_ch{tgt}"
                     text = f"Ch. {tgt} coloc"
-                    act = QAction(text, self, checkable=True)
-                    act.setData(key)
-                    act.toggled.connect(lambda on, a=act: 
-                        self._on_color_by_toggled(a.data(), a, on)
-                    )
-                    self._apply_checkable_action_style(act)
-                    if self.color_by_column == key:
-                        act.setChecked(True)
-                    self._colorByActions.append(act)
+                    add_color_action(text, key)
 
         finalize_menu()
 
     def _on_color_by_toggled(self, column_name, action, checked):
-        if checked and (column_name == "colocalization" or column_name.startswith("coloc_ch")):
+        is_coloc = (
+            isinstance(column_name, str)
+            and (column_name == "colocalization" or column_name.startswith("coloc_ch"))
+        )
+        target_channel = None
+        if is_coloc and column_name.startswith("coloc_ch"):
+            try:
+                target_channel = int(column_name.split("coloc_ch", 1)[1])
+            except Exception:
+                target_channel = None
+
+        if checked and is_coloc and not self._has_colocalization_color_data(target_channel):
             # colocalizationAction is the earlier QAction.
             if not self.colocalizationAction.isChecked():
                 # This checks the box and fires on_colocalization_toggled.
@@ -2415,6 +2539,11 @@ class NavigatorUiMixin:
         # Store on navigator (used by kymo drawing).
         self.connect_all_spots = checked
         # then force a redraw
+        self.kymoCanvas.draw_trajectories_on_kymo()
+        self.kymoCanvas.draw_idle()
+
+    def on_hide_kymo_spots_toggled(self, checked: bool):
+        self.hide_kymo_spots = checked
         self.kymoCanvas.draw_trajectories_on_kymo()
         self.kymoCanvas.draw_idle()
 

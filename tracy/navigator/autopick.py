@@ -1577,6 +1577,18 @@ class _AutoPickReviewDialog(QDialog):
         self.accept()
 
 class NavigatorAutoPickMixin:
+    def _show_autopick_error_dialog(self, message: str):
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Warning)
+        dialog.setWindowTitle("")
+        dialog.setText("Auto-pick failed.")
+        dialog.setInformativeText(str(message))
+        dialog.setStandardButtons(QMessageBox.Ok)
+        copy_button = dialog.addButton("Copy diagnostics", QMessageBox.ActionRole)
+        dialog.exec_()
+        if dialog.clickedButton() is copy_button:
+            QApplication.clipboard().setText(str(message))
+
     def _packaged_autopick_model_path(self) -> str:
         resolver = getattr(self, "resource_path", None)
         if resolver is None:
@@ -2390,6 +2402,12 @@ class NavigatorAutoPickMixin:
     def _cleanup_autopick_thread_objects(self, thread=None, worker=None):
         thread = thread if thread is not None else getattr(self, "_autopick_thread", None)
         worker = worker if worker is not None else getattr(self, "_autopick_worker", None)
+        if thread is not None:
+            try:
+                if thread.isRunning():
+                    return False
+            except Exception:
+                pass
         if thread is self._autopick_thread:
             self._autopick_thread = None
         if worker is self._autopick_worker:
@@ -2404,6 +2422,7 @@ class NavigatorAutoPickMixin:
                 thread.deleteLater()
             except Exception:
                 pass
+        return True
 
     def _on_autopick_thread_finished(self):
         thread = self._autopick_thread
@@ -3508,7 +3527,7 @@ class NavigatorAutoPickMixin:
             if self._autopick_cancel_requested:
                 self.flash_message("Finding canceled")
                 return
-            QMessageBox.warning(self, "", f"Auto-pick failed:\n{exc}")
+            self._show_autopick_error_dialog(str(exc))
         finally:
             self._finish_autopick_ui()
 
@@ -3518,7 +3537,7 @@ class NavigatorAutoPickMixin:
             self.flash_message("Finding canceled")
             self._finish_autopick_ui()
             return
-        QMessageBox.warning(self, "", f"Auto-pick failed:\n{message}")
+        self._show_autopick_error_dialog(str(message))
         self._finish_autopick_ui()
 
     def _on_autopick_canceled(self):
