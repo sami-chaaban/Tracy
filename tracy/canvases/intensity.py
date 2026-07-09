@@ -66,6 +66,11 @@ class IntensityCanvas(FigureCanvas):
         self._resize_highlight_timer.setSingleShot(True)
         self._resize_highlight_timer.timeout.connect(self._deferred_resize_highlight)
 
+    @staticmethod
+    def _match_offset_text_to_tick_labels(ax, labelsize=12):
+        ax.yaxis.get_offset_text().set_fontsize(labelsize)
+        ax.xaxis.get_offset_text().set_fontsize(labelsize)
+
     # def showEvent(self, event):
     #     super().showEvent(event)
     #     QTimer.singleShot(0, lambda: self.plot_intensity(**self._last_plot_args))
@@ -152,30 +157,32 @@ class IntensityCanvas(FigureCanvas):
         else:
             colors_list = ["magenta"] * n
 
+        # Draw the status bar as one collection. Creating one Rectangle artist
+        # per frame makes row selection scale very poorly for long movies.
+        verts = []
         for i, frame in enumerate(frames_display):
-            # pick colour
-            col = colors_list[i]
-
-            # compute segment width
-            if i < n - 1:
-                width = frames_display[i+1] - frame
-            else:
-                width = 1
-
-            # draw a plain rectangle with square corners
-            rect = Rectangle(
+            end_frame = frames_display[i + 1] if i < n - 1 else frame + 1
+            if end_frame <= frame:
+                end_frame = frame + 1
+            verts.append([
                 (frame, y0),
-                width,
-                bar_height,
-                facecolor=col,
-                edgecolor="none"
+                (end_frame, y0),
+                (end_frame, y0 + bar_height),
+                (frame, y0 + bar_height),
+            ])
+        self.ax_top.add_collection(
+            PolyCollection(
+                verts,
+                facecolors=colors_list,
+                edgecolors="none",
             )
-            self.ax_top.add_patch(rect)
+        )
 
         self.ax_bottom.set_ylabel("Intensity (A.U.)", fontsize=12)
         self.ax_bottom.set_xlabel("Frame", fontsize=12)
         self.ax_bottom.tick_params(axis='both', which='major', labelsize=12)
         self.ax_bottom.tick_params(axis='x', which='major', labelsize=10)
+        self._match_offset_text_to_tick_labels(self.ax_bottom, labelsize=12)
 
         # === build scatter_args correctly ===
         if isinstance(colors, dict):
@@ -302,6 +309,7 @@ class IntensityCanvas(FigureCanvas):
             # if there’s any real spread, pad by 10%; otherwise default to ±1
             margin = 0.1 * (ymax - ymin) if ymax > ymin else 1
             self.ax_bottom.set_ylim(ymin - margin, ymax + margin)
+        self._match_offset_text_to_tick_labels(self.ax_bottom, labelsize=12)
         
         if relayout:
             self._apply_intensity_layout()

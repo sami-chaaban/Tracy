@@ -113,6 +113,7 @@ class NavigatorUiMixin:
         kymoanchoriconpath = self.resource_path('icons/overlay_anchor.svg')
         invertkymoiconpath = self.resource_path('icons/invert.svg')
         logiconpath = self.resource_path('icons/log.svg')
+        fulliconpath = self.resource_path('icons/full.svg')
         autopickiconpath = self.resource_path('icons/find.svg')
         # Keep autopick wired in code, but keep the button out of the shipped UI for now.
         show_autopick_button = False
@@ -380,7 +381,6 @@ class NavigatorUiMixin:
         self.kymoCanvas.mpl_connect("motion_notify_event", self.on_kymo_hover)
         self.kymoCanvas.mpl_connect("axes_leave_event", self.on_kymo_leave)
         self.kymoCanvas.mpl_connect("figure_leave_event", self.on_kymo_leave)
-        self.kymoCanvas.mpl_connect("pick_event", self._on_kymo_label_pick)
 
         self.kymoCanvas.setContextMenuPolicy(Qt.CustomContextMenu)
         self.kymoCanvas.customContextMenuRequested.connect(self._show_kymo_context_menu)
@@ -482,7 +482,7 @@ class NavigatorUiMixin:
         kymo_traj_layout.setContentsMargins(0, 0, 0, 0)
         kymo_traj_layout.setSpacing(0)
         kymo_traj_layout.setAlignment(Qt.AlignHCenter)
-        kymo_traj_label = QLabel("SPOTS")
+        kymo_traj_label = QLabel("TRAJ.")
         kymo_traj_label.setStyleSheet("color: black; font-size: 10px;")
         kymo_traj_label.adjustSize()
         kymo_traj_layout.addSpacing(kymo_label_spacer)
@@ -541,6 +541,29 @@ class NavigatorUiMixin:
         log_layout.addWidget(log_label, alignment=Qt.AlignHCenter)
         kymocontrastLayout.addWidget(log_container)
         kymocontrastLayout.setAlignment(log_container, Qt.AlignBottom)
+
+        self.kymo_full_button = AnimatedIconButton("")
+        kymofullfilter = BubbleTipFilter("Fit full kymograph to canvas", self, placement="right")
+        self.kymo_full_button.installEventFilter(kymofullfilter)
+        self.kymo_full_button._bubble_filter = kymofullfilter
+        self.kymo_full_button.setIcon(QIcon(fulliconpath))
+        self.kymo_full_button.setIconSize(QSize(16, 16))
+        self.kymo_full_button.setFixedSize(36, 36)
+        self.kymo_full_button.setObjectName("Passive")
+        self.kymo_full_button.clicked.connect(self.on_kymo_full_clicked)
+        full_container = QWidget()
+        full_layout = QVBoxLayout(full_container)
+        full_layout.setContentsMargins(0, 0, 0, 0)
+        full_layout.setSpacing(0)
+        full_layout.setAlignment(Qt.AlignHCenter)
+        full_label = QLabel("FILL")
+        full_label.setStyleSheet("color: black; font-size: 10px;")
+        full_label.adjustSize()
+        full_layout.addSpacing(kymo_label_spacer)
+        full_layout.addWidget(self.kymo_full_button, alignment=Qt.AlignHCenter)
+        full_layout.addWidget(full_label, alignment=Qt.AlignHCenter)
+        kymocontrastLayout.addWidget(full_container)
+        kymocontrastLayout.setAlignment(full_container, Qt.AlignBottom)
 
         leftLayout.addSpacing(2)
         leftLayout.addWidget(kymocontrastwidget, alignment=Qt.AlignCenter)
@@ -789,7 +812,7 @@ class NavigatorUiMixin:
         traj_layout.setContentsMargins(0, 0, 0, 0)
         traj_layout.setSpacing(0)
         traj_layout.setAlignment(Qt.AlignHCenter)
-        traj_label = QLabel("SPOTS")
+        traj_label = QLabel("TRAJ.")
         traj_label.setStyleSheet("color: black; font-size: 10px;")
         traj_label.adjustSize()
         traj_layout.addSpacing(movie_label_spacer)
@@ -1918,13 +1941,19 @@ class NavigatorUiMixin:
             kymo_name = self.kymoCombo.currentText()
             if kymo_name and kymo_name in self.kymographs and self.rois:
                 roi = self.rois[self.roiCombo.currentText()]
-                xk = self.compute_kymo_x_from_roi(
-                    roi, sx, sy,
-                    self.kymographs[kymo_name].shape[1]
-                )
-                if xk is not None:
-                    disp_frame = (self.movie.shape[0] - 1) - frame
-                    self.kymoCanvas.add_circle(xk, disp_frame, color='grey')
+                marker_allowed = None
+                if hasattr(self, "_selected_trajectory_matches_current_kymo"):
+                    marker_allowed = self._selected_trajectory_matches_current_kymo(roi)
+                if marker_allowed is None:
+                    marker_allowed = is_point_near_roi((sx, sy), roi)
+                if marker_allowed:
+                    xk = self.compute_kymo_x_from_roi(
+                        roi, sx, sy,
+                        self.kymographs[kymo_name].shape[1]
+                    )
+                    if xk is not None:
+                        disp_frame = (self.movie.shape[0] - 1) - frame
+                        self.kymoCanvas.add_circle(xk, disp_frame, color='grey')
         else:
             # magenta on movie at fitted center
             if fitted is not None:
@@ -1945,13 +1974,19 @@ class NavigatorUiMixin:
             kymo_name = self.kymoCombo.currentText()
             if kymo_name and kymo_name in self.kymographs and self.rois:
                 roi = self.rois[self.roiCombo.currentText()]
-                xk = self.compute_kymo_x_from_roi(
-                    roi, fx, fy,
-                    self.kymographs[kymo_name].shape[1]
-                )
-                if xk is not None:
-                    disp_frame = (self.movie.shape[0] - 1) - frame
-                    self.kymoCanvas.add_circle(xk, disp_frame, color=self.get_point_color())
+                marker_allowed = None
+                if hasattr(self, "_selected_trajectory_matches_current_kymo"):
+                    marker_allowed = self._selected_trajectory_matches_current_kymo(roi)
+                if marker_allowed is None:
+                    marker_allowed = is_point_near_roi((fx, fy), roi)
+                if marker_allowed:
+                    xk = self.compute_kymo_x_from_roi(
+                        roi, fx, fy,
+                        self.kymographs[kymo_name].shape[1]
+                    )
+                    if xk is not None:
+                        disp_frame = (self.movie.shape[0] - 1) - frame
+                        self.kymoCanvas.add_circle(xk, disp_frame, color=self.get_point_color())
 
         # final idle draws
         self.zoomInsetWidget.draw_idle()
@@ -2015,6 +2050,14 @@ class NavigatorUiMixin:
     # In create_menu(), add a new menu action:
     def create_menu(self):
         menubar = self.menuBar()
+
+        editMenu = menubar.addMenu("Edit")
+        self.undoAction = self.undo_stack.createUndoAction(self, "Undo")
+        self.undoAction.setShortcut(QKeySequence.Undo)
+        self.redoAction = self.undo_stack.createRedoAction(self, "Redo")
+        self.redoAction.setShortcut(QKeySequence.Redo)
+        editMenu.addAction(self.undoAction)
+        editMenu.addAction(self.redoAction)
 
         # Create File-related menus
         loadMenu = menubar.addMenu("Load")
@@ -2092,22 +2135,11 @@ class NavigatorUiMixin:
         self.channelAxisAction = channelAxisAction
         movieMenu.addAction(channelAxisAction)
 
-        self.spotMenu = menubar.addMenu("Spot")
-        searchRadiusAction = QAction("Search Radius", self)
-        searchRadiusAction.triggered.connect(self.set_search_radius)
-        self.spotMenu.addAction(searchRadiusAction)
-
-        # Create a QComboBox for Tracking Mode and wrap it in a QWidgetAction.
-        trackingModeAction = QAction("Tracking Mode", self)
-        trackingModeAction.triggered.connect(self.set_tracking_mode)
-        self.spotMenu.addAction(trackingModeAction)
-
-        avoidOldSpotsAction = QAction("Avoid previous spots", self, checkable=True)
-        avoidOldSpotsAction.setChecked(False)
-        avoidOldSpotsAction.setStatusTip("Skip any spot centers that were already analysed")
-        avoidOldSpotsAction.toggled.connect(lambda checked: setattr(self, "avoid_previous_spot", checked))
-        self._apply_checkable_action_style(avoidOldSpotsAction)
-        self.spotMenu.addAction(avoidOldSpotsAction)
+        hideMovieSpotsAction = QAction("Hide Spots", self, checkable=True)
+        hideMovieSpotsAction.setChecked(False)
+        hideMovieSpotsAction.toggled.connect(self.on_hide_movie_spots_toggled)
+        self._apply_checkable_action_style(hideMovieSpotsAction)
+        movieMenu.addAction(hideMovieSpotsAction)
 
         kymoMenu = menubar.addMenu("Kymograph")
 
@@ -2115,7 +2147,7 @@ class NavigatorUiMixin:
         kymopreferencesAction.triggered.connect(self.open_kymopreferences_dialog)
         kymoMenu.addAction(kymopreferencesAction)
 
-        kymoGenerateFromTrajAction = QAction("Draw from trajectories", self)
+        kymoGenerateFromTrajAction = QAction("Draw from trajectory metadata", self)
         kymoGenerateFromTrajAction.triggered.connect(self.generate_rois_from_trajectories)
         kymoMenu.addAction(kymoGenerateFromTrajAction)
 
@@ -2162,6 +2194,23 @@ class NavigatorUiMixin:
         self._colorByActions   = []
         self.trajMenu          = trajMenu
 
+        self.spotMenu = menubar.addMenu("Spot")
+        searchRadiusAction = QAction("Search Radius", self)
+        searchRadiusAction.triggered.connect(self.set_search_radius)
+        self.spotMenu.addAction(searchRadiusAction)
+
+        # Create a QComboBox for Tracking Mode and wrap it in a QWidgetAction.
+        trackingModeAction = QAction("Tracking Mode", self)
+        trackingModeAction.triggered.connect(self.set_tracking_mode)
+        self.spotMenu.addAction(trackingModeAction)
+
+        avoidOldSpotsAction = QAction("Avoid previous spots", self, checkable=True)
+        avoidOldSpotsAction.setChecked(False)
+        avoidOldSpotsAction.setStatusTip("Skip any spot centers that were already analysed")
+        avoidOldSpotsAction.toggled.connect(lambda checked: setattr(self, "avoid_previous_spot", checked))
+        self._apply_checkable_action_style(avoidOldSpotsAction)
+        self.spotMenu.addAction(avoidOldSpotsAction)
+
         viewMenu = menubar.addMenu("View")
         if sys.platform.startswith("win"):
             # Windows can under-estimate menu width when checkable items use custom icons.
@@ -2179,6 +2228,12 @@ class NavigatorUiMixin:
         self.insetAct.toggled.connect(self.toggle_inset_visibility)
         self._apply_checkable_action_style(self.insetAct)
         viewMenu.addAction(self.insetAct)
+
+        self.slowComputerModeAct = QAction("Slow computer mode", self, checkable=True)
+        self.slowComputerModeAct.setChecked(False)
+        self.slowComputerModeAct.toggled.connect(self.on_slow_computer_mode_toggled)
+        self._apply_checkable_action_style(self.slowComputerModeAct)
+        viewMenu.addAction(self.slowComputerModeAct)
 
         zoomAction = QAction("Inset size", self)
         zoomAction.triggered.connect(self.open_zoom_dialog)
@@ -2547,6 +2602,26 @@ class NavigatorUiMixin:
         self.kymoCanvas.draw_trajectories_on_kymo()
         self.kymoCanvas.draw_idle()
 
+    def on_hide_movie_spots_toggled(self, checked: bool):
+        self.hide_movie_spots = checked
+        self.movieCanvas.draw_trajectories_on_movie()
+        try:
+            self._rebuild_movie_blit_background()
+        except Exception:
+            self.movieCanvas.draw_idle()
+
+    def on_slow_computer_mode_toggled(self, checked: bool):
+        self.slow_computer_mode = bool(checked)
+        if checked:
+            return
+        canvas = getattr(self, "kymoCanvas", None)
+        if canvas is None:
+            return
+        try:
+            canvas._finish_kymo_interaction(redraw=True)
+        except Exception:
+            canvas.draw_idle()
+
     def on_toggle_log_filter(self, checked: bool):
         self.applylogfilter = checked
         btn = getattr(self, "kymo_log_filter_button", None)
@@ -2556,6 +2631,19 @@ class NavigatorUiMixin:
             btn.blockSignals(False)
         if getattr(self, "kymoCombo", None) is not None and self.kymoCombo.currentText():
             self.kymo_changed()
+
+    def on_kymo_full_clicked(self):
+        canvas = getattr(self, "kymoCanvas", None)
+        if canvas is None:
+            return
+
+        kymo_name = self.kymoCombo.currentText() if getattr(self, "kymoCombo", None) is not None else ""
+        info = self.kymo_roi_map.get(kymo_name) if kymo_name else None
+        roi_name = info.get("roi") if isinstance(info, dict) else None
+        if roi_name and hasattr(self, "_roi_zoom_states"):
+            self._roi_zoom_states.pop(roi_name, None)
+
+        canvas.fit_to_full_image()
 
     def on_colocalization_toggled(self, checked: bool):
         if self.movie is None or self.movie.ndim != 4:

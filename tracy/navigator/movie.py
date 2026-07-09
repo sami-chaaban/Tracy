@@ -58,7 +58,7 @@ class NavigatorMovieMixin:
 
         # Refresh overlays so frame-dependent styling (e.g., fades) stays in sync.
         try:
-            self.movieCanvas.draw_trajectories_on_movie()
+            self.movieCanvas.draw_selected_trajectory_on_movie()
         except Exception:
             pass
 
@@ -66,7 +66,7 @@ class NavigatorMovieMixin:
         canvas = self.movieCanvas.figure.canvas
         self.movieCanvas._bg = canvas.copy_from_bbox(self.movieCanvas.ax.bbox)
 
-    def jump_to_analysis_point(self, index, animate="ramp", zoom=False):
+    def jump_to_analysis_point(self, index, animate="ramp", zoom=False, refresh_movie_overlay=False):
 
         # ——— Early exits & locals ———
         if not self.analysis_frames or not self.analysis_search_centers:
@@ -75,7 +75,8 @@ class NavigatorMovieMixin:
         if index < 0 or index >= n:
             return
 
-        self.cancel_left_click_sequence()
+        if not self.looping:
+            self.cancel_left_click_sequence()
         if self.sumBtn.isChecked():
             self.sumBtn.setChecked(False)
         if self.refBtn.isChecked():
@@ -213,24 +214,32 @@ class NavigatorMovieMixin:
                 kymo_name = self.kymoCombo.currentText()
                 if kymo_name and kymo_name in self.kymographs and self.rois:
                     roi = self.rois[self.roiCombo.currentText()]
-                    xk = None
-                    # check fit‐center first, then raw center
-                    if fc is not None and is_point_near_roi(fc, roi):
-                        xk = self.compute_kymo_x_from_roi(
-                            roi, fc[0], fc[1],
-                            self.kymographs[kymo_name].shape[1]
-                        )
-                    elif is_point_near_roi((cx, cy), roi):
-                        xk = self.compute_kymo_x_from_roi(
-                            roi, cx, cy,
-                            self.kymographs[kymo_name].shape[1]
-                        )
-                    if xk is not None:
-                        disp_frame = (self.movie.shape[0] - 1) - frame
-                        kc.add_circle(
-                            xk, disp_frame,
-                            color=pointcolor if fc is not None else 'grey'
-                        )
+                    marker_allowed = None
+                    if hasattr(self, "_selected_trajectory_matches_current_kymo"):
+                        marker_allowed = self._selected_trajectory_matches_current_kymo(roi)
+                    if marker_allowed is None:
+                        marker_allowed = is_point_near_roi((cx, cy), roi)
+                    if marker_allowed:
+                        xk = None
+                        marker_color = 'grey'
+                        if fc is not None:
+                            xk = self.compute_kymo_x_from_roi(
+                                roi, fc[0], fc[1],
+                                self.kymographs[kymo_name].shape[1]
+                            )
+                            if xk is not None:
+                                marker_color = pointcolor
+                        if xk is None and is_point_near_roi((cx, cy), roi):
+                            xk = self.compute_kymo_x_from_roi(
+                                roi, cx, cy,
+                                self.kymographs[kymo_name].shape[1]
+                            )
+                        if xk is not None:
+                            disp_frame = (self.movie.shape[0] - 1) - frame
+                            kc.add_circle(
+                                xk, disp_frame,
+                                color=marker_color
+                            )
 
             # ——— 7) Histogram & sliders ———
             if hc:
@@ -245,8 +254,10 @@ class NavigatorMovieMixin:
             if hasattr(self, 'analysisSlider'):
                 self.analysisSlider.setValue(index)
 
-            # refresh movie overlays so frame-dependent styling (e.g., fades) stays in sync
-            mc.draw_trajectories_on_movie()
+            if refresh_movie_overlay:
+                mc.draw_trajectories_on_movie()
+            elif not self.looping:
+                mc.draw_selected_trajectory_on_movie()
 
         finally:
             mc.setUpdatesEnabled(True)
@@ -260,8 +271,10 @@ class NavigatorMovieMixin:
             mc._bg = canvas.copy_from_bbox(mc.ax.bbox)
             # mc._roi_bg = canvas.copy_from_bbox(mc.ax.bbox)
 
-            # 3) draw any other canvases as needed
-            self.kymoCanvas.draw()
+            # During playback the kymo only needs its moving circle updated.
+            # add_circle() handles that by blitting over a cached static kymo.
+            if not self.looping:
+                self.kymoCanvas.draw()
 
             self.frameSlider.blockSignals(False)
             if hasattr(self, 'analysisSlider'):
@@ -410,6 +423,53 @@ class NavigatorMovieMixin:
 
         self.movieCanvas.draw_idle()
 
+    def _movie_label_hit(self, event):
+        bboxes = getattr(self.movieCanvas, "_movie_label_bboxes", None)
+        if bboxes:
+            for label, bbox in bboxes.items():
+                try:
+                    if not bbox.contains(event.x, event.y):
+                        continue
+                except Exception:
+                    continue
+                traj_idx = getattr(label, "traj_idx", None)
+                if traj_idx is None:
+                    return None
+                return label, traj_idx
+
+        for label in getattr(self.movieCanvas, "movie_label_artists", []):
+            try:
+                hit, _info = label.contains(event)
+            except Exception:
+                continue
+            if not hit:
+                continue
+            traj_idx = getattr(label, "traj_idx", None)
+            if traj_idx is None:
+                continue
+            return label, traj_idx
+        return None
+
+    def _select_movie_label_row(self, row):
+        trajectories = getattr(self.trajectoryCanvas, "trajectories", []) or []
+        if row < 0 or row >= len(trajectories):
+            return
+        if self.looping:
+            self.stoploop()
+        self.cancel_left_click_sequence()
+        tbl = self.trajectoryCanvas.table_widget
+        current_row = tbl.currentRow()
+        tbl.blockSignals(True)
+        try:
+            tbl.selectRow(row)
+            item = tbl.item(row, 0)
+            if item is not None:
+                tbl.scrollToItem(item)
+        finally:
+            tbl.blockSignals(False)
+        if row != current_row:
+            self.trajectoryCanvas.on_trajectory_selected_by_index(row, zoom=False)
+
     def on_movie_click(self, event):
         roi_mode = self.movieCanvas.roiAddMode
         if not roi_mode:
@@ -418,15 +478,9 @@ class NavigatorMovieMixin:
                 and event.inaxes == self.movieCanvas.ax
                 and self.traj_overlay_button.isChecked()
             ):
-                for artist in getattr(self.movieCanvas, "movie_trajectory_markers", []):
-                    hit, _info = artist.contains(event)
-                    if not hit:
-                        continue
-                    traj_idx = getattr(artist, "traj_idx", None)
-                    if traj_idx is None:
-                        continue
-                    if not hasattr(artist, "get_text"):
-                        continue
+                label_hit = self._movie_label_hit(event)
+                if label_hit is not None:
+                    _artist, traj_idx = label_hit
                     gui_evt = getattr(event, "guiEvent", None)
                     if isinstance(gui_evt, QMouseEvent):
                         global_pos = gui_evt.globalPos()
@@ -441,8 +495,13 @@ class NavigatorMovieMixin:
                 and self.traj_overlay_button.isChecked()
                 and len(self.analysis_points) <= 1
             ):
-                # Loop through all trajectory‐artists (annotations and scatter) that we stored
-                for artist in getattr(self.movieCanvas, "movie_trajectory_markers", []):
+                label_hit = self._movie_label_hit(event)
+                if label_hit is not None:
+                    _artist, traj_idx = label_hit
+                    self._select_movie_label_row(traj_idx)
+                    return
+
+                for artist in getattr(self.movieCanvas, "movie_clickable_artists", []):
                     hit, info = artist.contains(event)
                     if not hit:
                         continue

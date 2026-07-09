@@ -141,6 +141,7 @@ tracy &                    # run in the background
 7. Use the **Invert** button (left of the kymograph delete button) to horizontally flip the kymograph. This also reverses the line direction and mirrors any kymograph anchors so overlays stay aligned.
 
 > *Tip:* Use the **FILTER** button (to the right of **Anchors**) to toggle a LoG‑filtered view of the current kymograph. The filtered view has its own contrast settings and does not change any tracking/analysis.
+> *Tip:* Existing trajectories can also define kymographs: right‑click a trajectory row and choose **Draw kymograph from trajectory** to create a movie ROI from that trajectory’s anchors. If multiple trajectories are selected, use **Draw kymographs from trajectories**.
 
 ### 5. Generating Trajectories <a name="generating-trajectories"></a>
 
@@ -150,7 +151,7 @@ tracy &                    # run in the background
 2. Double‑click to finish and compute a trajectory using your search radius and tracking mode (see [tracking options](#tracking-options)).
 3. Click any kymograph or plot point to jump to that spot; use `→`/`←` to step forward and backward.
 4. Press spacebar to animate the trajectory and again to stop the playback.
-5. If you want to recalculate the trajectory with new tracking options, press `Enter` (or **Trajectory » Recalculate**).
+5. If you want to recalculate the trajectory with new tracking options, press `Enter` (or **Trajectories » Recalculate selected**).
 6. If a spot looks wrong, press `x` to invalidate the highlighted point; press `x` again to re‑fit and restore it.
 
 > *Tip:* Optionally connect gaps via **Kymograph » Connect Spot Gaps**.
@@ -161,7 +162,7 @@ tracy &                    # run in the background
 2. Skip a few frames and click the next spot. Repeat until the track is covered.
 3. End a click sequence with `Enter` or cancel with `Esc`.
 4. Browse, playback, edit tracks as above.
-5. If you want to recalculate the trajectory with new [tracking options](#tracking-options), press `Enter` (or **Trajectory » Recalculate**).
+5. If you want to recalculate the trajectory with new [tracking options](#tracking-options), press `Enter` (or **Trajectories » Recalculate selected**).
 
 > *Tip:* You can use “video‑game” controls: `w`/`a`/`s`/`d` to move the cursor, `l`/`j` to change frames, `k` to select the spot.
 
@@ -183,7 +184,7 @@ tracy &                    # run in the background
   * **Tracked:** uses previous frame’s spot as center.
   * **Smooth:** independent + post‑filter outliers.
 * Avoid using spots in existing tracks via **Spot » Avoid previous spots**.
-* Tracking options are set for any subsequent analysis. An existing trajectory can be recalculated using the currently set options by pressing `Enter` (or **Trajectory » Recalculate**).
+* Tracking options are set for any subsequent analysis. An existing trajectory can be recalculated using the currently set options by pressing `Enter` (or **Trajectories » Recalculate selected**).
 
 </details>
 
@@ -203,10 +204,13 @@ tracy &                    # run in the background
 ### 6. Browsing Trajectories <a name="browsing-trajectories"></a>
 
 * New trajectories append to the **Trajectory Table**.
-* The **SPOTS** buttons under the movie and kymograph control trajectory overlays separately. Each cycles **all → selected → off**; the movie button affects only the movie canvas, and the kymo button affects only the kymograph (defaults: movie = selected, kymo = all).
+* The **TRAJ.** buttons under the movie and kymograph separately control trajectory overlays. Each cycles **all → selected → off**; the movie button affects only the movie canvas, and the kymo button affects only the kymograph (defaults: movie = selected, kymo = all).
+* Use **Movie » Hide Spots** or **Kymograph » Hide Spots** to hide the fitted spot markers on that canvas while keeping trajectory overlays available.
+* If kymograph panning, zooming, or resizing is sluggish with many overlays visible, enable **View » Slow computer mode**. This temporarily hides kymograph overlays during interaction and redraws them afterward. It is off by default.
 * Click trajectories in the table or use the arrow keys (**`↑`**, **`↓`**). Right‑click for options (e.g. Go to kymograph).
 * Delete a trajectory with `Backspace`.
-* Right‑click menu options include saving selected trajectories, jumping to the matching kymograph, and marking/setting custom columns.
+* Right‑click menu options include saving selected trajectories, jumping to the matching kymograph, drawing kymographs from trajectory anchors, and marking/setting custom columns.
+* Use **Draw kymograph from trajectory** from a trajectory row’s right‑click menu to create a kymograph ROI from that trajectory’s anchors, as if you had drawn the ROI manually in the movie. If multiple trajectories are selected, use **Draw kymographs from trajectories**.
 
 ### 7. Saving <a name="saving"></a>
 
@@ -264,14 +268,14 @@ Use the **Save** menu to export the current movie display, kymographs, ROIs, or 
 ### Colocalization <a name="colocalization"></a>
 
 * Determines colocalization if a spot exists within 4 pixels in the other channel.
-* Enable via **Trajectory » Calculate Colocalization** for multi‑channel movies.
+* Enable via **Trajectories » Calculate Colocalization** for multi‑channel movies.
 * If existing trajectories are missing colocalization values, Tracy will prompt to calculate them; choosing **No** leaves them uncalculated (the toggle stays on for future trajectories).
 * Results appear as new table columns.
 
 ### Step Finding <a name="step-finding"></a>
 
 * Calculates steps in the intensity profile.
-* Enable **Trajectory » Calculate Steps**.
+* Enable **Trajectories » Calculate Steps**.
 * The settings dialog uses **Set**/**Cancel**; **Set** applies to future calculations.
 * Adjust rolling‑average window and minimum step size:
 
@@ -289,7 +293,7 @@ Use the **Save** menu to export the current movie display, kymographs, ROIs, or 
 
 * Rationale: this is the standard 2D MSD power-law used in single-particle tracking, with **α = 1** for Brownian motion and **α ≠ 1** capturing anomalous diffusion. Tracy uses the imaging plane (x–y), so the 2D prefactor (4) is appropriate for planar motion; if your trajectories are strictly along a filament, a 1D model would use a prefactor of 2, which would scale the reported **D** by about 2. The fit is intentionally simple (no explicit offset term), so localization error or mixed directed/diffusive motion can bias **D** and **α**; in those cases, use shorter lags or interpret values as effective parameters.
 
-* Enable via **Trajectory » Calculate Diffusion**.
+* Enable via **Trajectories » Calculate Diffusion**.
 * Two analysis parameters control the MSD fit window:
 
   * **Max lag:** the largest time separation (Δt) included when computing MSD points and fitting **D** and **α**. Larger values include longer time scales but use fewer displacement pairs (and can be noisier).
@@ -343,7 +347,7 @@ Use the **Load** and **Save** menus to move data in and out of Tracy.
 
 * Load `.xlsx` files with the above sheets or similar formats (requires columns: Trajectory, Channel, Frame, Search Center X, Search Center Y).
 * If the workbook includes kymograph geometry, Tracy can regenerate kymographs from the `Kymo-Anchors`/`ROI` columns, and it can optionally restore empty kymographs recorded in **Per-kymograph**.
-* Use **Kymograph » Draw from Trajectories** to redraw the stored kymograph lines saved in the spreadsheet (Per-trajectory `Kymo-Anchors`/`ROI` columns).
+* Use **Kymograph » Draw from trajectory metadata** to redraw the stored kymograph lines saved in the spreadsheet (Per-trajectory `Kymo-Anchors`/`ROI` columns).
 
 ### Save Trajectories <a name="save-trajectories"></a>
 

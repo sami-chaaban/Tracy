@@ -145,18 +145,20 @@ class NavigatorAnalysisMixin:
         valid_velocities = [v for v in self.analysis_velocities if v is not None]
         self.analysis_average_velocity = float(np.mean(valid_velocities)) if valid_velocities else None
 
-        if getattr(self, 'check_colocalization', False) and self.movie.ndim == 4:
-            self._compute_colocalization()
-        else:
-            # fill with Nones if turned off or single‐channel
-            N = len(self.analysis_frames)
-            self.analysis_colocalized = [None] * N
-            # *also* define per-channel dict of None‐lists
-            ref_ch    = self.analysis_channel
-            n_chan    = self.movie.shape[self._channel_axis] if self._channel_axis is not None else 1
-            self.analysis_colocalized_by_ch = {
-                ch: [None]*N for ch in range(1, n_chan+1) if ch != ref_ch
-            }
+        # Keep trajectory creation focused on finding the spots. Colocalization
+        # can be computed later from the existing missing-colocalization actions.
+        N = len(self.analysis_frames)
+        self.analysis_colocalized = [None] * N
+        ref_ch = self.analysis_channel
+        n_chan = self.movie.shape[self._channel_axis] if self._channel_axis is not None else 1
+        self.analysis_colocalized_by_ch = {
+            ch: [None]*N for ch in range(1, n_chan+1) if ch != ref_ch
+        }
+        self.analysis_colocalization_pending = (
+            getattr(self, 'check_colocalization', False)
+            and self.movie.ndim == 4
+            and self._channel_axis is not None
+        )
 
         if getattr(self, "show_steps", False):
             (
@@ -221,11 +223,69 @@ class NavigatorAnalysisMixin:
                 )
             except Exception as e:
                 raise RuntimeError(f"Initial spot detection failed before smoothing: {e}") from e
-            return _normalize_result(self._postprocess_smooth(frames, coords, ints, fit_params, background, bg))
+            return _normalize_result(self._postprocess_smooth(frames, coords, ints, fit_params, background, bg, showprogress))
         elif mode == "Same center":
             return _normalize_result(self._compute_same_center(points, bg, showprogress))
         else:
             raise ValueError(f"Unknown mode {mode!r}")
+
+    def _past_centers_by_frame(self):
+        if not getattr(self, "avoid_previous_spot", False):
+            return {}
+        out = {}
+        for pf, px, py in getattr(self, "past_centers", []) or []:
+            try:
+                out.setdefault(int(pf), []).append((float(px), float(py)))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def _fit_gaussian_jobs(self, jobs, progress_label, showprogress=True):
+        total = len(jobs)
+        results = [None] * total
+        if total == 0:
+            return results
+
+        progress = None
+        if showprogress and total > 50 and not getattr(self, "_suppress_internal_progress", False):
+            progress = QProgressDialog(progress_label, "Cancel", 0, total, self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.setAutoClose(False)
+            progress.show()
+
+        def _fit(job):
+            idx, frame, cx, cy, img, crop_size, pixel_size, bg_fixed = job
+            if img is None:
+                return idx, frame, cx, cy, None, None, None, None, None
+            fc, sigma, intensity, peak, bkgr = perform_gaussian_fit(
+                img,
+                (cx, cy),
+                crop_size,
+                pixelsize=pixel_size,
+                bg_fixed=bg_fixed,
+            )
+            return idx, frame, cx, cy, fc, sigma, intensity, peak, bkgr
+
+        completed = 0
+        try:
+            for job in jobs:
+                if getattr(self, "_is_canceled", False):
+                    break
+                result = _fit(job)
+                results[result[0]] = result
+                completed += 1
+                if progress:
+                    progress.setValue(completed)
+                    QApplication.processEvents()
+                    if progress.wasCanceled():
+                        self._is_canceled = True
+                        break
+        finally:
+            if progress:
+                progress.close()
+
+        return results
 
     def _compute_same_center(self, points, bg=None, showprogress=True):
         """
@@ -240,49 +300,24 @@ class NavigatorAnalysisMixin:
 
         # 3) Prepare outputs
         N = len(all_frames)
-        all_coords             = []
+        all_coords             = [(cx, cy) for _f, cx, cy in points]
         integrated_intensities = [None] * N
         background             = [None] * N
         fit_params             = [(None, None, None)] * N
 
-        # 4) (Optional) progress dialog
-        progress = None
-        if showprogress and N > 50 and not getattr(self, "_suppress_internal_progress", False):
-            progress = QProgressDialog("Re‑fitting at same centers…", "Cancel", 0, N, self)
-            progress.setWindowModality(Qt.WindowModal)
-            progress.setMinimumDuration(0)
-            progress.show()
-
-        # 5) Loop once per point, exactly at the provided cx,cy
-        for idx, (f, cx, cy) in enumerate(points):
-            all_coords.append((cx, cy))
-            img = frame_cache.get(f)
-            if img is not None:
-                # reuse gaussian fit call
-                fc, sigma, intensity, peak, bkgr = perform_gaussian_fit(
-                    img,
-                    (cx, cy),
-                    int(2 * self.searchWindowSpin.value()),
-                    pixelsize=self.pixel_size,
-                    bg_fixed=bg
-                )
-                if fc is not None:
-                    background[idx]            = max(0, bkgr)
-                    fit_params[idx]            = (fc, sigma, peak)
-                    integrated_intensities[idx] = max(0, intensity)
-            # otherwise leave None/grey
-
-            # update progress
-            if progress:
-                progress.setValue(idx+1)
-                QApplication.processEvents()
-                if progress.wasCanceled():
-                    self._is_canceled = True
-                    progress.close()
-                    break
-
-        if progress:
-            progress.close()
+        crop_size = int(2 * self.searchWindowSpin.value())
+        jobs = [
+            (idx, f, cx, cy, frame_cache.get(f), crop_size, self.pixel_size, bg)
+            for idx, (f, cx, cy) in enumerate(points)
+        ]
+        for result in self._fit_gaussian_jobs(jobs, "Re-fitting at same centers...", showprogress):
+            if result is None:
+                continue
+            idx, _f, _cx, _cy, fc, sigma, intensity, peak, bkgr = result
+            if fc is not None:
+                background[idx]             = max(0, bkgr)
+                fit_params[idx]             = (fc, sigma, peak)
+                integrated_intensities[idx] = max(0, intensity)
 
         return all_frames, all_coords, all_coords, integrated_intensities, fit_params, background
 
@@ -305,21 +340,11 @@ class NavigatorAnalysisMixin:
         background             = [None] * N
         fit_params            = [(None,None,None)]*N
 
-        # 3) Progress dialog once N > 50
-        progress = None
-        if showprogress and N > 50 and not getattr(self, "_suppress_internal_progress", False):
-            progress = QProgressDialog("Processing...", "Cancel", 0, N, self)
-            progress.setWindowModality(Qt.WindowModal)
-            progress.setMinimumDuration(0)
-            progress.setAutoClose(False)
-            progress.show()
-
-        # 4) Walk each segment in turn
-        idx = 0
+        # 3) Build one independent fit job per frame.
+        jobs = []
+        crop_size = int(2 * self.searchWindowSpin.value())
         for i in range(len(points)-1):
             if getattr(self, "_is_canceled", False):
-                if progress:
-                    progress.close()
                 return all_frames, all_coords, all_coords, integrated_intensities, fit_params, background
             f1, x1, y1 = points[i]
             f2, x2, y2 = points[i+1]
@@ -328,48 +353,31 @@ class NavigatorAnalysisMixin:
 
             for j, f in enumerate(seg):
                 if getattr(self, "_is_canceled", False):
-                    if progress:
-                        progress.close()
                     return all_frames, all_coords, all_coords, integrated_intensities, fit_params, background
                 # compute independent center
                 t = j/(n-1) if n>1 else 0
                 cx = x1 + t*(x2-x1)
                 cy = y1 + t*(y2-y1)
                 all_coords.append((cx, cy))
-                img = frame_cache[f]
-                fc, sigma, intensity, peak, bkgr = None, None, None, None, None
-                if img is not None:
-                    fc, sigma, intensity, peak, bkgr = perform_gaussian_fit(
-                        img, (cx, cy), int(2 * self.searchWindowSpin.value()), pixelsize = self.pixel_size, bg_fixed=bg
-                    )
-                if fc is not None:
-                    is_retrack = (
-                        self.avoid_previous_spot
-                        and any(
-                            pf == f and
-                            np.hypot(fc[0] - px, fc[1] - py) < self.same_spot_threshold
-                            for pf, px, py in self.past_centers
-                        )
-                    )
-                    if not is_retrack:
-                        fit_params[idx]            = (fc, sigma, peak)
-                        background[idx]            = max(0, bkgr)
-                        integrated_intensities[idx] = max(0, intensity)
-                # else: leave None / grey
-                # t1 = time.perf_counter()
-                # print(f"1 {(t1 - t0)*1000:.2f} ms")
-                idx += 1
-                # update progress & allow cancel
-                if progress:
-                    progress.setValue(idx)
-                    QApplication.processEvents()
-                    if progress.wasCanceled():
-                        self._is_canceled = True
-                        progress.close()
-                        return all_frames, all_coords, all_coords, integrated_intensities, fit_params, background
+                jobs.append((len(jobs), f, cx, cy, frame_cache.get(f), crop_size, self.pixel_size, bg))
 
-        if progress:
-            progress.close()
+        past_by_frame = self._past_centers_by_frame()
+        for result in self._fit_gaussian_jobs(jobs, "Processing...", showprogress):
+            if result is None:
+                continue
+            idx, f, _cx, _cy, fc, sigma, intensity, peak, bkgr = result
+            if fc is None:
+                continue
+            is_retrack = False
+            if past_by_frame:
+                for px, py in past_by_frame.get(int(f), []):
+                    if np.hypot(fc[0] - px, fc[1] - py) < self.same_spot_threshold:
+                        is_retrack = True
+                        break
+            if not is_retrack:
+                fit_params[idx]             = (fc, sigma, peak)
+                background[idx]             = max(0, bkgr)
+                integrated_intensities[idx] = max(0, intensity)
 
         return all_frames, all_coords, all_coords, integrated_intensities, fit_params, background
 
@@ -413,6 +421,7 @@ class NavigatorAnalysisMixin:
         # 5) Sequentially track through each segment
         current_center = (points[0][1], points[0][2])
         processed = 0
+        past_by_frame = self._past_centers_by_frame()
 
         for i in range(len(points) - 1):
             f1, x1, y1 = points[i]
@@ -440,7 +449,8 @@ class NavigatorAnalysisMixin:
                         current_center,
                         search_radius,
                         pixel_size,
-                        bg
+                        bg,
+                        past_by_frame,
                     )
 
                 new_centers.append(new_center)
@@ -483,7 +493,7 @@ class NavigatorAnalysisMixin:
         # 7) return frames, independent centers, blended centers, and fit results
         return all_frames, independent_centers, new_centers, integrated_intensities, fit_params, background
 
-    def _track_frame(self, framenum, img, icx, icy, current, radius, pixel_size, bg=None):
+    def _track_frame(self, framenum, img, icx, icy, current, radius, pixel_size, bg=None, past_by_frame=None):
         
         nc = ((current[0]+icx)/2, (current[1]+icy)/2)
 
@@ -499,9 +509,9 @@ class NavigatorAnalysisMixin:
         if fc is None:
             return nc, None, None, None, None, None
 
-        if self.avoid_previous_spot and fc is not None:
-            for pf, px, py in self.past_centers:
-                if pf == framenum and np.hypot(fc[0] - px, fc[1] - py) < self.same_spot_threshold:
+        if past_by_frame and fc is not None:
+            for px, py in past_by_frame.get(int(framenum), []):
+                if np.hypot(fc[0] - px, fc[1] - py) < self.same_spot_threshold:
                     return (nc, None, None, None, None, None)
 
         dx, dy = fc[0]-icx, fc[1]-icy
@@ -511,7 +521,7 @@ class NavigatorAnalysisMixin:
 
         return nc, fc, sigma, intensity, peak, bkgr
 
-    def _postprocess_smooth(self, all_frames, all_coords, ints, fit_params, background, bg_fixed=None):
+    def _postprocess_smooth(self, all_frames, all_coords, ints, fit_params, background, bg_fixed=None, showprogress=True):
         N = len(fit_params)
         if N == 0:
             raise ValueError(
@@ -560,21 +570,26 @@ class NavigatorAnalysisMixin:
         # 6) find anomalies
         anomalies = np.where(deviations > thresh)[0]
 
-        # 7) re‑fit each anomalous frame at the smoothed center
-        for i in anomalies:
+        # 7) re-fit each anomalous frame at the smoothed center
+        anomaly_indices = [int(i) for i in anomalies]
+        if anomaly_indices:
+            radius = int(np.ceil(4 * good_sigma))
+        jobs = []
+        job_to_anomaly = []
+        for i in anomaly_indices:
             cx, cy = smooth_centers[i]
             # all_coords[i] = (cx, cy)    # use smoothed for next pass
-            radius = int(np.ceil(4 * good_sigma))
             img = self.get_movie_frame(all_frames[i])
             if img is None:
                 continue
+            job_to_anomaly.append(i)
+            jobs.append((len(jobs), all_frames[i], cx, cy, img, radius, self.pixel_size, bg_fixed))
 
-            fc, sx, intensity, peak, bkgr = perform_gaussian_fit(
-                img, (cx, cy),
-                crop_size=radius,
-                pixelsize=self.pixel_size,
-                bg_fixed=bg_fixed
-            )
+        for result in self._fit_gaussian_jobs(jobs, "Re-fitting smoothed centers...", showprogress):
+            if result is None:
+                continue
+            job_idx, _frame, _cx, _cy, fc, sx, intensity, peak, bkgr = result
+            i = job_to_anomaly[job_idx]
             if fc is not None:
                 # overwrite spot_centers and returned list
                 # all_coords[i]       = tuple(fc)
@@ -646,29 +661,41 @@ class NavigatorAnalysisMixin:
         # storage
         any_list      = [None]*N
         results_by_ch = {ch: [None]*N for ch in range(1, n_chan+1) if ch != ref_ch}
+        if not results_by_ch:
+            self.analysis_colocalized       = any_list
+            self.analysis_colocalized_by_ch = results_by_ch
+            return
 
-        progress = None
-        if showprogress and N > 20:
-            progress = QProgressDialog("Checking colocalization…", "Cancel", 0, N, self)
-            progress.setWindowModality(Qt.WindowModal)
-            progress.setMinimumDuration(0)
-            progress.show()
-
+        crop_size = int(2*self.searchWindowSpin.value())
+        jobs = []
+        job_meta = []
         for i, (frame, center) in enumerate(zip(frames, centers)):
-            if progress:
-                progress.setValue(i)
-                QApplication.processEvents()
-                if progress.wasCanceled():
-                    break
+            if center is None:
+                continue
+            x0, y0 = center
+            for tgt_ch in results_by_ch:
+                img = self.get_movie_frame(frame, channel_override=tgt_ch)
+                job_meta.append((i, tgt_ch, x0, y0))
+                jobs.append((len(jobs), frame, x0, y0, img, crop_size, self.pixel_size, None))
 
-            any_flag, per_ch = self._coloc_flags_for_frame(frame, center)
-            any_list[i] = any_flag
-            for ch, flag in per_ch.items():
-                results_by_ch[ch][i] = flag
+        for result in self._fit_gaussian_jobs(jobs, "Checking colocalization...", showprogress):
+            if result is None:
+                continue
+            job_idx, _frame, _x, _y, fc, *_ = result
+            i, tgt_ch, x0, y0 = job_meta[job_idx]
+            ok = (
+                fc is not None
+                and np.hypot(fc[0]-x0, fc[1]-y0) <= self.colocalization_threshold
+            )
+            results_by_ch[tgt_ch][i] = "Yes" if ok else "No"
 
-        if progress:
-            progress.setValue(N)
-            progress.close()
+        for i, center in enumerate(centers):
+            if center is None:
+                continue
+            flags = [results_by_ch[ch][i] for ch in results_by_ch]
+            valid_flags = [flag for flag in flags if flag is not None]
+            if valid_flags:
+                any_list[i] = "Yes" if any(flag == "Yes" for flag in valid_flags) else "No"
 
         self.analysis_colocalized       = any_list
         self.analysis_colocalized_by_ch = results_by_ch
@@ -699,6 +726,7 @@ class NavigatorAnalysisMixin:
             ch: list(flags)
             for ch, flags in self.analysis_colocalized_by_ch.items()
         }
+        traj["colocalization_pending"] = False
 
         # 5) now write percentages back into custom_fields & table
         cf      = traj.setdefault("custom_fields", {})
@@ -822,9 +850,11 @@ class NavigatorAnalysisMixin:
                 self.loop_index = int(self.intensityCanvas.current_index)
             else: 
                 self.loop_index = 0
+            self.looping = True
+            if hasattr(self.kymoCanvas, "invalidate_blit_background"):
+                self.kymoCanvas.invalidate_blit_background()
             self.jump_to_analysis_point(self.loop_index, animate="discrete")
             self.loopTimer.start()
-            self.looping = True
             self.flash_message("Playback started")
 
     def loop_points(self):
@@ -1194,7 +1224,8 @@ class NavigatorAnalysisMixin:
             self.set_roi_mode(False)
 
     def endKymoClickSequence(self):
-        anchors = self.analysis_anchors
+        anchors = self._sort_anchors_by_frame(self.analysis_anchors)
+        self.analysis_anchors = anchors
         roi = self.analysis_roi
 
         full_pts = []
@@ -1767,6 +1798,7 @@ class NavigatorAnalysisMixin:
 
             traj["colocalization_any"] = any_flags
             traj["colocalization_by_ch"] = by_ch
+            traj["colocalization_pending"] = False
 
             cf = traj.setdefault("custom_fields", {})
             valid_any = [s for s in any_flags if s is not None]

@@ -2,6 +2,7 @@ from ._shared import *
 
 class NavigatorColorMixin:
     def set_color_by(self, column_name):
+        self._value_color_map_cache = {}
         for act in self._colorByActions:
             # look at the `data()`, not `text()`
             act.setChecked(act.data() == column_name)
@@ -43,6 +44,7 @@ class NavigatorColorMixin:
         Re-apply the current color-by without touching menu check states.
         Use after mutating custom fields while a color-by is active.
         """
+        self._value_color_map_cache = {}
         # redraw the trajectories
         self.kymoCanvas.remove_circle()
         self.kymoCanvas.clear_kymo_trajectory_markers()
@@ -76,7 +78,6 @@ class NavigatorColorMixin:
         If no color_by is set, uses traj['colors'] as the scatter 'c' argument.
         """
         col = self.color_by_column
-        all_trajs = self.trajectoryCanvas.trajectories
 
         seg_suffix = " (per segment)"
         if isinstance(col, str) and col.endswith(seg_suffix):
@@ -166,20 +167,8 @@ class NavigatorColorMixin:
             # One color per trajectory (D/alpha are per-trajectory)
             return {"color": c, "zorder": 4}, c
 
-        # binary / value modes need a global map for "value"
         if mode == "value":
-            # collect unique vals
-            seen = []
-            for t in all_trajs:
-                v = t.get("custom_fields", {}).get(col)
-                if v and v not in seen:
-                    seen.append(v)
-            # build large color list
-            def cmap_hex(name):
-                cmap = cm.get_cmap(name)
-                return [mcolors.to_hex(cmap(i)) for i in range(cmap.N)]
-            palette = cmap_hex("Accent") + cmap_hex("tab10") + cmap_hex("tab20")
-            color_map = {v: palette[i % len(palette)] for i,v in enumerate(seen)}
+            color_map = self._value_color_map_for_column(col)
         else:
             color_map = {}
 
@@ -220,6 +209,47 @@ class NavigatorColorMixin:
             main = "magenta"
 
         return scatter_kwargs, main
+
+    def _value_color_map_for_column(self, col):
+        cache = getattr(self, "_value_color_map_cache", None)
+        if cache is None:
+            cache = {}
+            self._value_color_map_cache = cache
+
+        seen = []
+        for traj in self.trajectoryCanvas.trajectories:
+            value = traj.get("custom_fields", {}).get(col)
+            if value and value not in seen:
+                seen.append(value)
+        signature = tuple(seen)
+        cached = cache.get(col)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+
+        def cmap_hex(name):
+            cmap = cm.get_cmap(name)
+            return [mcolors.to_hex(cmap(i)) for i in range(cmap.N)]
+
+        palette = cmap_hex("Accent") + cmap_hex("tab10") + cmap_hex("tab20")
+        color_map = {value: palette[i % len(palette)] for i, value in enumerate(seen)}
+        cache[col] = (signature, color_map)
+        return color_map
+
+    def _get_uniform_traj_color(self, traj):
+        """
+        Return the active trajectory-level color, or None for point-wise/segment
+        color modes where the search line should keep its default styling.
+        """
+        if not self.color_by_column:
+            return None
+        scatter_kwargs, _line_color = self._get_traj_colors(traj)
+        color = scatter_kwargs.get("color")
+        if color is None:
+            return None
+        try:
+            return color if mcolors.is_color_like(color) else None
+        except Exception:
+            return None
 
     def _reposition_legend(self, margin=7, left_margin=10):
         """
@@ -278,20 +308,8 @@ class NavigatorColorMixin:
             elif mode == "coloc_multi":
                 entries = [("#FFC107", f"Ch. {tgt} coloc.")]
             elif mode == "value":
-                # collect unique vals & map them
-                seen = []
-                for t in self.trajectoryCanvas.trajectories:
-                    v = t.get("custom_fields", {}).get(col)
-                    if v and v not in seen:
-                        seen.append(v)
-
-                # build palette
-                def cmap_hex(name):
-                    cmap = cm.get_cmap(name)
-                    return [mcolors.to_hex(cmap(i)) for i in range(cmap.N)]
-
-                palette = cmap_hex("Accent") + cmap_hex("tab10") + cmap_hex("tab20")
-                color_map = {v: palette[i % len(palette)] for i, v in enumerate(seen)}
+                color_map = self._value_color_map_for_column(col)
+                seen = list(color_map)
                 entries = [(color_map[v], v) for v in seen]
             elif mode == "binary":
                 entries = [("#FFC107", col)]

@@ -3,6 +3,7 @@ from .base import ImageCanvas
 from matplotlib.textpath import TextPath
 from matplotlib.font_manager import FontProperties
 from matplotlib.transforms import Affine2D
+import traceback
 
 class MovieCanvas(ImageCanvas):
     def __init__(self, parent=None, navigator=None):
@@ -62,6 +63,15 @@ class MovieCanvas(ImageCanvas):
         self.last_intensity_value = None
 
         self.manual_zoom = False
+        self.movie_trajectory_markers = []
+        self.movie_selected_trajectory_markers = []
+        self._movie_base_clickable_artists = []
+        self._movie_selected_clickable_artists = []
+        self._movie_base_label_artists = []
+        self._movie_selected_label_artists = []
+        self.movie_clickable_artists = []
+        self.movie_label_artists = []
+        self._movie_label_bboxes: dict[Text, Bbox] = {}
 
         self._ctrl_panning = False
         self._last_pan = 0.0
@@ -141,7 +151,14 @@ class MovieCanvas(ImageCanvas):
             if navigator is None or not hasattr(navigator, "handle_movie_load"):
                 QMessageBox.warning(self, "Load failed", "Movie loader is unavailable.")
                 return
-            navigator.handle_movie_load(fname=dropped_path)
+            def _load_dropped_movie(path=dropped_path, nav=navigator):
+                try:
+                    nav.handle_movie_load(fname=path)
+                except Exception as exc:
+                    traceback.print_exc()
+                    QMessageBox.critical(nav or self, "Load failed", f"Could not load movie:\n{exc}")
+
+            QTimer.singleShot(0, _load_dropped_movie)
             return
 
         if kind == "trajectories":
@@ -149,7 +166,14 @@ class MovieCanvas(ImageCanvas):
             if traj_canvas is None or not hasattr(traj_canvas, "load_trajectories"):
                 QMessageBox.warning(self, "Load failed", "Trajectory loader is unavailable.")
                 return
-            traj_canvas.load_trajectories(filename=dropped_path)
+            def _load_dropped_trajectories(path=dropped_path, canvas=traj_canvas):
+                try:
+                    canvas.load_trajectories(filename=path)
+                except Exception as exc:
+                    traceback.print_exc()
+                    QMessageBox.critical(canvas, "Load failed", f"Could not load trajectories:\n{exc}")
+
+            QTimer.singleShot(0, _load_dropped_trajectories)
             return
 
         QMessageBox.warning(self, "Load failed", "Unsupported dropped file.")
@@ -330,6 +354,7 @@ class MovieCanvas(ImageCanvas):
             self._bg = canvas.copy_from_bbox(self.ax.bbox)
         self._roi_bbox = self.ax.bbox
         self._roi_bg   = canvas.copy_from_bbox(self._roi_bbox)
+        self._refresh_movie_label_bboxes()
 
         # reset manual-zoom flag
         self.manual_zoom = False
@@ -837,7 +862,7 @@ class MovieCanvas(ImageCanvas):
             # blit only the axes region
             canvas.blit(self._roi_bbox)
 
-    def finalize_roi(self, suppress_display: bool = False):
+    def finalize_roi(self, suppress_display: bool = False, channels=None):
         # Make sure we have at least two pointsf
         if not self.roiPoints or len(self.roiPoints) < 2:
             print("Not enough points to finalize ROI.")
@@ -886,13 +911,27 @@ class MovieCanvas(ImageCanvas):
         else:
             n_chan = 1
 
-        for ch in range(n_chan):
-            kymo = self.generate_kymograph(roi, channel_override=ch + 1)
-            kymo_name = f"ch{ch+1}-{name}"
+        if channels is None:
+            channel_numbers = list(range(1, n_chan + 1))
+        else:
+            channel_numbers = []
+            for ch in channels:
+                try:
+                    ch_num = int(ch)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= ch_num <= n_chan and ch_num not in channel_numbers:
+                    channel_numbers.append(ch_num)
+            if not channel_numbers:
+                channel_numbers = list(range(1, n_chan + 1))
+
+        for ch_num in channel_numbers:
+            kymo = self.generate_kymograph(roi, channel_override=ch_num)
+            kymo_name = f"ch{ch_num}-{name}"
             self.navigator.kymographs[kymo_name] = kymo
             self.navigator.kymo_roi_map[kymo_name] = {
                 "roi":      name,
-                "channel":  ch+1,
+                "channel":  ch_num,
                 "orphaned": False
             }
 
@@ -1031,6 +1070,26 @@ class MovieCanvas(ImageCanvas):
 
         self.draw()
 
+    def _max_projection_frame(self, movie_stack):
+        projection = np.max(movie_stack, axis=0)
+        if not np.issubdtype(movie_stack.dtype, np.integer) or projection.size == 0:
+            return projection
+
+        dtype_info = np.iinfo(movie_stack.dtype)
+        ceiling = dtype_info.max
+        saturated_fraction = float(np.mean(projection >= ceiling))
+        if saturated_fraction < 0.25:
+            return projection
+
+        # Saturated camera pixels dominate long max projections. For display,
+        # use the brightest non-saturated sample when a pixel hit the ceiling.
+        masked = np.where(movie_stack >= ceiling, dtype_info.min, movie_stack)
+        robust = np.max(masked, axis=0)
+        all_saturated = np.all(movie_stack >= ceiling, axis=0)
+        if np.any(all_saturated):
+            robust[all_saturated] = ceiling
+        return robust.astype(projection.dtype, copy=False)
+
     def display_sum_frame(self):
         if self.navigator is None or self.navigator.movie is None:
             return
@@ -1051,25 +1110,28 @@ class MovieCanvas(ImageCanvas):
                 idx = [slice(None)] * movie.ndim
                 idx[channel_axis] = ch
                 channel_movie = movie[tuple(idx)]
-                sum_frame = np.max(channel_movie, axis=0)
+                sum_frame = self._max_projection_frame(channel_movie)
                 self.sum_frame_cache[ch] = sum_frame
 
         elif movie.ndim == 3:
             if movie.shape[0] <= 4:
                 sum_frame = movie[0]
             else:
-                sum_frame = np.max(movie, axis=0)
+                sum_frame = self._max_projection_frame(movie)
         else:
             sum_frame = movie
 
         # now render exactly like before
         self.image = sum_frame
+        cmap = "gray_r" if getattr(self.navigator, "inverted_cmap", False) else "gray"
         if self._im is None:
             self.ax.clear()
             h, w = sum_frame.shape[:2]
             self._im = self.ax.imshow(
                 sum_frame,
-                cmap="gray",
+                cmap=cmap,
+                vmin=self._vmin,
+                vmax=self._vmax,
                 origin=self._image_origin(),
                 extent=self._image_extent(w, h),
             )
@@ -1077,6 +1139,9 @@ class MovieCanvas(ImageCanvas):
             self.draw()
         else:
             self._im.set_data(sum_frame)
+            self._im.set_cmap(cmap)
+            if self._vmin is not None and self._vmax is not None:
+                self._im.set_clim(self._vmin, self._vmax)
             h, w = sum_frame.shape[:2]
             self._im.set_extent(self._image_extent(w, h))
             self.draw()
@@ -1370,166 +1435,189 @@ class MovieCanvas(ImageCanvas):
             self.gaussian_circle = None
         return removed
 
-    def draw_trajectories_on_movie(self):
+    def _refresh_movie_clickable_artists(self):
+        self.movie_clickable_artists = (
+            list(getattr(self, "_movie_selected_clickable_artists", []))
+            + list(getattr(self, "_movie_base_clickable_artists", []))
+        )
+        self.movie_label_artists = (
+            list(getattr(self, "_movie_selected_label_artists", []))
+            + list(getattr(self, "_movie_base_label_artists", []))
+        )
 
-        # 1) Clear any existing movie‐canvas markers
-        self.clear_movie_trajectory_markers()
+    def _refresh_movie_label_bboxes(self):
+        self._movie_label_bboxes.clear()
+        labels = list(getattr(self, "movie_label_artists", None) or [])
+        if not labels:
+            return
+        try:
+            renderer = self.figure.canvas.get_renderer()
+        except Exception:
+            return
+        for label in labels:
+            try:
+                bbox = label.get_window_extent(renderer)
+                patch = label.get_bbox_patch()
+                if patch is not None:
+                    try:
+                        bbox = bbox.union(patch.get_window_extent(renderer))
+                    except Exception:
+                        pass
+                self._movie_label_bboxes[label] = bbox.expanded(1.5, 1.5)
+            except Exception:
+                pass
 
-        # 2) If the overlay toggle is off, do nothing
-        overlay_mode = self.navigator.get_movie_traj_overlay_mode() if self.navigator is not None else "all"
-        if overlay_mode == "off":
+    def _remove_movie_artists(self, artists):
+        for marker in artists:
+            try:
+                marker.remove()
+            except Exception:
+                pass
+
+    def _current_movie_channel(self):
+        try:
+            return int(self.navigator.movieChannelCombo.currentText())
+        except (ValueError, AttributeError):
+            return None
+
+    def _movie_point_alphas(self, frames, n_points):
+        fade_prev = 10
+        fade_next = 0
+        min_alpha_prev = 0.05
+        min_alpha_next = 0.05
+        try:
+            current_frame = int(self.navigator.frameSlider.value())
+        except Exception:
+            current_frame = None
+        if (
+            current_frame is None
+            or not isinstance(frames, (list, tuple))
+            or len(frames) != n_points
+        ):
+            return None
+
+        point_alphas = []
+        for f in frames:
+            try:
+                delta = int(f) - current_frame
+            except Exception:
+                delta = -fade_prev
+            if delta == 0:
+                alpha = 1.0
+            elif delta < 0:
+                dist = -delta
+                if fade_prev <= 0 or dist >= fade_prev:
+                    alpha = min_alpha_prev
+                else:
+                    alpha = 1.0 - (dist / fade_prev) * (1.0 - min_alpha_prev)
+            else:
+                dist = delta
+                if fade_next <= 0 or dist >= fade_next:
+                    alpha = min_alpha_next
+                else:
+                    alpha = 1.0 - (dist / fade_next) * (1.0 - min_alpha_next)
+            point_alphas.append(alpha)
+        return point_alphas
+
+    def _draw_movie_trajectory(
+        self,
+        idx,
+        markers,
+        clickables,
+        label_artists,
+        *,
+        highlighted=False,
+        include_scatter=False,
+        fade_current_frame=False,
+        current_ch=None,
+    ):
+        traj = self.navigator.trajectoryCanvas.trajectories[idx]
+        traj_ch = traj.get("channel", None)
+        if traj_ch is not None and traj_ch != current_ch:
             return
 
-        # 3) Which table row is currently selected?
-        selected_idx = self.navigator.trajectoryCanvas.table_widget.currentRow()
+        traj_label = traj.get("file_index") or str(traj["trajectory_number"])
+        original_coords = traj.get("original_coords", [])
+        lw_search = 2.0 if highlighted else 1.5
+        alpha_search = 0.9 if highlighted else 0.6
+        z_search = 8 if highlighted else 1
 
-        # 4) Which movie channel is active? (so we skip mismatched trajectories)
-        try:
-            current_ch = int(self.navigator.movieChannelCombo.currentText())
-        except (ValueError, AttributeError):
-            current_ch = None
+        if original_coords:
+            xs = [pt[0] for pt in original_coords]
+            ys = [pt[1] for pt in original_coords]
+            search_line_color = self.navigator._get_uniform_traj_color(traj) or "#7da1ff"
 
-        # 5) Loop over trajectories and draw them
-        if overlay_mode == "selected":
-            if selected_idx < 0 or selected_idx >= len(self.navigator.trajectoryCanvas.trajectories):
-                return
-            indices = [selected_idx]
-        else:
-            indices = range(len(self.navigator.trajectoryCanvas.trajectories))
+            dotted_line, = self.ax.plot(
+                xs, ys,
+                color=search_line_color,
+                linestyle='--',
+                linewidth=lw_search,
+                alpha=alpha_search,
+                zorder=z_search,
+                solid_capstyle='round',
+                dash_capstyle='round'
+            )
+            markers.append(dotted_line)
 
-        for idx in indices:
-            traj = self.navigator.trajectoryCanvas.trajectories[idx]
-            # 5a) Skip if trajectory has a channel that doesn't match
-            traj_ch = traj.get("channel", None)
-            if traj_ch is not None and traj_ch != current_ch:
-                continue
+            dispA = self.ax.transData.transform((xs[0], ys[0]))
+            dispB = self.ax.transData.transform((xs[-1], ys[-1]))
+            v = dispB - dispA
+            norm = (v[0]**2 + v[1]**2) ** 0.5
+            u = (v / norm) if norm else np.array([1.0, 0.0])
+            offset_px = 15
 
-            # 5b) Are we highlighting this one?
-            is_hl = (idx == selected_idx)
-
-            # Build a label string like "3A"/"3B"
-            traj_label = traj.get("file_index") or str(traj["trajectory_number"])
-
-            # 5c) Draw the dashed "search‐center" line if original_coords exist
-            original_coords = traj.get("original_coords", [])
-            if original_coords:
-                xs = [pt[0] for pt in original_coords]
-                ys = [pt[1] for pt in original_coords]
-
-                lw_search = 2.0 if is_hl else 1.5
-                alpha_search = 0.9 if is_hl else 0.6
-                z_search = 5 if is_hl else 1
-
-                dotted_line, = self.ax.plot(
-                    xs, ys,
-                    color='#7da1ff',
-                    linestyle='--',
-                    linewidth=lw_search,
-                    alpha=alpha_search,
-                    zorder=z_search,
-                    solid_capstyle='round',
-                    dash_capstyle='round'
+            for (cx, cy, suffix), sign in [((xs[0], ys[0], 'A'), -1),
+                                           ((xs[-1], ys[-1], 'B'), +1)]:
+                dx, dy = u * (offset_px * sign)
+                lbl = self.ax.annotate(
+                    f"{traj_label}{suffix}",
+                    xy=(cx, cy),
+                    xytext=(dx, dy),
+                    textcoords="offset points",
+                    color=('white' if highlighted else 'black'),
+                    fontsize=8,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                    bbox=dict(
+                        boxstyle='circle,pad=0.3',
+                        facecolor=('#7da1ff' if highlighted else '#cbd9ff'),
+                        alpha=(0.9 if highlighted else 0.6),
+                        linewidth=(1.5 if highlighted else 1.0)
+                    ),
+                    zorder=(10 if highlighted else 2)
                 )
-                self.movie_trajectory_markers.append(dotted_line)
+                lbl.traj_idx = idx
+                markers.append(lbl)
+                label_artists.append(lbl)
 
-                # 5c-i) Annotate "A" at first point and "B" at last point, picker=True
-                dispA = self.ax.transData.transform((xs[0], ys[0]))
-                dispB = self.ax.transData.transform((xs[-1], ys[-1]))
-                v = dispB - dispA
-                norm = (v[0]**2 + v[1]**2) ** 0.5
-                u = (v / norm) if norm else np.array([1.0, 0.0])
-                offset_px = 15
+        spot_centers = traj.get('spot_centers', [])
+        xs_pts = [pt[0] if pt is not None else np.nan for pt in spot_centers]
+        ys_pts = [pt[1] if pt is not None else np.nan for pt in spot_centers]
+        frames = traj.get("frames", [])
+        point_alphas = (
+            self._movie_point_alphas(frames, len(xs_pts))
+            if fade_current_frame else None
+        )
 
-                for (cx, cy, suffix), sign in [((xs[0], ys[0], 'A'), -1),
-                                               ((xs[-1], ys[-1], 'B'), +1)]:
-                    dx, dy = u * (offset_px * sign)
-                    lbl = self.ax.annotate(
-                        f"{traj_label}{suffix}",
-                        xy=(cx, cy),
-                        xytext=(dx, dy),
-                        textcoords="offset points",
-                        color=('white' if is_hl else 'black'),
-                        fontsize=8,
-                        fontweight="bold",
-                        ha="center",
-                        va="center",
-                        bbox=dict(
-                            boxstyle='circle,pad=0.3',
-                            facecolor=('#7da1ff' if is_hl else '#cbd9ff'),
-                            alpha=(0.9 if is_hl else 0.6),
-                            linewidth=(1.5 if is_hl else 1.0)
-                        ),
-                        picker=True,      # Make the label clickable
-                        zorder=(7 if is_hl else 2)
-                    )
-                    # Attach custom attribute so pick_event tells us which row was clicked:
-                    lbl.traj_idx = idx
-                    self.movie_trajectory_markers.append(lbl)
+        scatter_kwargs, line_color = self.navigator._get_traj_colors(traj)
+        scatter_kwargs = scatter_kwargs.copy()
+        scatter_kwargs.pop('zorder', None)
 
-            # 5d) Draw the solid connecting line through spot_centers for every trajectory
-            spot_centers = traj.get('spot_centers', [])
-            xs_pts = [pt[0] if pt is not None else np.nan for pt in spot_centers]
-            ys_pts = [pt[1] if pt is not None else np.nan for pt in spot_centers]
-            frames = traj.get("frames", [])
+        lw_line = (2.0 if highlighted else 1.5)
+        alpha_line = (0.9 if highlighted else 0.7)
+        z_line = (9 if highlighted else 3)
 
-            fade_prev = 10
-            fade_next = 0
-            min_alpha_prev = 0.05
-            min_alpha_next = 0.05
-            current_frame = None
-            try:
-                current_frame = int(self.navigator.frameSlider.value())
-            except Exception:
-                current_frame = None
-            point_alphas = None
-            if (
-                current_frame is not None
-                and isinstance(frames, (list, tuple))
-                and len(frames) == len(xs_pts)
-            ):
-                point_alphas = []
-                for f in frames:
-                    try:
-                        delta = int(f) - current_frame
-                    except Exception:
-                        delta = -fade_prev
-                    if delta == 0:
-                        alpha = 1.0
-                    elif delta < 0:
-                        dist = -delta
-                        if fade_prev <= 0 or dist >= fade_prev:
-                            alpha = min_alpha_prev
-                        else:
-                            alpha = 1.0 - (dist / fade_prev) * (1.0 - min_alpha_prev)
-                    else:
-                        dist = delta
-                        if fade_next <= 0 or dist >= fade_next:
-                            alpha = min_alpha_next
-                        else:
-                            alpha = 1.0 - (dist / fade_next) * (1.0 - min_alpha_next)
-                    point_alphas.append(alpha)
-
-            scatter_kwargs, line_color = self.navigator._get_traj_colors(traj)
-
-            # Remove any pre‐existing zorder in scatter_kwargs so we can supply our own
-            scatter_kwargs = scatter_kwargs.copy()
-            scatter_kwargs.pop('zorder', None)
-
-            # Style for the connecting line
-            lw_line = (2.0 if is_hl else 1.5)
-            alpha_line = (0.9 if is_hl else 0.7)
-            z_line = (6 if is_hl else 3)
-
-            line = None
-            pts_colors = scatter_kwargs.get("c")
-            segs = []
-            seg_colors = []
+        hide_spots = getattr(self.navigator, "hide_movie_spots", False)
+        pts_colors = scatter_kwargs.get("c")
+        segs = []
+        seg_colors = []
+        if not hide_spots:
             for i in range(len(xs_pts) - 1):
                 if (np.isnan(xs_pts[i]) or np.isnan(ys_pts[i])
                         or np.isnan(xs_pts[i + 1]) or np.isnan(ys_pts[i + 1])):
                     continue
                 segs.append([[xs_pts[i], ys_pts[i]], [xs_pts[i + 1], ys_pts[i + 1]]])
-                base_color = None
                 if isinstance(pts_colors, (list, tuple, np.ndarray)) and len(pts_colors) == len(xs_pts):
                     base_color = pts_colors[i]
                 else:
@@ -1537,73 +1625,146 @@ class MovieCanvas(ImageCanvas):
                 seg_alpha = alpha_line
                 if point_alphas is not None:
                     try:
-                        if fade_next <= 0:
-                            seg_alpha = min(point_alphas[i], point_alphas[i + 1])
-                        else:
-                            seg_alpha = 0.5 * (point_alphas[i] + point_alphas[i + 1])
+                        seg_alpha = min(point_alphas[i], point_alphas[i + 1])
                     except Exception:
                         seg_alpha = alpha_line
                 seg_colors.append(mcolors.to_rgba(base_color, seg_alpha))
 
-            if segs:
-                line = LineCollection(
-                    segs,
-                    colors=seg_colors,
-                    linewidths=lw_line,
-                    zorder=z_line
-                )
-                self.ax.add_collection(line)
-                self.movie_trajectory_markers.append(line)
+        if segs:
+            line = LineCollection(
+                segs,
+                colors=seg_colors,
+                linewidths=lw_line,
+                zorder=z_line
+            )
+            self.ax.add_collection(line)
+            markers.append(line)
 
-        # 5e) Draw scatter points ONLY for the highlighted trajectory
-            if is_hl and not getattr(self.navigator, "kymo_anchor_edit_mode", False):
-                # Bump size and add black edge
-                scatter_kwargs.update(s=15, edgecolors='black', linewidths=0.5)
-                if point_alphas is not None:
-                    base_colors = None
-                    if isinstance(pts_colors, (list, tuple, np.ndarray)) and len(pts_colors) == len(xs_pts):
-                        base_colors = pts_colors
-                    else:
-                        base = scatter_kwargs.get("color", line_color)
-                        base_colors = [base] * len(xs_pts)
-                    rgba = []
-                    for i, c in enumerate(base_colors):
-                        try:
-                            rgba.append(mcolors.to_rgba(c, point_alphas[i]))
-                        except Exception:
-                            rgba.append(mcolors.to_rgba(c))
-                    scatter_kwargs.pop("color", None)
-                    scatter_kwargs["c"] = rgba
-                    edge_rgba = []
-                    for i in range(len(xs_pts)):
-                        try:
-                            edge_rgba.append(mcolors.to_rgba("black", point_alphas[i]))
-                        except Exception:
-                            edge_rgba.append(mcolors.to_rgba("black"))
-                    scatter_kwargs["edgecolors"] = edge_rgba
-                z_scatter = 6
-                scatter = self.ax.scatter(
-                    xs_pts, ys_pts,
-                    picker=True,
-                    zorder=z_scatter,
-                    **scatter_kwargs
-                )
-                scatter.traj_idx = idx
-                self.movie_trajectory_markers.append(scatter)
+        if include_scatter and not hide_spots and not getattr(self.navigator, "kymo_anchor_edit_mode", False):
+            scatter_kwargs.update(s=15, edgecolors='black', linewidths=0.5)
+            if point_alphas is not None:
+                if isinstance(pts_colors, (list, tuple, np.ndarray)) and len(pts_colors) == len(xs_pts):
+                    base_colors = pts_colors
+                else:
+                    base = scatter_kwargs.get("color", line_color)
+                    base_colors = [base] * len(xs_pts)
+                rgba = []
+                for i, c in enumerate(base_colors):
+                    try:
+                        rgba.append(mcolors.to_rgba(c, point_alphas[i]))
+                    except Exception:
+                        rgba.append(mcolors.to_rgba(c))
+                scatter_kwargs.pop("color", None)
+                scatter_kwargs["c"] = rgba
+                edge_rgba = []
+                for i in range(len(xs_pts)):
+                    try:
+                        edge_rgba.append(mcolors.to_rgba("black", point_alphas[i]))
+                    except Exception:
+                        edge_rgba.append(mcolors.to_rgba("black"))
+                scatter_kwargs["edgecolors"] = edge_rgba
 
-        # 6) Finally, request a redraw
+            scatter = self.ax.scatter(
+                xs_pts, ys_pts,
+                picker=True,
+                zorder=10,
+                **scatter_kwargs
+            )
+            scatter.traj_idx = idx
+            markers.append(scatter)
+            clickables.append(scatter)
+
+    def draw_selected_trajectory_on_movie(self, draw_idle=True):
+        self.clear_movie_selected_trajectory_markers(draw_idle=False)
+        if self.navigator is None:
+            return
+        overlay_mode = self.navigator.get_movie_traj_overlay_mode()
+        if overlay_mode == "off":
+            return
+
+        selected_idx = self.navigator.trajectoryCanvas.table_widget.currentRow()
+        trajectories = self.navigator.trajectoryCanvas.trajectories
+        if selected_idx < 0 or selected_idx >= len(trajectories):
+            return
+
+        markers = []
+        clickables = []
+        labels = []
+        self._draw_movie_trajectory(
+            selected_idx,
+            markers,
+            clickables,
+            labels,
+            highlighted=True,
+            include_scatter=True,
+            fade_current_frame=True,
+            current_ch=self._current_movie_channel(),
+        )
+        self.movie_selected_trajectory_markers = markers
+        self._movie_selected_clickable_artists = clickables
+        self._movie_selected_label_artists = labels
+        self._refresh_movie_clickable_artists()
+        self._refresh_movie_label_bboxes()
+        if draw_idle:
+            self.ax.figure.canvas.draw_idle()
+
+    def draw_trajectories_on_movie(self):
+        self.clear_movie_trajectory_markers(draw_idle=False)
+        if self.navigator is None:
+            return
+
+        overlay_mode = self.navigator.get_movie_traj_overlay_mode()
+        if overlay_mode == "off":
+            return
+
+        current_ch = self._current_movie_channel()
+        if overlay_mode == "all":
+            markers = []
+            clickables = []
+            labels = []
+            for idx in range(len(self.navigator.trajectoryCanvas.trajectories)):
+                self._draw_movie_trajectory(
+                    idx,
+                    markers,
+                    clickables,
+                    labels,
+                    highlighted=False,
+                    include_scatter=False,
+                    fade_current_frame=False,
+                    current_ch=current_ch,
+                )
+            self.movie_trajectory_markers = markers
+            self._movie_base_clickable_artists = clickables
+            self._movie_base_label_artists = labels
+            self._refresh_movie_clickable_artists()
+            self._refresh_movie_label_bboxes()
+
+        self.draw_selected_trajectory_on_movie(draw_idle=False)
         self.ax.figure.canvas.draw_idle()
 
-    def clear_movie_trajectory_markers(self):
-        if hasattr(self, "movie_trajectory_markers"):
-            for marker in self.movie_trajectory_markers:
-                try:
-                    marker.remove()
-                except Exception:
-                    pass
-            self.movie_trajectory_markers = []
-        else:
-            self.movie_trajectory_markers = []
+    def clear_movie_selected_trajectory_markers(self, draw_idle=False):
+        self._remove_movie_artists(getattr(self, "movie_selected_trajectory_markers", []))
+        self.movie_selected_trajectory_markers = []
+        self._movie_selected_clickable_artists = []
+        self._movie_selected_label_artists = []
+        self._refresh_movie_clickable_artists()
+        self._refresh_movie_label_bboxes()
+        if draw_idle:
+            self.ax.figure.canvas.draw_idle()
+
+    def clear_movie_trajectory_markers(self, draw_idle=False):
+        self._remove_movie_artists(getattr(self, "movie_trajectory_markers", []))
+        self._remove_movie_artists(getattr(self, "movie_selected_trajectory_markers", []))
+        self.movie_trajectory_markers = []
+        self.movie_selected_trajectory_markers = []
+        self._movie_base_clickable_artists = []
+        self._movie_selected_clickable_artists = []
+        self._movie_base_label_artists = []
+        self._movie_selected_label_artists = []
+        self._refresh_movie_clickable_artists()
+        self._movie_label_bboxes.clear()
+        if draw_idle:
+            self.ax.figure.canvas.draw_idle()
     
     def remove_inset_circle(self):
         if hasattr(self, "inset_circle"):

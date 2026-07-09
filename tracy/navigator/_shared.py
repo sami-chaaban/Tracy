@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QProgressDialog, QApplication, QFrame,
     QLineEdit, QFormLayout, QGraphicsDropShadowEffect, QDialogButtonBox,
     QInputDialog, QMenu, QLayout, QDoubleSpinBox, QGroupBox, QScrollArea,
-    QAbstractSpinBox
+    QAbstractSpinBox, QUndoStack
 )
 
 from PyQt5 import QtCore, QtWidgets, QtGui

@@ -7,14 +7,15 @@ from PyQt5.QtWidgets import (QVBoxLayout, QApplication, QDialog,
                              QWidget, QFileDialog, QMessageBox, QTableWidget,
                              QTableWidgetItem, QMessageBox, QProgressDialog,
                              QHeaderView, QMenu, QInputDialog, QLineEdit, QLabel,
-                             QFrame, QSizePolicy, QAbstractItemView)
+                             QFrame, QSizePolicy, QAbstractItemView,
+                             QUndoCommand)
 from PyQt5.QtGui import QPainter,QMouseEvent
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.patches import Circle, Rectangle
 from matplotlib.ticker import MaxNLocator
 from matplotlib.lines import Line2D
-from matplotlib.collections import LineCollection
+from matplotlib.collections import LineCollection, PolyCollection
 from matplotlib.text import Text
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors

@@ -1,5 +1,6 @@
 from ._shared import *
 from .. import __version__
+import traceback
 
 
 def _canonical_roi_payload(roi):
@@ -23,6 +24,56 @@ def _canonical_roi_payload(roi):
 def _canonical_roi_json(roi):
     payload = _canonical_roi_payload(roi)
     return "" if payload is None else json.dumps(payload, sort_keys=True)
+
+
+def _read_trajectory_file_for_load(filename):
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".xlsx":
+        xls = pd.ExcelFile(filename)
+        sheet_names = list(xls.sheet_names)
+        if "Data Points" not in sheet_names:
+            raise ValueError("Sheet 'Data Points' not found.")
+
+        sheets = {}
+        agg_sheet = next((name for name in sheet_names if name.lower() == "aggregate analysis"), None)
+        if agg_sheet:
+            sheets[agg_sheet] = pd.read_excel(xls, sheet_name=agg_sheet, nrows=1)
+
+        for sheet_name in ("Per-trajectory", "Per-segment", "Data Points", "Per-kymograph"):
+            if sheet_name in sheet_names:
+                sheets[sheet_name] = pd.read_excel(xls, sheet_name=sheet_name)
+
+        return {
+            "ext": ext,
+            "sheet_names": sheet_names,
+            "sheets": sheets,
+        }
+
+    if ext == ".csv":
+        return {
+            "ext": ext,
+            "csv_raw": pd.read_csv(filename, header=0, engine="python"),
+        }
+
+    raise ValueError("Unsupported trajectory file type. Use .xlsx or .csv.")
+
+
+class _TrajectoryStateCommand(QUndoCommand):
+    def __init__(self, canvas, text, before_state, after_state):
+        super().__init__(text)
+        self._canvas = canvas
+        self._before_state = before_state
+        self._after_state = after_state
+        self._first_redo = True
+
+    def redo(self):
+        if self._first_redo:
+            self._first_redo = False
+            return
+        self._canvas._restore_undo_state(self._after_state)
+
+    def undo(self):
+        self._canvas._restore_undo_state(self._before_state)
 
 
 class TrajectoryCanvas(QWidget):
@@ -167,6 +218,175 @@ class TrajectoryCanvas(QWidget):
             return int(value)
         except (TypeError, ValueError):
             return value
+
+    def _undo_restore_active(self):
+        nav = self.navigator
+        return bool(nav is not None and getattr(nav, "_undo_restore_depth", 0) > 0)
+
+    def _can_record_undo(self):
+        nav = self.navigator
+        return bool(
+            nav is not None
+            and getattr(nav, "undo_stack", None) is not None
+            and not self._undo_restore_active()
+        )
+
+    def _snapshot_undo_state(self):
+        selected_rows = []
+        try:
+            selected_rows = [
+                idx.row()
+                for idx in self.table_widget.selectionModel().selectedRows()
+                if 0 <= idx.row() < len(self.trajectories)
+            ]
+        except Exception:
+            selected_rows = []
+
+        nav = self.navigator
+        return {
+            "trajectories": copy.deepcopy(self.trajectories),
+            "trajectory_counter": int(getattr(self, "_trajectory_counter", 1)),
+            "headers": list(getattr(self, "_headers", [])),
+            "aliases": dict(getattr(self, "_aliases", {})),
+            "custom_columns": list(getattr(self, "custom_columns", [])),
+            "column_types": copy.deepcopy(getattr(self, "_column_types", {})),
+            "past_centers": copy.deepcopy(getattr(nav, "past_centers", [])) if nav is not None else [],
+            "selected_rows": selected_rows,
+            "current_index": getattr(self, "current_index", None),
+        }
+
+    def _push_trajectory_state_command(self, text, before_state):
+        if before_state is None or not self._can_record_undo():
+            return
+        after_state = self._snapshot_undo_state()
+        if self._undo_state_fingerprint(before_state) == self._undo_state_fingerprint(after_state):
+            return
+        self.navigator.undo_stack.push(
+            _TrajectoryStateCommand(
+                self,
+                text,
+                before_state,
+                after_state,
+            )
+        )
+
+    def _compute_pending_colocalization_for_row(self, row):
+        nav = self.navigator
+        if nav is None or row < 0 or row >= len(self.trajectories):
+            return
+        traj = self.trajectories[row]
+        if not traj.get("colocalization_pending", False):
+            return
+        if not (
+            getattr(nav, "check_colocalization", False)
+            and getattr(nav, "movie", None) is not None
+            and nav.movie.ndim == 4
+        ):
+            return
+
+        nav._compute_colocalization_for_row(row)
+        if self.kymoCanvas is not None:
+            self.kymoCanvas.draw_trajectories_on_kymo()
+            self.kymoCanvas.draw_idle()
+        if self.movieCanvas is not None:
+            self.movieCanvas.draw_trajectories_on_movie()
+            self.movieCanvas.draw_idle()
+        nav._rebuild_color_by_actions()
+        self.hide_empty_columns()
+
+    @staticmethod
+    def _undo_state_fingerprint(state):
+        return repr((
+            state.get("trajectories", []),
+            state.get("trajectory_counter", 1),
+            state.get("headers", []),
+            state.get("aliases", {}),
+            state.get("custom_columns", []),
+            state.get("column_types", {}),
+            state.get("past_centers", []),
+        ))
+
+    def _apply_table_column_layout(self):
+        self.table_widget.setColumnCount(len(self._headers))
+        self.table_widget.setHorizontalHeaderLabels(self._headers)
+        header = self.table_widget.horizontalHeader()
+        header.setDefaultAlignment(Qt.AlignCenter)
+        for i in range(self.table_widget.columnCount()):
+            if i == 0:
+                header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
+            else:
+                header.setSectionResizeMode(i, QHeaderView.Interactive)
+                if i in [1, 2, 3, 7, 9, 10]:
+                    self.table_widget.setColumnWidth(i, 70)
+                elif i in [4, 5, 6]:
+                    self.table_widget.setColumnWidth(i, 100)
+                elif i in [8, 11]:
+                    self.table_widget.setColumnWidth(i, 120)
+                else:
+                    self.table_widget.setColumnWidth(i, 80)
+
+    def _restore_undo_state(self, state):
+        nav = self.navigator
+        if nav is not None:
+            nav._undo_restore_depth = getattr(nav, "_undo_restore_depth", 0) + 1
+        try:
+            self.trajectories = copy.deepcopy(state.get("trajectories", []))
+            self._trajectory_counter = int(state.get("trajectory_counter", 1))
+            self._headers = list(state.get("headers", self._headers))
+            self._aliases = dict(state.get("aliases", self._aliases))
+            self.custom_columns = list(state.get("custom_columns", []))
+            self._column_types = copy.deepcopy(state.get("column_types", {}))
+            self._col_index = {hdr: i for i, hdr in enumerate(self._headers)}
+            if nav is not None:
+                nav.past_centers = copy.deepcopy(state.get("past_centers", []))
+
+            selected_rows = [
+                int(row)
+                for row in state.get("selected_rows", [])
+                if 0 <= int(row) < len(self.trajectories)
+            ]
+            current_index = state.get("current_index", None)
+            if isinstance(current_index, int) and 0 <= current_index < len(self.trajectories):
+                restore_row = current_index
+            elif selected_rows:
+                restore_row = selected_rows[0]
+            elif self.trajectories:
+                restore_row = 0
+            else:
+                restore_row = None
+
+            self.table_widget.blockSignals(True)
+            try:
+                self.table_widget.clearSelection()
+                self.table_widget.setRowCount(0)
+                self._apply_table_column_layout()
+                for row, traj in enumerate(self.trajectories):
+                    self.table_widget.insertRow(row)
+                    self.updateTableRow(row, traj)
+                if restore_row is not None:
+                    self.table_widget.selectRow(restore_row)
+            finally:
+                self.table_widget.blockSignals(False)
+
+            self.current_index = restore_row
+            if restore_row is not None:
+                self.on_trajectory_selected_by_index(restore_row, zoom=False)
+            elif self.intensity_canvas is not None:
+                self.intensity_canvas.current_index = None
+
+            if self.movieCanvas is not None:
+                self.movieCanvas.draw_trajectories_on_movie()
+                self.movieCanvas.draw_idle()
+            if self.kymoCanvas is not None:
+                self.kymoCanvas.draw_trajectories_on_kymo()
+                self.kymoCanvas.draw_idle()
+            if nav is not None:
+                nav.update_table_visibility()
+                nav._rebuild_color_by_actions()
+                nav._update_legends()
+        finally:
+            if nav is not None:
+                nav._undo_restore_depth = max(0, getattr(nav, "_undo_restore_depth", 1) - 1)
 
     @classmethod
     def _fit_point_list(cls, value, length, fill=None):
@@ -350,10 +570,16 @@ class TrajectoryCanvas(QWidget):
             return
 
         value = item.text()
+        old_value = self.trajectories[row].get("custom_fields", {}).get(col_name, "")
+        if str(old_value) == value:
+            return
+
+        undo_before = self._snapshot_undo_state() if self._can_record_undo() else None
         self.trajectories[row].setdefault("custom_fields", {})[col_name] = value
 
         if self.navigator is not None and getattr(self.navigator, "color_by_column", None) == col_name:
             self.navigator.refresh_color_by()
+            self._push_trajectory_state_command(f"Edit {col_name}", undo_before)
             return
 
         if self.kymoCanvas is not None:
@@ -364,6 +590,7 @@ class TrajectoryCanvas(QWidget):
             self.movieCanvas.draw_idle()
         if self.navigator is not None:
             self.navigator._update_legends()
+        self._push_trajectory_state_command(f"Edit {col_name}", undo_before)
 
     def writeToTable(self, row, key, text):
         """
@@ -1525,15 +1752,19 @@ class TrajectoryCanvas(QWidget):
             self.table_widget.setColumnHidden(col, not has_value)
 
     def on_trajectory_selected_by_table(self):
-        selected_rows = self.table_widget.selectionModel().selectedRows()
-        if not selected_rows:
-            if self.navigator is not None:
-                self.navigator._ensure_traj_overlay_mode_valid(redraw=True)
-            return
-        index = selected_rows[0].row()
-        self.on_trajectory_selected_by_index(index, zoom=True)
+        try:
+            selected_rows = self.table_widget.selectionModel().selectedRows()
+            if not selected_rows:
+                if self.navigator is not None:
+                    self.navigator._ensure_traj_overlay_mode_valid(redraw=True)
+                return
+            index = selected_rows[0].row()
+            self.on_trajectory_selected_by_index(index, zoom=True)
+        except Exception as exc:
+            traceback.print_exc()
+            QMessageBox.critical(self, "Selection Error", f"Could not select trajectory:\n{str(exc)}")
 
-    def on_trajectory_selected_by_index(self, index, zoom=False):
+    def on_trajectory_selected_by_index(self, index, zoom=False, refresh_overlays=False):
         if index < 0 or index >= len(self.trajectories):
             return
 
@@ -1604,21 +1835,25 @@ class TrajectoryCanvas(QWidget):
                 sld.setValue(0)
                 sld.blockSignals(False)
 
-            # ——— 5) (Re)draw trajectories, but reuse artists ———
-            movie_on = getattr(nav, "traj_overlay_button", None) and nav.traj_overlay_button.isChecked()
+            # ——— 5) Refresh kymograph overlays. For ordinary selection changes,
+            # only the selected highlight layer needs to change.
             kymo_on = getattr(nav, "kymo_traj_overlay_button", None) and nav.kymo_traj_overlay_button.isChecked()
-            if movie_on:
-                mc.clear_movie_trajectory_markers()
-                mc.draw_trajectories_on_movie()
             if kymo_on:
-                kc.clear_kymo_trajectory_markers()
-                kc.draw_trajectories_on_kymo()
+                if refresh_overlays or not hasattr(kc, "draw_selected_trajectory_on_kymo"):
+                    kc.draw_trajectories_on_kymo()
+                else:
+                    kc.draw_selected_trajectory_on_kymo(draw_idle=False)
 
         finally:
             # ——— 6) single redraw and re-enable updates ———
             # mc.setUpdatesEnabled(True)
             # kc.setUpdatesEnabled(True)
-            nav.jump_to_analysis_point(0, animate="ramp", zoom=zoom)
+            nav.jump_to_analysis_point(
+                0,
+                animate="ramp",
+                zoom=zoom,
+                refresh_movie_overlay=refresh_overlays,
+            )
             # mc.draw_idle()
             # kc.draw_idle()
 
@@ -1634,6 +1869,8 @@ class TrajectoryCanvas(QWidget):
             # print("❌ No trajectory data found!")
             return
 
+        undo_before = self._snapshot_undo_state() if self._can_record_undo() else None
+
         channel = self.navigator.analysis_channel
         if channel is None:
             try:
@@ -1645,6 +1882,11 @@ class TrajectoryCanvas(QWidget):
         end = self.navigator.analysis_end
         frames = self._as_list(self.navigator.analysis_frames)
         anchors = self._as_list(self.navigator.analysis_anchors)
+        if len(anchors) > 1:
+            try:
+                anchors = sorted(anchors, key=lambda anchor: int(anchor[0]))
+            except Exception:
+                pass
         roi = self.navigator.analysis_roi
         intensities = self._as_list(self.navigator.analysis_intensities)
         original_coords = self._as_list(self.navigator.analysis_original_coords)
@@ -1723,6 +1965,9 @@ class TrajectoryCanvas(QWidget):
             ch: list(flags)
             for ch, flags in getattr(self.navigator, "analysis_colocalized_by_ch", {}).items()
         }
+        traj_data["colocalization_pending"] = bool(
+            getattr(self.navigator, "analysis_colocalization_pending", False)
+        )
 
         traj_data["custom_fields"] = {}
     
@@ -1873,16 +2118,23 @@ class TrajectoryCanvas(QWidget):
 
         # Also update the current index in the plot canvas and trigger a selection update.
         self.intensity_canvas.current_index = new_row
-        self.on_trajectory_selected_by_index(new_row, zoom=True)
+        self.on_trajectory_selected_by_index(new_row, zoom=True, refresh_overlays=True)
         if new_row == 0:
             QTimer.singleShot(0, lambda: self.navigator.jump_to_analysis_point(0, animate="discrete", zoom=True))
+        self._push_trajectory_state_command("Add Trajectory", undo_before)
+        if traj_data.get("colocalization_pending", False):
+            QTimer.singleShot(0, lambda row=new_row: self._compute_pending_colocalization_for_row(row))
 
     def _parse_trackmate_csv(self, filename):
         df_temp = pd.read_csv(filename, header=0, engine="python")
+        return self._parse_trackmate_csv_dataframe(df_temp)
 
+    def _parse_trackmate_csv_dataframe(self, df_temp):
         if "FRAME" not in df_temp.columns:
             QMessageBox.critical(self, "Error", "CSV is missing the FRAME column.")
             return None, None, None
+
+        df_temp = df_temp.copy()
 
         # Helper: check if value is numeric.
         def is_numeric(x):
@@ -1964,48 +2216,79 @@ class TrajectoryCanvas(QWidget):
 
         return df, nodes_map, clicks_map
 
-    def load_trajectories(self, filename=None):
+    def _trajectory_load_is_running(self):
+        return False
+
+    def load_trajectories(self, filename=None, _read_result=None, _skip_preflight=False):
         if isinstance(filename, bool):
             filename = None
 
-        if self.navigator.movie is None:
-            QMessageBox.warning(self, "", 
-                "Please load a movie before loading trajectories.")
-            return
-        
-        self.navigator.cancel_left_click_sequence()
+        if not _skip_preflight:
+            if self._trajectory_load_is_running():
+                self.navigator.flash_message("Trajectory load already in progress")
+                return
 
-        if filename:
-            filename = str(filename)
-            if not os.path.isfile(filename):
-                QMessageBox.critical(self, "Error", "Dropped item is not a valid file.")
+            if self.navigator.movie is None:
+                QMessageBox.warning(self, "", 
+                    "Please load a movie before loading trajectories.")
                 return
-            ext = os.path.splitext(filename)[1].lower()
-            if ext not in (".xlsx", ".csv"):
-                QMessageBox.critical(
-                    self,
-                    "Error",
-                    "Unsupported trajectory file type. Use .xlsx or .csv."
+            
+            self.navigator.cancel_left_click_sequence()
+
+            if filename:
+                filename = str(filename)
+                if not os.path.isfile(filename):
+                    QMessageBox.critical(self, "Error", "Dropped item is not a valid file.")
+                    return
+                ext = os.path.splitext(filename)[1].lower()
+                if ext not in (".xlsx", ".csv"):
+                    QMessageBox.critical(
+                        self,
+                        "Error",
+                        "Unsupported trajectory file type. Use .xlsx or .csv."
+                    )
+                    return
+                self.navigator._last_dir = os.path.dirname(filename) or self.navigator._last_dir
+            else:
+                # Get the current movie's base name.
+                movie_base = self.navigator.movieNameLabel.text()  # assuming this holds the filename, e.g. "my_movie.tif"
+                # Remove the current extension and add ".csv"
+                default_filename = os.path.splitext(movie_base)[0] + ".csv"
+                default_filename = os.path.join(self.navigator._last_dir, default_filename)
+                filename, _ = QFileDialog.getOpenFileName(
+                    self, 
+                    "Load Trajectories File", 
+                    default_filename,
+                    "Excel and CSV Files (*.xlsx *.csv)"
                 )
-                return
-            self.navigator._last_dir = os.path.dirname(filename) or self.navigator._last_dir
+                if not filename:
+                    return
         else:
-            # Get the current movie's base name.
-            movie_base = self.navigator.movieNameLabel.text()  # assuming this holds the filename, e.g. "my_movie.tif"
-            # Remove the current extension and add ".csv"
-            default_filename = os.path.splitext(movie_base)[0] + ".csv"
-            default_filename = os.path.join(self.navigator._last_dir, default_filename)
-            filename, _ = QFileDialog.getOpenFileName(
-                self, 
-                "Load Trajectories File", 
-                default_filename,
-                "Excel and CSV Files (*.xlsx *.csv)"
-            )
-            if not filename:
-                return
-        
+            filename = str(filename)
+	        
         # try:
         ext = os.path.splitext(filename)[1].lower()
+
+        if _read_result is None:
+            progress = QProgressDialog(
+                f"Loading trajectories...\n{os.path.basename(filename)}",
+                None, 0, 0, self
+            )
+            progress.setWindowTitle("Loading trajectories")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.setAutoClose(False)
+            progress.setAutoReset(False)
+            progress.show()
+            try:
+                _read_result = _read_trajectory_file_for_load(filename)
+            except Exception as exc:
+                traceback.print_exc()
+                QMessageBox.critical(self, "Load Error", f"Failed to load trajectories:\n{str(exc)}")
+                return
+            finally:
+                progress.close()
+                progress.deleteLater()
 
         anchors_map = {}
         roi_map     = {}
@@ -2024,15 +2307,16 @@ class TrajectoryCanvas(QWidget):
 
         # ----- Excel branch -----
         if ext == ".xlsx":
-            xls = pd.ExcelFile(filename)
-            if "Data Points" not in xls.sheet_names:
+            sheet_names = list(_read_result.get("sheet_names") or [])
+            sheets = _read_result.get("sheets") or {}
+            if "Data Points" not in sheet_names:
                 QMessageBox.critical(self, "Error", "Sheet 'Data Points' not found.")
                 return
 
             # --- Optionally load scale calibration from the workbook ---
             # If present, "Aggregate Analysis" contains pixel size (nm/px) and frame time (ms).
             agg_sheet = None
-            for name in xls.sheet_names:
+            for name in sheet_names:
                 if name.lower() == "aggregate analysis":
                     agg_sheet = name
                     break
@@ -2056,7 +2340,7 @@ class TrajectoryCanvas(QWidget):
             loaded_ft = None
             if agg_sheet:
                 try:
-                    agg_df = pd.read_excel(xls, sheet_name=agg_sheet, nrows=1)
+                    agg_df = sheets.get(agg_sheet)
                     if not agg_df.empty:
                         row0 = agg_df.iloc[0]
                         loaded_px = _num_or_none(row0.get("Pixel size (nm/px)", None))
@@ -2143,8 +2427,8 @@ class TrajectoryCanvas(QWidget):
                 self.navigator.frame_interval = loaded_ft
                 self.navigator.update_scale_label()
 
-            if "Per-trajectory" in xls.sheet_names:
-                summary_df = pd.read_excel(xls, sheet_name="Per-trajectory")
+            if "Per-trajectory" in sheet_names:
+                summary_df = sheets.get("Per-trajectory")
                 rename_map = {
                     "Start_Frame":    "Start Frame",
                     "End_Frame":      "End Frame",
@@ -2385,9 +2669,9 @@ class TrajectoryCanvas(QWidget):
 
                 self.navigator._rebuild_color_by_actions()
 
-            if "Per-segment" in xls.sheet_names:
+            if "Per-segment" in sheet_names:
                 try:
-                    seg_df = pd.read_excel(xls, sheet_name="Per-segment")
+                    seg_df = sheets.get("Per-segment")
                 except Exception:
                     seg_df = None
 
@@ -2427,11 +2711,11 @@ class TrajectoryCanvas(QWidget):
                             segment_diff_map.setdefault(tid, []).append(entry)
 
             # finally read the Data Points sheet
-            df = pd.read_excel(xls, sheet_name="Data Points")
+            df = sheets["Data Points"]
         
         # ----- CSV branch -----
         elif ext == ".csv":
-            df, nodes_map, clicks_map = self._parse_trackmate_csv(filename)
+            df, nodes_map, clicks_map = self._parse_trackmate_csv_dataframe(_read_result.get("csv_raw"))
             if df is None:
                 return
         else:
@@ -2456,7 +2740,7 @@ class TrajectoryCanvas(QWidget):
             if QMessageBox.question(
                 self,
                 "",
-                "Generate kymographs from loaded trajectories?",
+                "Draw kymographs from the trajectory metadata?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.Yes
             ) == QMessageBox.Yes:
@@ -2465,8 +2749,8 @@ class TrajectoryCanvas(QWidget):
 
                 if ext == ".xlsx":
                     try:
-                        if 'Per-kymograph' in xls.sheet_names:
-                            pk_df = pd.read_excel(xls, sheet_name='Per-kymograph')
+                        if 'Per-kymograph' in sheet_names:
+                            pk_df = sheets.get('Per-kymograph')
                             if 'ROI' in pk_df.columns:
                                 pk_rois = set(pk_df['ROI'].dropna().astype(str))
                                 # Determine which ROI dicts were loaded
@@ -2660,27 +2944,59 @@ class TrajectoryCanvas(QWidget):
 
         fixed_background = None
 
-        # Count how many trajectories need recalculation
-        trajectories_need_recalc = 0
+        saved_fit_columns_complete = (
+            intensity_exists
+            and sigma_exists
+            and peak_exists
+            and background_exists
+        )
+
+        # Count exactly which trajectories need recalculation.  A workbook can
+        # mix complete saved trajectories with sparse movie-click trajectories;
+        # only the incomplete ones should be recomputed.
+        def _is_saved_sparse_movie_trajectory(traj_num, frames):
+            click_source = str(clicks_map.get(traj_num, "")).strip().lower()
+            if click_source != "movie":
+                return False
+            nodes = nodes_map.get(traj_num, [])
+            if not nodes:
+                return False
+            try:
+                frame_indices = sorted(int(round(float(frame))) - 1 for frame in frames)
+                node_frames = sorted(
+                    int(node[0])
+                    for node in nodes
+                    if isinstance(node, (list, tuple)) and len(node) >= 3
+                )
+            except (TypeError, ValueError):
+                return False
+            return frame_indices == node_frames
+
+        recalc_traj_nums = set()
         for traj_num, group in df.groupby("Trajectory"):
             group = group.sort_values("Frame")
             frames = group["Frame"].tolist()
             expected_frames = list(range(min(frames), max(frames) + 1))
-            if (expected_frames != frames
-                or not intensity_exists
-                or not sigma_exists
-                or not peak_exists
-                or not background_exists):
-                trajectories_need_recalc += 1
+            sparse_movie_trajectory = _is_saved_sparse_movie_trajectory(traj_num, frames)
+            if (
+                forcerecalc
+                or (expected_frames != frames and not sparse_movie_trajectory)
+                or not saved_fit_columns_complete
+            ):
+                recalc_traj_nums.add(traj_num)
 
-        if not forcerecalc:
-            recalc_mode = False
+        trajectories_need_recalc = len(recalc_traj_nums)
 
-        if trajectories_need_recalc > 0:
+        recalc_mode = bool(forcerecalc and recalc_traj_nums)
+
+        if trajectories_need_recalc > 0 and not forcerecalc:
             # Instead of a simple question, show the custom dialog.
             current_mode = self.navigator.tracking_mode if hasattr(self.navigator, "tracking_mode") else "Independent"
             current_radius = self.navigator.searchWindowSpin.value()
-            message = (f"{trajectories_need_recalc} trajectory(ies) have missing points or spot parameters.")
+            message = (
+                f"{trajectories_need_recalc} trajectory(ies) have missing points or spot parameters.\n"
+                "Only those trajectories will be recalculated."
+            )
             recalc_dialog = RecalcDialog(current_mode, current_radius, message=message, parent=self)
             result = recalc_dialog.exec_()
             if result != QDialog.Accepted:
@@ -2796,7 +3112,7 @@ class TrajectoryCanvas(QWidget):
                 for frame, x, y in zip(frames, x_coords, y_coords)
             ]
 
-            if recalc_mode:
+            if recalc_mode and traj_num in recalc_traj_nums:
                 
                 try:
                     # --- Recalculation branch ---
@@ -3010,6 +3326,7 @@ class TrajectoryCanvas(QWidget):
                 else:
                     by_ch[ch] = [None] * n_pts
             traj["colocalization_by_ch"] = by_ch
+            traj = self._normalize_trajectory_arrays(traj)
 
             # 3) compute the per‐trajectory percentages
             computed_cf = {}
@@ -3145,6 +3462,7 @@ class TrajectoryCanvas(QWidget):
         self.movieCanvas.draw()
         self.kymoCanvas.draw()
         self.navigator._rebuild_color_by_actions()
+        self.navigator._clear_undo_stack()
 
     def updateTableRow(self, row, traj):
         """
@@ -3240,7 +3558,22 @@ class TrajectoryCanvas(QWidget):
         self.recalculate_trajectory(prompt=False)
         self.navigator.flash_message("Recalculated")
 
-    def recalculate_trajectory(self, prompt=True, rows=None):
+    def _restore_recalc_originals(self, originals):
+        if not originals:
+            return
+        for row, orig in originals.items():
+            if row < 0 or row >= len(self.trajectories):
+                continue
+            if self.navigator is not None:
+                self.navigator._remove_past_centers(self._centers_for_past(self.trajectories[row]))
+                self.navigator._remove_past_centers(self._centers_for_past(orig))
+            restored = copy.deepcopy(orig)
+            self.trajectories[row] = restored
+            self.updateTableRow(row, restored)
+            if self.navigator is not None:
+                self.navigator.past_centers.extend(self._centers_for_past(restored))
+
+    def recalculate_trajectory(self, prompt=True, rows=None, cancel_restore=None):
         if rows is None:
             rows = [idx.row() for idx in self.table_widget.selectionModel().selectedRows()]
         else:
@@ -3253,7 +3586,11 @@ class TrajectoryCanvas(QWidget):
             return
 
         # backup originals
-        originals = {r: copy.deepcopy(self.trajectories[r]) for r in rows}
+        originals = {
+            r: copy.deepcopy(cancel_restore[r]) if cancel_restore and r in cancel_restore
+            else copy.deepcopy(self.trajectories[r])
+            for r in rows
+        }
         # remove old centers in whoever is selected
         for r in rows:
             old = self.trajectories[r]
@@ -3268,11 +3605,17 @@ class TrajectoryCanvas(QWidget):
         if len(rows) == 1:
             row = rows[0]
             new_traj = self._rebuild_one_trajectory(self.trajectories[row], self.navigator)
+            if getattr(self.navigator, "_is_canceled", False):
+                self.navigator._is_canceled = False
+                self._restore_recalc_originals(originals)
+                if self._any_traj_overlay_enabled():
+                    self.on_trajectory_selected_by_index(row, refresh_overlays=True)
+                return
             self.trajectories[row] = new_traj
             self.navigator.past_centers.extend(self._centers_for_past(new_traj))
             self.updateTableRow(row, new_traj)
             if self._any_traj_overlay_enabled():
-                self.on_trajectory_selected_by_index(row)
+                self.on_trajectory_selected_by_index(row, refresh_overlays=True)
             return
 
         # else: multi‐trajectory → pop up dialog if requested, then spawn worker
@@ -3321,17 +3664,13 @@ class TrajectoryCanvas(QWidget):
         worker.finished.connect(on_finished, Qt.QueuedConnection)
 
         def on_canceled():
-            for r, orig in originals.items():
-                self.trajectories[r] = orig
-                self.updateTableRow(r, orig)
+            self._restore_recalc_originals(originals)
             cleanup()
 
         worker.canceled.connect(on_canceled, Qt.QueuedConnection)
 
         def on_failed(message):
-            for r, orig in originals.items():
-                self.trajectories[r] = orig
-                self.updateTableRow(r, orig)
+            self._restore_recalc_originals(originals)
             cleanup()
             QMessageBox.critical(
                 self,
@@ -3349,7 +3688,7 @@ class TrajectoryCanvas(QWidget):
                 thread.wait()
             self._cleanup_recalc_thread_objects(thread=thread, worker=worker)
             if self._any_traj_overlay_enabled() and rows:
-                self.on_trajectory_selected_by_index(rows[0])
+                self.on_trajectory_selected_by_index(rows[0], refresh_overlays=True)
             self.navigator._refresh_intensity_canvas()
 
         thread.started.connect(worker.run)
@@ -3527,9 +3866,19 @@ class TrajectoryCanvas(QWidget):
         if row is None or row < 0 or row >= len(self.trajectories):
             return
 
+        restore_traj = copy.deepcopy(self.trajectories[row])
+        if original_anchors is not None:
+            restore_traj["anchors"] = copy.deepcopy(original_anchors)
+        if original_nodes is not None:
+            restore_traj["nodes"] = copy.deepcopy(original_nodes)
+
         mode = getattr(self.navigator, "tracking_mode", "Independent")
         if mode not in ("Independent", "Same center"):
-            self.recalculate_trajectory(prompt=False, rows=[row])
+            self.recalculate_trajectory(
+                prompt=False,
+                rows=[row],
+                cancel_restore={row: restore_traj},
+            )
             return
 
         old = self.trajectories[row]
@@ -3544,14 +3893,29 @@ class TrajectoryCanvas(QWidget):
             print(f"Partial anchor recalc failed; falling back to full rebuild: {exc}")
             new_traj = None
 
-        if new_traj is None:
-            self.recalculate_trajectory(prompt=False, rows=[row])
+        if getattr(self.navigator, "_is_canceled", False):
+            self.navigator._is_canceled = False
+            self._restore_recalc_originals({row: restore_traj})
+            if self._any_traj_overlay_enabled():
+                self.on_trajectory_selected_by_index(row, refresh_overlays=True)
             return
 
+        if new_traj is None:
+            self.recalculate_trajectory(
+                prompt=False,
+                rows=[row],
+                cancel_restore={row: restore_traj},
+            )
+            return
+
+        if self.navigator is not None:
+            self.navigator._remove_past_centers(self._centers_for_past(self.trajectories[row]))
         self.trajectories[row] = new_traj
+        if self.navigator is not None:
+            self.navigator.past_centers.extend(self._centers_for_past(new_traj))
         self.updateTableRow(row, new_traj)
         if self._any_traj_overlay_enabled():
-            self.on_trajectory_selected_by_index(row)
+            self.on_trajectory_selected_by_index(row, refresh_overlays=True)
 
     def _rebuild_one_trajectory_partial(self, old: dict, navigator, original_anchors=None, original_nodes=None):
         old_points = self._trajectory_points_from_markers(
@@ -3729,7 +4093,6 @@ class TrajectoryCanvas(QWidget):
             traj_data["step_medians"] = None
 
         self._update_diffusion_fields(traj_data, old, navigator)
-        navigator.past_centers.extend(self._centers_for_past(traj_data, changed_new_frames))
         return traj_data
 
     def _merge_colocalization_after_partial_rebuild(self, traj_data, old, navigator, changed_new_frames):
@@ -4237,7 +4600,7 @@ class TrajectoryCanvas(QWidget):
             # — swap it in and refresh UI —
             self.updateTableRow(row, traj_data)
             if self._any_traj_overlay_enabled():
-                self.on_trajectory_selected_by_index(rows[0])
+                self.on_trajectory_selected_by_index(rows[0], refresh_overlays=True)
             return
 
 
@@ -4362,7 +4725,7 @@ class TrajectoryCanvas(QWidget):
             self._cleanup_recalc_thread_objects(thread=thread, worker=worker)
             # redraw if overlay is on
             if self._any_traj_overlay_enabled():
-                self.on_trajectory_selected_by_index(rows[0])
+                self.on_trajectory_selected_by_index(rows[0], refresh_overlays=True)
 
         thread.started.connect(worker.run)
         thread.finished.connect(worker.deleteLater)
@@ -4430,7 +4793,7 @@ class TrajectoryCanvas(QWidget):
             self._cleanup_recalc_thread_objects()
 
             # Re-select row 0.
-            self.on_trajectory_selected_by_index(0)
+            self.on_trajectory_selected_by_index(0, refresh_overlays=True)
             self.table_widget.selectRow(0)
 
         def on_worker_canceled():
@@ -4506,6 +4869,8 @@ class TrajectoryCanvas(QWidget):
             # nothing selected
             return
 
+        undo_before = self._snapshot_undo_state() if self._can_record_undo() else None
+
         # 3) Prepare to collect all spot-centers to remove
         centers_to_remove = []
 
@@ -4559,6 +4924,8 @@ class TrajectoryCanvas(QWidget):
 
         self.movieCanvas.draw()
         self.kymoCanvas.draw()
+        label = "Delete Trajectory" if len(selected_rows) == 1 else "Delete Trajectories"
+        self._push_trajectory_state_command(label, undo_before)
 
     def clear_trajectories(self, prompt=True):
         reply = QMessageBox.Yes
@@ -4571,6 +4938,12 @@ class TrajectoryCanvas(QWidget):
                 QMessageBox.No
             )
         if reply == QMessageBox.Yes or not prompt:
+
+            undo_before = (
+                self._snapshot_undo_state()
+                if prompt and self.trajectories and self._can_record_undo()
+                else None
+            )
 
             for col_name in ("Number of Steps", "Average Step Size"):
                 if col_name in self.custom_columns:
@@ -4603,6 +4976,7 @@ class TrajectoryCanvas(QWidget):
             self.movieCanvas.draw()
 
             self.navigator.past_centers = []
+            self._push_trajectory_state_command("Clear Trajectories", undo_before)
 
     def update_trajectory_visibility(self):
         has_rows = self.table_widget.rowCount() > 0
@@ -4614,6 +4988,334 @@ class TrajectoryCanvas(QWidget):
             # Give some proportion (e.g., 70% to main content, 30% to trajectory canvas)
             total_height = self.navigator.vertSplitter.height()
             self.navigator.vertSplitter.setSizes([int(0.7 * total_height), int(0.3 * total_height)])
+
+    @staticmethod
+    def _finite_xy(point):
+        if not isinstance(point, (tuple, list, np.ndarray)) or len(point) < 2:
+            return None
+        try:
+            x = float(point[0])
+            y = float(point[1])
+        except (TypeError, ValueError):
+            return None
+        if not (np.isfinite(x) and np.isfinite(y)):
+            return None
+        return x, y
+
+    @staticmethod
+    def _finite_number(value):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if np.isfinite(number) else None
+
+    def _select_kymograph_for_focus(self, kymo_name):
+        nav = self.navigator
+        if nav is None or not kymo_name:
+            return False
+        info = nav.kymo_roi_map.get(kymo_name)
+        if not info:
+            return False
+
+        ch = info.get("channel")
+        if ch is not None:
+            try:
+                requested_channel = int(ch)
+                current_channel = int(nav.movieChannelCombo.currentText())
+            except (TypeError, ValueError):
+                requested_channel = None
+                current_channel = None
+            if requested_channel is not None and requested_channel != current_channel:
+                nav._select_channel(requested_channel)
+            elif nav.kymoCombo.findText(kymo_name) < 0:
+                nav.update_kymo_list_for_channel()
+
+        idx = nav.kymoCombo.findText(kymo_name)
+        if idx < 0:
+            return False
+        if nav.kymoCombo.currentIndex() != idx:
+            nav.kymoCombo.setCurrentIndex(idx)
+        elif nav.kymoCombo.currentText() == kymo_name and getattr(nav.kymoCanvas, "image", None) is None:
+            nav.kymo_changed()
+        return nav.kymoCombo.currentText() == kymo_name
+
+    def _kymo_focus_points_for_trajectory(self, traj, roi, kymo_w, kymo_h):
+        nav = self.navigator
+        if nav is None or not isinstance(traj, dict) or not isinstance(roi, dict):
+            return []
+
+        num_frames_m1 = max(0, int(kymo_h) - 1)
+        frames = self._as_list(traj.get("frames"))
+        points = []
+
+        def add_kymo_point(xk, yk):
+            x = self._finite_number(xk)
+            y = self._finite_number(yk)
+            if x is None or y is None:
+                return
+            points.append((x, y))
+
+        def add_movie_point(frame, point):
+            xy = self._finite_xy(point)
+            f = self._finite_number(frame)
+            if xy is None or f is None:
+                return
+            try:
+                xk = nav.compute_kymo_x_from_roi(roi, xy[0], xy[1], kymo_w)
+            except Exception:
+                return
+            if xk is None:
+                return
+            add_kymo_point(xk, num_frames_m1 - f)
+
+        anchors = self._as_list(traj.get("anchors"))
+        traj_roi = traj.get("roi")
+        anchors_match_current = (
+            bool(anchors)
+            and isinstance(traj_roi, dict)
+            and hasattr(nav, "_roi_matches")
+            and nav._roi_matches(traj_roi, roi)
+        )
+        if anchors_match_current:
+            for anchor in anchors:
+                if not isinstance(anchor, (tuple, list, np.ndarray)) or len(anchor) < 3:
+                    continue
+                add_kymo_point(anchor[1], anchor[2])
+
+        for field in ("spot_centers",):
+            for frame, point in zip(frames, self._as_list(traj.get(field))):
+                add_movie_point(frame, point)
+
+        if not anchors_match_current:
+            for field in ("original_coords", "search_centers"):
+                for frame, point in zip(frames, self._as_list(traj.get(field))):
+                    add_movie_point(frame, point)
+
+            for node in self._as_list(traj.get("nodes")):
+                if not isinstance(node, (tuple, list, np.ndarray)) or len(node) < 3:
+                    continue
+                add_movie_point(node[0], (node[1], node[2]))
+
+        for key in ("start", "end"):
+            endpoint = traj.get(key)
+            if isinstance(endpoint, (tuple, list, np.ndarray)) and len(endpoint) >= 3:
+                add_movie_point(endpoint[0], (endpoint[1], endpoint[2]))
+
+        return points
+
+    def _fit_kymo_canvas_to_points(self, points, kymo_w, kymo_h):
+        canvas = self.navigator.kymoCanvas if self.navigator is not None else None
+        if canvas is None or not points:
+            return False
+
+        arr = np.asarray(points, dtype=float)
+        if arr.ndim != 2 or arr.shape[1] < 2:
+            return False
+        finite = np.isfinite(arr[:, 0]) & np.isfinite(arr[:, 1])
+        if not np.any(finite):
+            return False
+        xs = arr[finite, 0]
+        ys = arr[finite, 1]
+
+        min_x, max_x = float(np.min(xs)), float(np.max(xs))
+        min_y, max_y = float(np.min(ys)), float(np.max(ys))
+        bbox_w = max(max_x - min_x, 1.0)
+        bbox_h = max(max_y - min_y, 1.0)
+
+        pad_x = max(4.0, bbox_w * 0.15)
+        pad_y = max(4.0, bbox_h * 0.15)
+        target_w = min(float(kymo_w), max(24.0, bbox_w + 2.0 * pad_x))
+        target_h = min(float(kymo_h), max(24.0, bbox_h + 2.0 * pad_y))
+
+        widget_w = max(int(canvas.width()), 1)
+        widget_h = max(int(canvas.height()), 1)
+        scale = max(target_w / widget_w, target_h / widget_h)
+        if hasattr(canvas, "max_scale"):
+            scale = min(scale, canvas.max_scale)
+
+        cx = (min_x + max_x) * 0.5
+        cy = (min_y + max_y) * 0.5
+
+        canvas.manual_zoom = True
+        canvas.scale = scale
+        canvas.zoom_center = (cx, cy)
+        canvas.draw_trajectories_on_kymo()
+        canvas.update_view(cache_background=True)
+        canvas.draw_idle()
+        return True
+
+    def _focus_trajectory_within_kymograph(self, kymo_name, row):
+        nav = self.navigator
+        if nav is None or row < 0 or row >= len(self.trajectories):
+            return
+        if not self._select_kymograph_for_focus(kymo_name):
+            return
+
+        self.table_widget.blockSignals(True)
+        try:
+            self.table_widget.selectRow(row)
+        finally:
+            self.table_widget.blockSignals(False)
+
+        self.on_trajectory_selected_by_index(row, zoom=False)
+        if not self._select_kymograph_for_focus(kymo_name):
+            return
+
+        info = nav.kymo_roi_map.get(kymo_name, {})
+        roi_name = info.get("roi")
+        roi = nav.rois.get(roi_name)
+        canvas_image = getattr(nav.kymoCanvas, "image", None)
+        if roi is None or canvas_image is None:
+            return
+        kymo_h, kymo_w = canvas_image.shape[:2]
+        traj = self._normalize_trajectory_arrays(self.trajectories[row])
+        points = self._kymo_focus_points_for_trajectory(traj, roi, kymo_w, kymo_h)
+        if self._fit_kymo_canvas_to_points(points, kymo_w, kymo_h) and roi_name:
+            nav._roi_zoom_states[roi_name] = (nav.kymoCanvas.scale, nav.kymoCanvas.zoom_center)
+
+    def _trajectory_anchor_roi_points(self, traj):
+        nav = self.navigator
+        points = []
+
+        def add_point(x, y):
+            try:
+                x = float(x)
+                y = float(y)
+            except (TypeError, ValueError):
+                return
+            if not (np.isfinite(x) and np.isfinite(y)):
+                return
+            if points and np.isclose(points[-1][0], x) and np.isclose(points[-1][1], y):
+                return
+            points.append((x, y))
+
+        anchors = self._as_list(traj.get("anchors"))
+        roi = traj.get("roi")
+        if len(anchors) > 1 and isinstance(roi, dict) and nav is not None:
+            for anchor in anchors:
+                if not isinstance(anchor, (list, tuple, np.ndarray)) or len(anchor) < 3:
+                    continue
+                try:
+                    mx, my = nav.compute_roi_point(roi, float(anchor[1]))
+                except Exception:
+                    continue
+                add_point(mx, my)
+
+        if len(points) < 2:
+            points = []
+            for node in self._as_list(traj.get("nodes")):
+                if not isinstance(node, (list, tuple, np.ndarray)) or len(node) < 3:
+                    continue
+                add_point(node[1], node[2])
+
+        if len(points) < 2:
+            points = []
+            for endpoint in (traj.get("start"), traj.get("end")):
+                if not isinstance(endpoint, (list, tuple, np.ndarray)) or len(endpoint) < 3:
+                    continue
+                add_point(endpoint[1], endpoint[2])
+
+        unique_points = []
+        seen = set()
+        for x, y in points:
+            key = (round(x, 6), round(y, 6))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_points.append((x, y))
+        return unique_points if len(unique_points) >= 2 else []
+
+    def _trajectory_kymograph_channel(self, traj):
+        nav = self.navigator
+        if nav is None or getattr(nav, "movie", None) is None:
+            return None
+        try:
+            channel = int(traj.get("channel"))
+        except (TypeError, ValueError):
+            channel = 1
+        if getattr(nav.movie, "ndim", 0) == 4:
+            n_channels = nav.movie.shape[nav._channel_axis]
+        else:
+            n_channels = 1
+        if 1 <= channel <= n_channels:
+            return channel
+        return 1
+
+    def draw_kymographs_from_trajectory_rows(self, rows):
+        nav = self.navigator
+        if nav is None or getattr(nav, "movie", None) is None:
+            QMessageBox.warning(self, "", "Load a movie first.")
+            return
+
+        valid_rows = set()
+        for row in rows:
+            try:
+                row = int(row)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= row < len(self.trajectories):
+                valid_rows.add(row)
+        rows = sorted(valid_rows)
+        if not rows:
+            return
+
+        progress = None
+        if len(rows) > 1:
+            progress = QProgressDialog("Drawing kymographs from trajectories...", "Cancel", 0, len(rows), self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.show()
+
+        created = []
+        skipped = []
+        previous_roi_points = list(getattr(self.movieCanvas, "roiPoints", []) or [])
+        try:
+            for idx, row in enumerate(rows):
+                if progress is not None:
+                    progress.setValue(idx)
+                    QApplication.processEvents()
+                    if progress.wasCanceled():
+                        break
+
+                traj = self.trajectories[row]
+                points = self._trajectory_anchor_roi_points(traj)
+                if len(points) < 2:
+                    skipped.append(row)
+                    continue
+
+                channel = self._trajectory_kymograph_channel(traj)
+                self.movieCanvas.roiPoints = points
+                self.movieCanvas.finalize_roi(
+                    suppress_display=True,
+                    channels=[channel] if channel is not None else None,
+                )
+                roi_name = getattr(nav, "_last_roi", None)
+                if roi_name:
+                    created.append((roi_name, channel))
+        finally:
+            self.movieCanvas.roiPoints = previous_roi_points if not created else []
+            if progress is not None:
+                progress.setValue(len(rows))
+                progress.close()
+
+        if not created:
+            QMessageBox.warning(self, "", "No trajectory anchors found.")
+            return
+
+        last_roi, last_channel = created[-1]
+        if last_channel is not None:
+            nav._select_channel(last_channel)
+        nav._last_roi = last_roi
+        nav.update_kymo_list_for_channel()
+        nav.update_kymo_visibility()
+        nav.update_roi_overlay_if_active()
+
+        count = len(created)
+        if skipped:
+            nav.flash_message(f"Drew {count} kymograph{'s' if count != 1 else ''}; skipped {len(skipped)}")
+        else:
+            nav.flash_message(f"Drew {count} kymograph{'s' if count != 1 else ''}")
 
     def open_context_menu(self, pos):
         # 1) Figure out which row was clicked on
@@ -4650,6 +5352,16 @@ class TrajectoryCanvas(QWidget):
             lambda sel=rows: self.save_trajectories(sel),
         )
 
+        draw_kymo_label = (
+            "Draw kymograph from trajectory"
+            if n == 1
+            else "Draw kymographs from trajectories"
+        )
+        _add_action(
+            draw_kymo_label,
+            lambda sel=rows: self.draw_kymographs_from_trajectory_rows(sel),
+        )
+
         # --- (B) “Check colocalization” for single row if needed ---
         if n == 1 and getattr(self.navigator, "check_colocalization", False) and self.navigator.movie.ndim == 4:
             r    = rows[0]
@@ -4675,7 +5387,7 @@ class TrajectoryCanvas(QWidget):
                 )
                 menu.addSeparator()
 
-        # --- (C) Go→kymograph entries if exactly one row ---
+        # --- (C) Focus within kymograph entries if exactly one row ---
         if n == 1:
             r    = rows[0]
             traj = self.trajectories[r]
@@ -4687,15 +5399,9 @@ class TrajectoryCanvas(QWidget):
                 if is_point_near_roi((sx, sy), roi) and is_point_near_roi((ex, ey), roi):
                     for kymo_name, info in self.navigator.kymo_roi_map.items():
                         if info["roi"] == roi_name and info.get("channel") == traj_ch:
-                            def _go_to_kymo(kn, row):
-                                self.navigator.kymoCombo.setCurrentIndex(
-                                    self.navigator.kymoCombo.findText(kn)
-                                )
-                                # kymo_changed is connected to the combo; let it run first
-                                self.on_trajectory_selected_by_index(row)
                             _add_action(
-                                f"Go to kymograph {kymo_name}",
-                                lambda kn=kymo_name, row=r: _go_to_kymo(kn, row),
+                                f"Focus within kymo. {kymo_name}",
+                                lambda kn=kymo_name, row=r: self._focus_trajectory_within_kymograph(kn, row),
                             )
                     break  # only first matching ROI
 
@@ -4750,6 +5456,8 @@ class TrajectoryCanvas(QWidget):
         """
         For each row in `rows`, either mark or unmark the binary column `col_name`.
         """
+        undo_before = self._snapshot_undo_state() if self._can_record_undo() else None
+
         # decide whether to mark (True) or unmark (False)
         current = [
             bool(self.trajectories[r]["custom_fields"].get(col_name, ""))
@@ -4766,6 +5474,7 @@ class TrajectoryCanvas(QWidget):
 
         if self.navigator.color_by_column == col_name:
             self.navigator.refresh_color_by()
+            self._push_trajectory_state_command(f"Edit {col_name}", undo_before)
             return
 
         self.kymoCanvas.draw_trajectories_on_kymo()
@@ -4773,6 +5482,7 @@ class TrajectoryCanvas(QWidget):
         self.movieCanvas.draw_trajectories_on_movie()
         self.movieCanvas.draw()
         self.navigator._update_legends()
+        self._push_trajectory_state_command(f"Edit {col_name}", undo_before)
         
     def _set_value_column(self, col_name, rows):
         """
@@ -4805,6 +5515,8 @@ class TrajectoryCanvas(QWidget):
             return
         val = dlg.textValue()
 
+        undo_before = self._snapshot_undo_state() if self._can_record_undo() else None
+
         # 4) Store and update
         for r in rows:
             self.trajectories[r].setdefault("custom_fields", {})[col_name] = val
@@ -4812,6 +5524,7 @@ class TrajectoryCanvas(QWidget):
 
         if self.navigator.color_by_column == col_name:
             self.navigator.refresh_color_by()
+            self._push_trajectory_state_command(f"Edit {col_name}", undo_before)
             return
 
         self.kymoCanvas.draw_trajectories_on_kymo()
@@ -4820,6 +5533,7 @@ class TrajectoryCanvas(QWidget):
         self.movieCanvas.draw()
         if self.navigator.color_by_column == col_name:
             self.navigator._update_legends()
+        self._push_trajectory_state_command(f"Edit {col_name}", undo_before)
 
     def _on_header_context_menu(self, pos):
         header = self.table_widget.horizontalHeader()

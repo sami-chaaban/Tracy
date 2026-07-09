@@ -1,6 +1,34 @@
 from ._shared import *
 from scipy.ndimage import gaussian_laplace
 
+
+def _decode_tiff_text(value):
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="ignore")
+    return value
+
+
+def _read_movie_file_for_load(fname):
+    with tifffile.TiffFile(fname) as tif:
+        movie_metadata = tif.imagej_metadata or {}
+        page = tif.pages[0]
+        tags = {tag.name: tag.value for tag in page.tags.values()}
+        description = _decode_tiff_text(page.description)
+        image_description = _decode_tiff_text(tags.get("ImageDescription"))
+        try:
+            temp_movie = tifffile.memmap(fname, mode="r")
+        except Exception:
+            temp_movie = tif.asarray()
+
+    return {
+        "movie": temp_movie,
+        "metadata": movie_metadata,
+        "tags": tags,
+        "description": description,
+        "image_description": image_description,
+    }
+
+
 class NavigatorIOMixin:
     def infer_axes_from_shape(shape):
         """
@@ -18,7 +46,7 @@ class NavigatorIOMixin:
         # Only keep the “real” axes (uppercase)
         return ''.join(ax for ax in axes if ax.isupper())
 
-    def handle_movie_load(self, fname=None, pixelsize=None, frameinterval=None):
+    def handle_movie_load(self, fname=None, pixelsize=None, frameinterval=None, on_loaded=None):
         load_timer = getattr(self, "_load_tip_timer", None)
         if load_timer is not None and load_timer.isActive():
             load_timer.stop()
@@ -41,43 +69,137 @@ class NavigatorIOMixin:
             return
 
         # Pass the chosen filename to load_movie.
-        self.load_movie(fname, pixelsize=pixelsize, frameinterval=frameinterval)
+        return self.load_movie(
+            fname,
+            pixelsize=pixelsize,
+            frameinterval=frameinterval,
+            _on_loaded=on_loaded,
+        )
 
-    def load_movie(self, fname=None, pixelsize=None, frameinterval=None):
+    def _movie_load_is_running(self):
+        return getattr(self, "_movie_load_future", None) is not None
 
-        self.clear_flag = False
-        self.cancel_left_click_sequence()
+    def _cleanup_async_movie_load(self, future, executor, timer, progress):
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+        if progress is not None:
+            progress.close()
+            progress.deleteLater()
+        if executor is not None:
+            executor.shutdown(wait=False)
+        if getattr(self, "_movie_load_future", None) is future:
+            self._movie_load_future = None
+            self._movie_load_executor = None
+            self._movie_load_timer = None
+            self._movie_load_progress = None
 
-        self.show_steps = False
-        self.showStepsAction.setChecked(False)
+    def _start_async_movie_load(self, fname, pixelsize=None, frameinterval=None, on_loaded=None):
+        if self._movie_load_is_running():
+            self.flash_message("Movie load already in progress")
+            return
 
-        if (self.rois or self.kymographs or
-            (hasattr(self, 'trajectoryCanvas') and self.trajectoryCanvas.trajectories)):
-            reply = QMessageBox.question(
-                self,
-                "Clear existing data?",
-                "Clear existing data before loading a new movie?",
-                QMessageBox.Yes | QMessageBox.Cancel,
-                QMessageBox.Yes
-            )
-            if reply == QMessageBox.Cancel:
-                # user chose cancel → abort load_movie entirely
+        progress = QProgressDialog(
+            f"Loading movie...\n{os.path.basename(fname)}",
+            "Cancel", 0, 0, self
+        )
+        progress.setWindowTitle("Loading movie")
+        progress.setCancelButton(None)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.show()
+        QApplication.processEvents()
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_read_movie_file_for_load, fname)
+        timer = QTimer(self)
+        timer.setInterval(100)
+
+        def poll_movie_load():
+            if not future.done():
                 return
-            # user chose Yes → clear all existing data
-            self.clear_flag = True
+
+            try:
+                result = future.result()
+            except Exception as exc:
+                self._cleanup_async_movie_load(future, executor, timer, progress)
+                QMessageBox.critical(self, "Error", f"Could not load movie:\n{str(exc)}")
+                return
+
+            self._cleanup_async_movie_load(future, executor, timer, progress)
+            self.load_movie(
+                fname,
+                pixelsize=pixelsize,
+                frameinterval=frameinterval,
+                _movie_read_result=result,
+                _skip_preflight=True,
+                _on_loaded=on_loaded,
+            )
+
+        timer.timeout.connect(poll_movie_load)
+        self._movie_load_future = future
+        self._movie_load_executor = executor
+        self._movie_load_timer = timer
+        self._movie_load_progress = progress
+        timer.start()
+
+    def load_movie(
+        self,
+        fname=None,
+        pixelsize=None,
+        frameinterval=None,
+        _movie_read_result=None,
+        _skip_preflight=False,
+        _on_loaded=None,
+    ):
+
+        if not _skip_preflight:
+            if self._movie_load_is_running():
+                self.flash_message("Movie load already in progress")
+                return
+
+            self.clear_flag = False
+            self.cancel_left_click_sequence()
+
+            self.show_steps = False
+            self.showStepsAction.setChecked(False)
+
+            if (self.rois or self.kymographs or
+                (hasattr(self, 'trajectoryCanvas') and self.trajectoryCanvas.trajectories)):
+                reply = QMessageBox.question(
+                    self,
+                    "Clear existing data?",
+                    "Clear existing data before loading a new movie?",
+                    QMessageBox.Yes | QMessageBox.Cancel,
+                    QMessageBox.Yes
+                )
+                if reply == QMessageBox.Cancel:
+                    # user chose cancel -> abort load_movie entirely
+                    return
+                # user chose Yes -> clear all existing data
+                self.clear_flag = True
 
         if fname:
             self.movie_path = os.path.abspath(fname)
             self.movie_dir = os.path.dirname(self.movie_path)
             self._last_dir = self.movie_dir
-            # try:
-            with tifffile.TiffFile(fname) as tif:
-                temp_movie = tif.asarray()
-                self.movie_metadata = tif.imagej_metadata or {}
-                page = tif.pages[0]
 
-            tags = page.tags
-            description = page.description
+            if _movie_read_result is None:
+                self._start_async_movie_load(
+                    fname,
+                    pixelsize=pixelsize,
+                    frameinterval=frameinterval,
+                    on_loaded=_on_loaded,
+                )
+                return
+
+            temp_movie = _movie_read_result["movie"]
+            self.movie_metadata = _movie_read_result.get("metadata") or {}
+            tags = _movie_read_result.get("tags") or {}
+            description = _movie_read_result.get("description")
+            image_description = _movie_read_result.get("image_description")
 
             if pixelsize is not None and frameinterval is not None:
                 self.pixel_size = pixelsize
@@ -108,7 +230,9 @@ class NavigatorIOMixin:
 
                 if self.pixel_size is None:
                     if 'YResolution' in tags:
-                        value = tags['YResolution'].value
+                        value = tags['YResolution']
+                        if hasattr(value, "value"):
+                            value = value.value
                         try:
                             # If value is a tuple, compute pixels per micron:
                             num, denom = value
@@ -121,7 +245,7 @@ class NavigatorIOMixin:
                             except Exception:
                                 pass
 
-                desc = tif.pages[0].tags["ImageDescription"].value
+                desc = image_description or description or ""
                 try:
                     match = re.search(r'finterval=([\d\.]+)', desc)
                     if match:
@@ -216,7 +340,7 @@ class NavigatorIOMixin:
             self.movieCanvas.stop_idle_animation()
             self.movieCanvas.clear_canvas()
             self.movie = temp_movie
-            self.original_movie = self.movie.copy()
+            self.original_movie = None
 
             # Reset the frame cache whenever a new movie is loaded.
             self.frame_cache = {}
@@ -252,8 +376,7 @@ class NavigatorIOMixin:
             self.frameNumberLabel.setText("1")
 
             margin = 0
-            full_width = self.movieCanvas.image.shape[1]
-            full_height = self.movieCanvas.image.shape[0]
+            full_height, full_width = first_frame.shape[:2]
             self.movieCanvas.zoom_center = (full_width/2, full_height/2)
             self.movieCanvas.display_image(first_frame)
 
@@ -355,11 +478,16 @@ class NavigatorIOMixin:
             self.set_color_by(None)
 
             self.flash_message("Loaded movie")
+            self._clear_undo_stack()
 
             if self.movie.ndim == 4:
                 filt = self._ch_overlay._bubble_filter
                 filt._wobj = self._ch_overlay
                 QTimer.singleShot(2000, lambda: filt._showBubble(force=True))
+
+            if _on_loaded is not None:
+                _on_loaded()
+            return True
 
             # except Exception as e:
             #     QMessageBox.critical(self, "Error", f"Could not load movie:\n{str(e)}")
@@ -470,25 +598,19 @@ class NavigatorIOMixin:
         # 3) pick the right contrast-settings dict
         if self.sumBtn.isChecked():
             settings_store = self.channel_sum_contrast_settings
-            display_fn     = self.movieCanvas.display_sum_frame
+            self.movieCanvas.clear_sum_cache()
+            self.movieCanvas.display_sum_frame()
+            settings_image = self.movieCanvas.image
         else:
             settings_store = self.channel_contrast_settings
-            display_fn     = None  # we’ll use update_image_data below
+            settings_image = self.get_movie_frame(0)
 
         # 4) if first time for this channel, compute & stash defaults
         if ch not in settings_store:
-            # grab the very first frame of this channel
-            frame0 = self.get_movie_frame(0)
-            p15, p99 = np.percentile(frame0, (15, 99))
-            vmin0    = int(p15 * (1.05 if self.sumBtn.isChecked() else 1.0))
-            vmax0    = int(p99 * (1.20 if self.sumBtn.isChecked() else 1.10))
-            delta    = vmax0 - vmin0
-            settings_store[ch] = {
-                'vmin':         vmin0,
-                'vmax':         vmax0,
-                'extended_min': vmin0 - int(0.7 * delta),
-                'extended_max': vmax0 + int(1.4 * delta)
-            }
+            settings_store[ch] = self._contrast_settings_from_image(
+                settings_image,
+                sum_mode=bool(self.sumBtn.isChecked())
+            )
 
         # 5) pull out the stored settings
         s = settings_store[ch]
@@ -512,8 +634,8 @@ class NavigatorIOMixin:
 
         # 8) redraw either sum‐mode or normal‐mode
         if self.sumBtn.isChecked():
-            mc.clear_sum_cache()
-            mc.display_sum_frame()
+            if mc.image is None:
+                mc.display_sum_frame()
         else:
             # keep the same time‐point
             frame_idx = self.frameSlider.value()
@@ -665,32 +787,20 @@ class NavigatorIOMixin:
             self.movieCanvas.display_sum_frame()
             # Sum mode – use channel_sum_contrast_settings.
             if current_channel not in self.channel_sum_contrast_settings:
-                p15, p99 = np.percentile(first_frame, (15, 99))
-                default_vmin = int(p15 * 1.05)
-                default_vmax = int(p99 * 1.2)
-                delta = default_vmax - default_vmin
-                settings = {
-                    'vmin': default_vmin,
-                    'vmax': default_vmax,
-                    'extended_min': default_vmin - int(0.7 * delta),
-                    'extended_max': default_vmax + int(1.4 * delta)
-                }
+                settings = self._contrast_settings_from_image(
+                    self.movieCanvas.image,
+                    sum_mode=True
+                )
                 self.channel_sum_contrast_settings[current_channel] = settings
             else:
                 settings = self.channel_sum_contrast_settings[current_channel]
         else:
             # Normal mode – use channel_contrast_settings.
             if current_channel not in self.channel_contrast_settings:
-                p15, p99 = np.percentile(first_frame, (15, 99))
-                default_vmin = int(p15)
-                default_vmax = int(p99 * 1.1)
-                delta = default_vmax - default_vmin
-                settings = {
-                    'vmin': default_vmin,
-                    'vmax': default_vmax,
-                    'extended_min': default_vmin - int(0.7 * delta),
-                    'extended_max': default_vmax + int(1.4 * delta)
-                }
+                settings = self._contrast_settings_from_image(
+                    first_frame,
+                    sum_mode=False
+                )
                 self.channel_contrast_settings[current_channel] = settings
             else:
                 settings = self.channel_contrast_settings[current_channel]
@@ -1372,48 +1482,42 @@ class NavigatorIOMixin:
         if not current:
             return
 
-        # 1) Remove mapping and drop any zoom state for its ROI
-        mapping = self.kymo_roi_map.pop(current, None)
-        if mapping:
-            roi_name = mapping["roi"]
-            # drop zoom/pan state
+        mapping = self.kymo_roi_map.get(current)
+        if not mapping:
+            return
+
+        roi_name = mapping.get("roi")
+        if roi_name:
+            names_to_delete = [
+                name for name, info in list(self.kymo_roi_map.items())
+                if info.get("roi") == roi_name
+            ]
+        else:
+            names_to_delete = [current]
+
+        for name in names_to_delete:
+            self.kymo_roi_map.pop(name, None)
+            self.kymographs.pop(name, None)
+            if hasattr(self, "kymographs_log"):
+                self.kymographs_log.pop(name, None)
+            if hasattr(self, "kymo_contrast_settings"):
+                self.kymo_contrast_settings.pop(name, None)
+            if hasattr(self, "kymo_log_contrast_settings"):
+                self.kymo_log_contrast_settings.pop(name, None)
+
+        if roi_name:
             self._roi_zoom_states.pop(roi_name, None)
-            # if this was the last ROI we saw, clear it
             if self._last_roi == roi_name:
                 self._last_roi = None
-            # remove the ROI itself if nobody else references it
-            if not any(info["roi"] == roi_name for info in self.kymo_roi_map.values()):
-                self.rois.pop(roi_name, None)
-                idx = self.roiCombo.findText(roi_name)
-                if idx >= 0:
-                    self.roiCombo.removeItem(idx)
+            self.rois.pop(roi_name, None)
+            idx = self.roiCombo.findText(roi_name)
+            if idx >= 0:
+                self.roiCombo.removeItem(idx)
 
-        # 2) Delete the kymograph
-        self.kymographs.pop(current, None)
-        if hasattr(self, "kymographs_log"):
-            self.kymographs_log.pop(current, None)
-        if hasattr(self, "kymo_contrast_settings"):
-            self.kymo_contrast_settings.pop(current, None)
-        if hasattr(self, "kymo_log_contrast_settings"):
-            self.kymo_log_contrast_settings.pop(current, None)
-
-        # 3) Remove it from the combo
-        old_index = self.kymoCombo.currentIndex()
-        self.kymoCombo.removeItem(old_index)
-
-        # 4) Show next one or clear
-        if self.kymoCombo.count() > 0:
-            new_index = old_index - 1 if old_index > 0 else 0
-            self.kymoCombo.setCurrentIndex(new_index)
-        else:
-            self.kymoCanvas.ax.cla()
-            self.kymoCanvas.ax.axis("off")
-            self.kymoCanvas.draw_idle()
-
-        # 5) Re-run selection & visibility
-        self.kymo_changed()
+        self.update_kymo_list_for_channel()
         self.update_kymo_visibility()
         self.update_roilist_visibility()
+
     def invert_current_kymograph(self):
         current = self.kymoCombo.currentText()
         if not current:
@@ -2888,16 +2992,34 @@ class NavigatorIOMixin:
         saved_file = {"path": None}
 
         def save_movie():
+            movie_path = getattr(self, "movie_path", None)
+            movie_dir = getattr(self, "movie_dir", None)
+            if not movie_dir and movie_path:
+                movie_dir = os.path.dirname(os.path.abspath(movie_path))
+            start_dir = movie_dir if movie_dir and os.path.isdir(movie_dir) else (
+                getattr(self, "_last_dir", "") or os.path.expanduser("~")
+            )
+            if not os.path.isdir(start_dir):
+                start_dir = os.path.expanduser("~")
+
+            movie_name = os.path.basename(movie_path) if movie_path else self.movieNameLabel.text().strip()
+            movie_stem = os.path.splitext(movie_name)[0] if movie_name else "movie"
+            if not movie_stem or movie_stem.lower() == "load":
+                movie_stem = "movie"
+            default_path = os.path.join(start_dir, f"{movie_stem}_drift_corrected.tif")
+
             # static file-picker; parent is 'dialog'
             fname, _ = QFileDialog.getSaveFileName(
                 dialog,
                 "Save Drift-Corrected Movie",
-                "",
+                default_path,
                 "TIFF Files (*.tif *.tiff)"
             )
             if not fname:
                 # user clicked Cancel in the file-chooser → do nothing
                 return False
+            if not fname.lower().endswith((".tif", ".tiff")):
+                fname += ".tif"
             try:
                 # actually write it out
                 tifffile.imwrite(
@@ -2908,6 +3030,7 @@ class NavigatorIOMixin:
                     metadata=getattr(self, "movie_metadata", {})
                 )
                 saved_file["path"] = fname
+                self._last_dir = os.path.dirname(fname) or self._last_dir
                 return True
             except Exception as e:
                 QMessageBox.critical(dialog, "Save Error", f"Error saving movie:\n{e}")
@@ -2921,22 +3044,23 @@ class NavigatorIOMixin:
             # at this point, saved_file["path"] must be set
             try:
                 self.save_and_load_routine = True
+                def after_movie_loaded():
+                    QMessageBox.information(
+                        dialog, "Loaded",
+                        "The corrected movie has been loaded into the main window."
+                    )
+                    self.zoomInsetFrame.setVisible(False)
+                    dialog.accept()
+
                 self.handle_movie_load(
                     saved_file["path"],
                     pixelsize=self.pixel_size,
-                    frameinterval=self.frame_interval
+                    frameinterval=self.frame_interval,
+                    on_loaded=after_movie_loaded,
                 )
-                QMessageBox.information(
-                    dialog, "Loaded",
-                    "The corrected movie has been loaded into the main window."
-                )
-                self.zoomInsetFrame.setVisible(False)
             except Exception as e:
                 QMessageBox.critical(dialog, "Load Error", f"Error loading movie:\n{e}")
                 return
-
-            # only now close the corrected-movie popup
-            dialog.accept()
 
         def cancel():
             dialog.accept()

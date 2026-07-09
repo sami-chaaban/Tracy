@@ -22,7 +22,11 @@ class NavigatorInputMixin:
                 and getattr(self.movie, "ndim", 0) == 4):
             max_ch = self.movie.shape[self._channel_axis]
             if 1 <= requested_channel <= max_ch:
-                if self.flashchannel and requested_channel != int(self.movieChannelCombo.currentText()):
+                try:
+                    current_channel = int(self.movieChannelCombo.currentText())
+                except (TypeError, ValueError):
+                    current_channel = None
+                if self.flashchannel and requested_channel != current_channel:
                     self.flash_message(f"Channel {requested_channel}")
                 # This will emit currentIndexChanged → on_channel_changed(index)
                 self.movieChannelCombo.setCurrentIndex(requested_channel - 1)
@@ -297,6 +301,37 @@ class NavigatorInputMixin:
 
         return super().eventFilter(obj, ev)
 
+    def _contrast_settings_from_image(self, image, *, sum_mode=False):
+        if image is None:
+            return {'vmin': 0, 'vmax': 255, 'extended_min': 0, 'extended_max': 255}
+
+        arr = np.asarray(image, dtype=float)
+        finite = arr[np.isfinite(arr)]
+        if finite.size == 0:
+            return {'vmin': 0, 'vmax': 255, 'extended_min': 0, 'extended_max': 255}
+
+        p15, p99 = np.percentile(finite, (15, 99))
+        new_vmin = int(p15)
+        new_vmax = int(p99 if sum_mode else p99 * 1.1)
+
+        if new_vmin >= new_vmax:
+            p1, p999 = np.percentile(finite, (1, 99.9))
+            new_vmin = int(p1)
+            new_vmax = int(p999)
+        if new_vmin >= new_vmax:
+            new_vmin = int(np.min(finite))
+            new_vmax = int(np.max(finite))
+        if new_vmin >= new_vmax:
+            new_vmax = new_vmin + 1
+
+        delta = new_vmax - new_vmin
+        return {
+            'vmin': new_vmin,
+            'vmax': new_vmax,
+            'extended_min': new_vmin - int(0.7 * delta),
+            'extended_max': new_vmax + int(1.4 * delta)
+        }
+
     def reset_contrast(self):
         image = self.movieCanvas.image
         if image is None:
@@ -305,11 +340,11 @@ class NavigatorInputMixin:
 
         # If reference mode is active, reset and store reference contrast only.
         if hasattr(self, "refBtn") and self.refBtn.isChecked():
-            p15, p99 = np.percentile(image, (15, 99))
-            new_vmin, new_vmax = int(p15), int(p99 * 1.1)
-            delta = new_vmax - new_vmin
-            new_extended_min = new_vmin - int(0.7 * delta)
-            new_extended_max = new_vmax + int(1.4 * delta)
+            settings = self._contrast_settings_from_image(image, sum_mode=False)
+            new_vmin = settings['vmin']
+            new_vmax = settings['vmax']
+            new_extended_min = settings['extended_min']
+            new_extended_max = settings['extended_max']
 
             slider = self.contrastControlsWidget.contrastRangeSlider
             slider.blockSignals(True)
@@ -330,15 +365,14 @@ class NavigatorInputMixin:
             self.movieCanvas.set_display_range(new_vmin, new_vmax)
             return
 
-        p15, p99 = np.percentile(image, (15, 99))
-        if self.movieCanvas.sum_mode:
-            new_vmin, new_vmax = int(p15 * 1.05), int(p99 * 1.2)
-        else:
-            new_vmin, new_vmax = int(p15), int(p99 * 1.1)
-            
-        delta = new_vmax - new_vmin
-        new_extended_min = new_vmin - int(0.7 * delta)
-        new_extended_max = new_vmax + int(1.4 * delta)
+        settings = self._contrast_settings_from_image(
+            image,
+            sum_mode=bool(self.movieCanvas.sum_mode)
+        )
+        new_vmin = settings['vmin']
+        new_vmax = settings['vmax']
+        new_extended_min = settings['extended_min']
+        new_extended_max = settings['extended_max']
         
         # Update the slider.
         self.contrastControlsWidget.contrastRangeSlider.blockSignals(True)
@@ -515,21 +549,11 @@ class NavigatorInputMixin:
             # Compute sum-mode contrast settings if they don’t already exist.
             sum_image = self.movieCanvas.image
             if current_channel not in self.channel_sum_contrast_settings:
-                if sum_image is not None:
-                    p15, p99 = np.percentile(sum_image, (15, 99))
-                    new_vmin = int(p15 * 1.05)
-                    new_vmax = int(p99 * 1.2)
-                    delta = new_vmax - new_vmin
-                    settings = {
-                        'vmin': new_vmin,
-                        'vmax': new_vmax,
-                        'extended_min': new_vmin - int(0.7 * delta),
-                        'extended_max': new_vmax + int(1.4 * delta)
-                    }
-                    self.channel_sum_contrast_settings[current_channel] = settings
-                else:
-                    settings = {'vmin': 0, 'vmax': 255, 'extended_min': 0, 'extended_max': 255}
-                    self.channel_sum_contrast_settings[current_channel] = settings
+                settings = self._contrast_settings_from_image(
+                    sum_image,
+                    sum_mode=True
+                )
+                self.channel_sum_contrast_settings[current_channel] = settings
             else:
                 settings = self.channel_sum_contrast_settings[current_channel]
 
@@ -571,16 +595,7 @@ class NavigatorInputMixin:
             if current_channel in self.channel_contrast_settings:
                 settings = self.channel_contrast_settings[current_channel]
             else:
-                p15, p99 = np.percentile(frame, (15, 99))
-                default_vmin = int(p15)
-                default_vmax = int(p99 * 1.1)
-                delta = default_vmax - default_vmin
-                settings = {
-                    'vmin': default_vmin,
-                    'vmax': default_vmax,
-                    'extended_min': default_vmin - int(0.7 * delta),
-                    'extended_max': default_vmax + int(1.4 * delta)
-                }
+                settings = self._contrast_settings_from_image(frame, sum_mode=False)
                 self.channel_contrast_settings[current_channel] = settings
 
             # Reset the movie canvas’s internal contrast settings.

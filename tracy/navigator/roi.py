@@ -173,10 +173,21 @@ class NavigatorRoiMixin:
 
             # 2b) pick channel from the first matching trajectory
             channel = None
+            channels_for_roi = set()
             for traj in self.trajectoryCanvas.trajectories:
-                if traj.get("roi") is roi and traj.get("channel") is not None:
-                    channel = traj["channel"]
-                    break
+                traj_roi = traj.get("roi")
+                if not (traj_roi is roi or traj_roi == roi):
+                    continue
+                traj_channel = traj.get("channel")
+                if traj_channel is None:
+                    continue
+                try:
+                    channels_for_roi.add(int(traj_channel))
+                except (TypeError, ValueError):
+                    continue
+
+            if channels_for_roi:
+                channel = min(channels_for_roi)
 
 
             if channel is not None:
@@ -184,7 +195,10 @@ class NavigatorRoiMixin:
 
             # 2c) replay the ROI
             self.movieCanvas.roiPoints = roi["points"]
-            self.movieCanvas.finalize_roi(suppress_display=True)
+            self.movieCanvas.finalize_roi(
+                suppress_display=True,
+                channels=sorted(channels_for_roi) if channels_for_roi else None,
+            )
 
         progress.setValue(len(unique_rois))
         progress.close()
@@ -192,15 +206,7 @@ class NavigatorRoiMixin:
         self._last_roi = None
         self.kymoCanvas.manual_zoom = False
         self.update_kymo_list_for_channel()
-        if self.kymoCombo.count() > 0:
-            self.kymoCombo.blockSignals(True)
-            self.kymoCombo.setCurrentIndex(0)
-            self.kymoCombo.blockSignals(False)
-            self.kymo_changed()
         self.update_kymo_visibility()
-
-        self.kymoCanvas.draw_trajectories_on_kymo()
-        self.kymoCanvas.draw_idle()
 
     def compute_kymo_x_from_roi(self, roi, x_orig, y_orig, kymo_width):
         if x_orig is None:

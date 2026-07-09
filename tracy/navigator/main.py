@@ -43,6 +43,9 @@ class KymographNavigator(
         self.setFocusPolicy(Qt.StrongFocus)
         self.setFocus()
 
+        self.undo_stack = QUndoStack(self)
+        self._undo_restore_depth = 0
+
         self.pixel_size = None        # in nanometers (nm)
         self.frame_interval = None    # in milliseconds (ms)
 
@@ -244,6 +247,8 @@ class KymographNavigator(
 
         self.connect_all_spots = False
         self.hide_kymo_spots = False
+        self.hide_movie_spots = False
+        self.slow_computer_mode = False
 
         self.color_by_column = None
 
@@ -253,6 +258,11 @@ class KymographNavigator(
         self.min_step=100
         self.W=15
         self.passes=10
+
+    def _clear_undo_stack(self):
+        stack = getattr(self, "undo_stack", None)
+        if stack is not None:
+            stack.clear()
 
     def closeEvent(self, event):
         thread = getattr(self, "_autopick_thread", None)
