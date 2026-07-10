@@ -52,6 +52,53 @@ class KymoCanvas(ImageCanvas):
         self.scatter_objs_traj = []
 
         self._ctrl_panning = False
+        self.setAcceptDrops(True)
+
+    def _movie_drop_delegate(self):
+        nav = getattr(self, "navigator", None)
+        movie_canvas = getattr(nav, "movieCanvas", None) if nav is not None else None
+        if movie_canvas is None:
+            return None
+        if not hasattr(movie_canvas, "_dropped_load_file"):
+            return None
+        if not hasattr(movie_canvas, "_load_dropped_file"):
+            return None
+        return movie_canvas
+
+    def _accepted_drop_path(self, event):
+        delegate = self._movie_drop_delegate()
+        if delegate is None:
+            return None
+        dropped_path, _kind, _err = delegate._dropped_load_file(event.mimeData())
+        return dropped_path
+
+    def dragEnterEvent(self, event):
+        if self._accepted_drop_path(event):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event):
+        if self._accepted_drop_path(event):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event):
+        delegate = self._movie_drop_delegate()
+        if delegate is None:
+            event.ignore()
+            QMessageBox.warning(self.navigator or self, "Load failed", "Movie drop loader is unavailable.")
+            return
+
+        dropped_path, kind, err = delegate._dropped_load_file(event.mimeData())
+        if not dropped_path:
+            event.ignore()
+            QMessageBox.warning(self.navigator or self, "Invalid file", err or "Invalid file drop.")
+            return
+
+        event.acceptProposedAction()
+        delegate._load_dropped_file(dropped_path, kind, message_parent=self)
 
     def _kymo_interaction_bg_color(self):
         nav = getattr(self, "navigator", None)
@@ -188,6 +235,7 @@ class KymoCanvas(ImageCanvas):
     def _perform_deferred_view_draw(self):
         cache_background = bool(self._deferred_cache_background)
         self._deferred_cache_background = False
+        self._apply_kymo_label_zoom_scale()
         self.draw()
         if cache_background:
             self._bg = self.copy_from_bbox(self.ax.bbox)
@@ -208,6 +256,11 @@ class KymoCanvas(ImageCanvas):
         for marker in markers:
             if not isinstance(marker, Text):
                 continue
+            try:
+                if not marker.get_visible():
+                    continue
+            except Exception:
+                pass
             try:
                 bbox = marker.get_window_extent(renderer)
                 patch = marker.get_bbox_patch()
@@ -291,6 +344,8 @@ class KymoCanvas(ImageCanvas):
     def reset_canvas(self):
         self.ax.cla()
         self._im = None
+        self.image = None
+        self.manual_zoom = False
         self._marker = None
         self._is_panning = False
         self._pan_start = None
@@ -298,6 +353,17 @@ class KymoCanvas(ImageCanvas):
         self._orig_ylim = None
         self._last_pan = 0.0
         self._finish_kymo_interaction(redraw=False)
+        self.kymo_trajectory_markers = []
+        self.kymo_selected_trajectory_markers = []
+        self._kymo_base_scatter_artists = []
+        self._kymo_selected_scatter_artists = []
+        self._kymo_base_pick_entries = []
+        self._kymo_selected_pick_entries = []
+        self._kymo_pick_points = np.empty((0, 2), dtype=float)
+        self._kymo_pick_rows = np.empty((0,), dtype=int)
+        self._kymo_pick_indices = np.empty((0,), dtype=int)
+        self._kymo_label_bboxes.clear()
+        self.invalidate_blit_background()
         self.zoom_center = None
         self.scale = 1.0
 
@@ -380,6 +446,7 @@ class KymoCanvas(ImageCanvas):
         else:
             self.ax.set_ylim(cy - view_h/2, cy + view_h/2)
 
+        self._apply_kymo_label_zoom_scale()
         if defer or blit:
             self._schedule_deferred_view_draw(cache_background=cache_background)
             return
@@ -415,6 +482,35 @@ class KymoCanvas(ImageCanvas):
 
     def invalidate_blit_background(self):
         self._bg = None
+
+    def _sync_zoom_state_from_axes(self, widget_width=None):
+        if self.image is None:
+            return
+        try:
+            x0, x1 = self.ax.get_xlim()
+            y0, y1 = self.ax.get_ylim()
+            self.zoom_center = ((float(x0) + float(x1)) * 0.5,
+                                (float(y0) + float(y1)) * 0.5)
+            if widget_width is None or int(widget_width) <= 1:
+                widget_width = self.width()
+            widget_w = max(int(widget_width), 1)
+            span_x = abs(float(x1) - float(x0))
+            if span_x > 0:
+                self.scale = span_x / widget_w
+        except Exception:
+            pass
+
+    def _invalidate_resize_backgrounds(self):
+        self.invalidate_blit_background()
+        nav = getattr(self, "navigator", None)
+        if nav is None:
+            return
+        for attr in ("_kymo_bg", "_kymo_sequence_bg_view",
+                     "_kymo_anchor_bg", "_kymo_anchor_bg_view"):
+            try:
+                setattr(nav, attr, None)
+            except Exception:
+                pass
 
     def fit_to_full_image(self):
         if self.image is None:
@@ -514,8 +610,9 @@ class KymoCanvas(ImageCanvas):
             if self._interaction_finish_timer.isActive():
                 self._interaction_finish_timer.stop()
         elif event.button == 1:
-            if hasattr(self.parent(), 'on_kymo_left_click'):
-                self.parent().on_kymo_left_click(event)
+            # Left-click handling lives in NavigatorKymoMixin.on_kymo_click.
+            # Calling it here as well duplicates anchor placement and redraw work.
+            return
 
     def on_mouse_move(self, event):
         if self._is_panning and event.inaxes == self.ax:
@@ -553,11 +650,20 @@ class KymoCanvas(ImageCanvas):
             else:
                 self.update_view(cache_background=True)
         else:
-            # Force a final synchronous redraw and update the background
-            self.update_view()
+            # A normal click should not redraw the full kymograph. The navigator
+            # handles any click-specific marker updates with blitting.
+            return
 
     def resizeEvent(self, event):
         slow_mode = self._slow_interaction_mode_enabled()
+        if self.image is not None and self.manual_zoom:
+            old_width = None
+            try:
+                old_width = event.oldSize().width()
+            except Exception:
+                old_width = None
+            self._sync_zoom_state_from_axes(widget_width=old_width)
+        self._invalidate_resize_backgrounds()
         if slow_mode:
             self._hide_kymo_overlay_artists_for_interaction()
         super().resizeEvent(event)
@@ -628,7 +734,7 @@ class KymoCanvas(ImageCanvas):
         self.ax.draw_artist(marker)
         self.fig.canvas.blit(self.ax.bbox)
 
-    def temporary_circle(self, x, y, size=12, color='blue'):
+    def temporary_circle(self, x, y, size=12, color='blue', draw=True, animated=False):
         """
         Add a transient marker circle at (x, y) in *data* coords,
         but with a fixed radius of `size` points.
@@ -645,7 +751,13 @@ class KymoCanvas(ImageCanvas):
             alpha=0.6,
             linewidths=0  # no edge
         )
-        self.draw()
+        if animated:
+            try:
+                marker.set_animated(True)
+            except Exception:
+                pass
+        if draw:
+            self.draw()
         return [marker]
 
     def _refresh_kymo_clickable_artists(self):
@@ -684,16 +796,33 @@ class KymoCanvas(ImageCanvas):
         if event.inaxes is not self.ax:
             return None
         try:
-            display_points = self.ax.transData.transform(points)
-            dx = display_points[:, 0] - float(event.x)
-            dy = display_points[:, 1] - float(event.y)
+            xdata = float(event.xdata)
+            ydata = float(event.ydata)
+            x0, x1 = self.ax.get_xlim()
+            y0, y1 = self.ax.get_ylim()
+            bbox = self.ax.bbox
+            px_per_x = float(bbox.width) / max(abs(float(x1) - float(x0)), 1e-9)
+            px_per_y = float(bbox.height) / max(abs(float(y1) - float(y0)), 1e-9)
+            max_dx = float(max_px) / max(px_per_x, 1e-9)
+            max_dy = float(max_px) / max(px_per_y, 1e-9)
+            near = (
+                (np.abs(points[:, 0] - xdata) <= max_dx)
+                & (np.abs(points[:, 1] - ydata) <= max_dy)
+            )
+            if not np.any(near):
+                return None
+            candidate_indices = np.nonzero(near)[0]
+            candidate_points = points[candidate_indices]
+            dx = (candidate_points[:, 0] - xdata) * px_per_x
+            dy = (candidate_points[:, 1] - ydata) * px_per_y
             dist2 = dx * dx + dy * dy
         except Exception:
             return None
         limit2 = float(max_px) * float(max_px)
-        nearest = int(np.argmin(dist2))
-        if dist2[nearest] > limit2:
+        nearest_local = int(np.argmin(dist2))
+        if dist2[nearest_local] > limit2:
             return None
+        nearest = int(candidate_indices[nearest_local])
         return (
             int(self._kymo_pick_rows[nearest]),
             int(self._kymo_pick_indices[nearest]),
@@ -831,19 +960,115 @@ class KymoCanvas(ImageCanvas):
         except Exception:
             return color if isinstance(color, str) else fallback
 
+    def _kymo_label_style_for_zoom(self, highlighted=False):
+        base_size = 8.5 if highlighted else 7.5
+        try:
+            if self.image is None:
+                raise ValueError
+            h, w = self.image.shape[:2]
+            widget_w = max(int(self.width()), 1)
+            widget_h = max(int(self.height()), 1)
+            fit_scale = max(float(w) / widget_w, float(h) / widget_h)
+            current_scale = max(float(getattr(self, "scale", fit_scale)), 1e-9)
+            zoom_factor = max(fit_scale / current_scale, 0.02)
+            font_size = base_size * (zoom_factor ** 0.85)
+        except Exception:
+            font_size = base_size
+        max_size = 11.0 if highlighted else 10.0
+        font_size = float(np.clip(font_size, 3.0, max_size))
+        offset = float(np.clip(15.0 * (font_size / 8.0), 5.0, 18.0))
+        linewidth = float(np.clip(1.5 * (font_size / 8.0), 0.45, 1.8))
+        return font_size, offset, linewidth
+
+    def _iter_kymo_label_artists(self):
+        markers = (
+            list(getattr(self, "kymo_trajectory_markers", None) or [])
+            + list(getattr(self, "kymo_selected_trajectory_markers", None) or [])
+        )
+        for marker in markers:
+            if getattr(marker, "_tracy_kymo_label", False):
+                yield marker
+
+    def _restore_hidden_kymo_base_labels(self):
+        hidden = getattr(self, "_hidden_kymo_base_labels", None)
+        if not hidden:
+            self._hidden_kymo_base_labels = []
+            return
+        for label, visible in hidden:
+            try:
+                label.set_visible(visible)
+            except Exception:
+                pass
+        self._hidden_kymo_base_labels = []
+
+    def _hide_kymo_base_labels_for_row(self, row):
+        self._restore_hidden_kymo_base_labels()
+        if row is None or row < 0:
+            return
+        label_map = getattr(self.navigator, "_kymo_label_to_row", None)
+        hidden = []
+        for label in list(getattr(self, "kymo_trajectory_markers", []) or []):
+            if not getattr(label, "_tracy_kymo_label", False):
+                continue
+            try:
+                if label_map is not None and label_map.get(label, -1) != row:
+                    continue
+                visible = label.get_visible()
+                label.set_visible(False)
+                hidden.append((label, visible))
+            except Exception:
+                pass
+        self._hidden_kymo_base_labels = hidden
+
+    def _apply_kymo_label_zoom_scale(self):
+        for label in self._iter_kymo_label_artists():
+            highlighted = bool(getattr(label, "_tracy_kymo_label_highlighted", False))
+            font_size, offset, linewidth = self._kymo_label_style_for_zoom(highlighted)
+            try:
+                label.set_fontsize(font_size)
+            except Exception:
+                pass
+            unit = None
+            segment = getattr(label, "_tracy_kymo_label_segment", None)
+            sign = getattr(label, "_tracy_kymo_label_sign", None)
+            if segment is not None and sign is not None:
+                try:
+                    x0, y0, x1, y1 = segment
+                    dispA = self.ax.transData.transform((x0, y0))
+                    dispB = self.ax.transData.transform((x1, y1))
+                    v = dispB - dispA
+                    norm = np.hypot(*v)
+                    u = v / norm if norm else np.array([1.0, 0.0])
+                    unit = (float(u[0]) * float(sign), float(u[1]) * float(sign))
+                except Exception:
+                    unit = None
+            if unit is None:
+                unit = getattr(label, "_tracy_kymo_label_offset_unit", None)
+            if unit is not None:
+                try:
+                    label.set_position((float(unit[0]) * offset, float(unit[1]) * offset))
+                except Exception:
+                    pass
+            try:
+                patch = label.get_bbox_patch()
+                if patch is not None:
+                    patch.set_linewidth(linewidth)
+            except Exception:
+                pass
+
     def _add_kymo_endpoint_labels(self, idx, x0, y0, x1, y1, highlighted, markers):
         traj = self.navigator.trajectoryCanvas.trajectories[idx]
         traj_label = traj.get("file_index", str(traj["trajectory_number"]))
         face = "#7da1ff" if highlighted else "#cbd9ff"
         textcolor = "white" if highlighted else "black"
         alpha_lbl = 0.8 if highlighted else 0.6
+        font_size, offset, linewidth = self._kymo_label_style_for_zoom(highlighted)
 
         dispA = self.ax.transData.transform((x0, y0))
         dispB = self.ax.transData.transform((x1, y1))
         v = dispB - dispA
         norm = np.hypot(*v)
         u = v / norm if norm else np.array([1.0, 0.0])
-        offset = 15
         for (cx, cy, suf), sign in [((x0, y0, 'A'), -1), ((x1, y1, 'B'), +1)]:
             dx, dy = u * (offset * sign)
             lbl = self.ax.annotate(
@@ -852,18 +1077,37 @@ class KymoCanvas(ImageCanvas):
                 xytext=(dx, dy),
                 textcoords='offset pixels',
                 ha='center', va='center',
-                color=textcolor, fontsize=8, fontweight='bold',
+                color=textcolor, fontsize=font_size, fontweight='bold',
                 bbox=dict(
                     boxstyle='circle,pad=0.3',
                     facecolor=face,
                     edgecolor='black',
-                    linewidth=1.5,
+                    linewidth=linewidth,
                     alpha=alpha_lbl
                 ),
                 zorder=(8 if highlighted else 4)
             )
+            lbl._tracy_kymo_label = True
+            lbl._tracy_kymo_label_highlighted = bool(highlighted)
+            lbl._tracy_kymo_label_offset_unit = (float(u[0]) * sign, float(u[1]) * sign)
+            lbl._tracy_kymo_label_segment = (float(x0), float(y0), float(x1), float(y1))
+            lbl._tracy_kymo_label_sign = float(sign)
             self.navigator._kymo_label_to_row[lbl] = idx
             markers.append(lbl)
+
+    @staticmethod
+    def _kymo_anchor_endpoint_labels(x0, y0, x1, y1, anchors_match_current, anchors):
+        if not anchors_match_current or not anchors or len(anchors) < 2:
+            return x0, y0, x1, y1
+        try:
+            first = anchors[0]
+            last = anchors[-1]
+            return (
+                float(first[1]), float(first[2]),
+                float(last[1]), float(last[2])
+            )
+        except Exception:
+            return x0, y0, x1, y1
 
     def _draw_kymo_base_trajectories_batched(
         self,
@@ -1002,7 +1246,12 @@ class KymoCanvas(ImageCanvas):
                     pick_entries.append(pick_entry)
 
             if show_labels:
-                self._add_kymo_endpoint_labels(idx, x0, y0, x1, y1, False, markers)
+                lx0, ly0, lx1, ly1 = self._kymo_anchor_endpoint_labels(
+                    x0, y0, x1, y1,
+                    anchors_match_current,
+                    anchors,
+                )
+                self._add_kymo_endpoint_labels(idx, lx0, ly0, lx1, ly1, False, markers)
 
         for color, segments in search_segments_by_color.items():
             if not segments:
@@ -1279,7 +1528,12 @@ class KymoCanvas(ImageCanvas):
             markers.append(halo)
 
         if show_labels:
-            self._add_kymo_endpoint_labels(idx, x0, y0, x1, y1, highlighted, markers)
+            lx0, ly0, lx1, ly1 = self._kymo_anchor_endpoint_labels(
+                x0, y0, x1, y1,
+                anchors_match_current,
+                anchors,
+            )
+            self._add_kymo_endpoint_labels(idx, lx0, ly0, lx1, ly1, highlighted, markers)
 
     def draw_selected_trajectory_on_kymo(
         self,
@@ -1292,18 +1546,23 @@ class KymoCanvas(ImageCanvas):
         self.invalidate_blit_background()
         self.clear_kymo_selected_trajectory_markers(draw_idle=False)
         if self.navigator is None:
+            self._restore_hidden_kymo_base_labels()
             return
         overlay_mode = self.navigator.get_kymo_traj_overlay_mode()
         if overlay_mode == "off":
+            self._restore_hidden_kymo_base_labels()
             return
         ctx = self._kymo_overlay_context(invert_y=invert_y)
         if ctx is None:
+            self._restore_hidden_kymo_base_labels()
             return
         roi, kymo_w, current_kymo_ch, frame_to_y, roi_cache = ctx
         selected_idx = self.navigator.trajectoryCanvas.table_widget.currentRow()
         trajectories = self.navigator.trajectoryCanvas.trajectories
         if selected_idx < 0 or selected_idx >= len(trajectories):
+            self._restore_hidden_kymo_base_labels()
             return
+        self._hide_kymo_base_labels_for_row(selected_idx)
 
         show_anchors = True
         anchor_btn = getattr(self.navigator, "kymo_anchor_overlay_button", None)
@@ -1453,6 +1712,7 @@ class KymoCanvas(ImageCanvas):
     def clear_kymo_trajectory_markers(self, draw_idle=False):
         self._finish_kymo_interaction(redraw=False)
         self.invalidate_blit_background()
+        self._hidden_kymo_base_labels = []
         # Remove start/end circle markers and annotations.
         if self.navigator is not None and hasattr(self.navigator, "trajectory_markers"):
             for marker in self.navigator.trajectory_markers:

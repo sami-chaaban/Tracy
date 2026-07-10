@@ -3,6 +3,8 @@ from .base import ImageCanvas
 from matplotlib.textpath import TextPath
 from matplotlib.font_manager import FontProperties
 from matplotlib.transforms import Affine2D
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 - registers Matplotlib's 3D projection
+from PyQt5.QtGui import QCursor
 import traceback
 
 class MovieCanvas(ImageCanvas):
@@ -92,8 +94,44 @@ class MovieCanvas(ImageCanvas):
         self._idle_tracy_purple = "#8b7dff"
         self._idle_base_speeds = None
         self._bg_refresh_timer = None
+        self._inset_owner = None
+        self._suppress_inset_enter = False
+        self._inset_event_filter_targets = []
 
         self.setAcceptDrops(True)
+
+    def enterEvent(self, event):
+        owner = getattr(self, "_inset_owner", None)
+        if owner is not None:
+            if not getattr(owner, "_suppress_inset_enter", False):
+                owner._show_threed_inset()
+            return
+        try:
+            super().enterEvent(event)
+        except Exception:
+            pass
+
+    def leaveEvent(self, event):
+        owner = getattr(self, "_inset_owner", None)
+        if owner is not None:
+            owner._schedule_hide_threed_inset()
+            return
+        try:
+            super().leaveEvent(event)
+        except Exception:
+            pass
+
+    def eventFilter(self, obj, event):
+        targets = getattr(self, "_inset_event_filter_targets", None) or []
+        if obj in targets:
+            event_type = event.type()
+            if event_type in (QEvent.Enter, QEvent.HoverEnter):
+                self._show_threed_inset()
+                return False
+            if event_type in (QEvent.Leave, QEvent.HoverLeave):
+                self._schedule_hide_threed_inset()
+                return False
+        return False
 
     def _flip_y_enabled(self):
         return bool(getattr(self.navigator, "flip_movie_y", False))
@@ -146,17 +184,21 @@ class MovieCanvas(ImageCanvas):
             return
 
         event.acceptProposedAction()
+        self._load_dropped_file(dropped_path, kind, message_parent=self)
+
+    def _load_dropped_file(self, dropped_path, kind, message_parent=None):
+        message_parent = message_parent or self
         navigator = getattr(self, "navigator", None)
         if kind == "movie":
             if navigator is None or not hasattr(navigator, "handle_movie_load"):
-                QMessageBox.warning(self, "Load failed", "Movie loader is unavailable.")
+                QMessageBox.warning(message_parent, "Load failed", "Movie loader is unavailable.")
                 return
             def _load_dropped_movie(path=dropped_path, nav=navigator):
                 try:
                     nav.handle_movie_load(fname=path)
                 except Exception as exc:
                     traceback.print_exc()
-                    QMessageBox.critical(nav or self, "Load failed", f"Could not load movie:\n{exc}")
+                    QMessageBox.critical(nav or message_parent, "Load failed", f"Could not load movie:\n{exc}")
 
             QTimer.singleShot(0, _load_dropped_movie)
             return
@@ -164,7 +206,7 @@ class MovieCanvas(ImageCanvas):
         if kind == "trajectories":
             traj_canvas = getattr(navigator, "trajectoryCanvas", None) if navigator is not None else None
             if traj_canvas is None or not hasattr(traj_canvas, "load_trajectories"):
-                QMessageBox.warning(self, "Load failed", "Trajectory loader is unavailable.")
+                QMessageBox.warning(message_parent, "Load failed", "Trajectory loader is unavailable.")
                 return
             def _load_dropped_trajectories(path=dropped_path, canvas=traj_canvas):
                 try:
@@ -176,7 +218,7 @@ class MovieCanvas(ImageCanvas):
             QTimer.singleShot(0, _load_dropped_trajectories)
             return
 
-        QMessageBox.warning(self, "Load failed", "Unsupported dropped file.")
+        QMessageBox.warning(message_parent, "Load failed", "Unsupported dropped file.")
 
     def _image_origin(self):
         return "lower"
@@ -186,6 +228,15 @@ class MovieCanvas(ImageCanvas):
 
     def _extent_from_bounds(self, x1, x2, y1, y2):
         return [x1, x2, y1, y2]
+
+    def _inset_pixel_centers(self, x1, x2, y1, y2, width, height):
+        width = max(int(width), 1)
+        height = max(int(height), 1)
+        dx = (x2 - x1) / width
+        dy = (y2 - y1) / height
+        x = x1 + (np.arange(width, dtype=np.float64) + 0.5) * dx
+        y = y1 + (np.arange(height, dtype=np.float64) + 0.5) * dy
+        return x, y
 
     def apply_flip_y(self):
         if self._im is None or self.image is None:
@@ -503,6 +554,68 @@ class MovieCanvas(ImageCanvas):
 
         # 3) redraw using the existing scale & center
         self.update_view()
+
+    def _inset_subpixel_crop(self, image, x1, x2, y1, y2, output_shape):
+        """Bilinear crop for inset previews without depending on scipy.ndimage."""
+        out_h, out_w = (int(output_shape[0]), int(output_shape[1]))
+        if image is None or out_h <= 0 or out_w <= 0:
+            return np.empty((0, 0), dtype=float)
+        arr = np.asarray(image)
+        if arr.ndim < 2:
+            return np.empty((0, 0), dtype=float)
+        h, w = arr.shape[:2]
+        if h <= 0 or w <= 0:
+            return np.empty((0, 0), dtype=float)
+
+        out_y, out_x = np.indices((out_h, out_w), dtype=np.float64)
+        step_x = (x2 - x1) / out_w
+        step_y = (y2 - y1) / out_h
+        in_x = x1 + (out_x + 0.5) * step_x
+        in_y = y1 + (out_y + 0.5) * step_y
+        in_x = np.clip(in_x, 0, w - 1)
+        in_y = np.clip(in_y, 0, h - 1)
+
+        x0 = np.floor(in_x).astype(np.intp)
+        y0 = np.floor(in_y).astype(np.intp)
+        x_next = np.minimum(x0 + 1, w - 1)
+        y_next = np.minimum(y0 + 1, h - 1)
+        dx = in_x - x0
+        dy = in_y - y0
+        if arr.ndim > 2:
+            dx = dx[..., None]
+            dy = dy[..., None]
+
+        top = arr[y0, x0] * (1.0 - dx) + arr[y0, x_next] * dx
+        bottom = arr[y_next, x0] * (1.0 - dx) + arr[y_next, x_next] * dx
+        return top * (1.0 - dy) + bottom * dy
+
+    def _inset_zoom_nearest(self, image, zoom_factor):
+        arr = np.asarray(image)
+        if arr.ndim < 2:
+            return arr
+        try:
+            factor = float(zoom_factor)
+        except (TypeError, ValueError):
+            factor = 1.0
+        if factor <= 0:
+            factor = 1.0
+        h, w = arr.shape[:2]
+        out_h = max(1, int(round(h * factor)))
+        out_w = max(1, int(round(w * factor)))
+        if out_h == h and out_w == w:
+            return arr
+        y_idx = np.minimum((np.arange(out_h) / factor).astype(np.intp), h - 1)
+        x_idx = np.minimum((np.arange(out_w) / factor).astype(np.intp), w - 1)
+        return arr[y_idx[:, None], x_idx[None, :]]
+
+    def _log_inset_3d_error(self):
+        try:
+            log_path = os.path.join(os.path.expanduser("~"), "tracy_inset_3d_error.log")
+            with open(log_path, "a", encoding="utf-8") as handle:
+                handle.write(traceback.format_exc())
+                handle.write("\n")
+        except Exception:
+            pass
         
     def update_inset(self, image, center, crop_size, zoom_factor=2,
                     fitted_center=None, fitted_sigma=None,
@@ -518,9 +631,12 @@ class MovieCanvas(ImageCanvas):
             return
         
         widget = self.navigator.zoomInsetWidget
+        widget._inset_owner = self
+        widget.setMouseTracking(True)
         fig = widget.figure
 
         frame = self.navigator.zoomInsetFrame
+        self._install_inset_event_filters()
         # record default size once
         if not hasattr(self, '_default_inset_size'):
             self._default_inset_size = (frame.width(), frame.height())
@@ -552,16 +668,86 @@ class MovieCanvas(ImageCanvas):
             QTimer.singleShot(delay, self._throttled_update_inset)
 
     def _on_inset_enter(self, event):
+        if getattr(self, "_suppress_inset_enter", False):
+            return
+        if event.inaxes is self.inset_ax3d or event.inaxes is self.navigator.zoomInsetWidget.ax:
+            self._show_threed_inset()
+
+    def _install_inset_event_filters(self):
+        targets = [
+            getattr(self.navigator, "zoomInsetFrame", None),
+            getattr(self.navigator, "zoomInsetWidget", None),
+            getattr(self.navigator, "zoomInsetLabel", None),
+            getattr(self.navigator, "zoomInsetIntensityLabel", None),
+        ]
+        for target in targets:
+            if target is None or target in self._inset_event_filter_targets:
+                continue
+            try:
+                target.setMouseTracking(True)
+                target.installEventFilter(self)
+                self._inset_event_filter_targets.append(target)
+            except Exception:
+                pass
+
+    def _cursor_inside_inset_frame(self):
+        frame = getattr(self.navigator, "zoomInsetFrame", None)
+        if frame is None:
+            return False
+        try:
+            return frame.isVisible() and frame.rect().contains(frame.mapFromGlobal(QCursor.pos()))
+        except Exception:
+            return False
+
+    def _schedule_hide_threed_inset(self, delay_ms=80):
+        def hide_if_outside():
+            if self._cursor_inside_inset_frame():
+                return
+            self._hide_threed_inset()
+
+        QTimer.singleShot(delay_ms, hide_if_outside)
+
+    def _show_threed_inset(self):
+        if getattr(self.navigator, "hide_inset", False):
+            return
+        if not hasattr(self, "inset_ax3d"):
+            return
         if self.navigator.looping:
             self.navigator.stoploop()
-        # if self.navigator.sumBtn.isChecked():
-        #     self.navigator.sumBtn.setChecked(False)
-        if event.inaxes is self.inset_ax3d or event.inaxes is self.navigator.zoomInsetWidget.ax:
-            # hide 2D
-            self.navigator.zoomInsetWidget.ax.set_visible(False)
-            # show 3D
-            self.inset_ax3d.set_visible(True)
+        self.navigator.zoomInsetWidget.ax.set_visible(False)
+        self.inset_ax3d.set_visible(True)
+        try:
             self._draw_threed_inset()
+        except Exception:
+            self._log_inset_3d_error()
+            try:
+                self.inset_ax3d.set_visible(False)
+                self.navigator.zoomInsetWidget.ax.set_visible(True)
+                self._throttled_update_inset()
+            except Exception:
+                pass
+
+    def _hide_threed_inset(self):
+        if not hasattr(self, "inset_ax3d"):
+            return
+        if not self.inset_ax3d.get_visible():
+            return
+        frame = self.navigator.zoomInsetFrame
+        if hasattr(self, "_default_inset_size"):
+            w0, h0 = self._default_inset_size
+            geom = frame.geometry()
+            new_x = geom.x() + geom.width() - w0
+            frame.move(new_x, geom.y())
+            frame.resize(w0, h0)
+            frame.layout().invalidate()
+            frame.layout().activate()
+        self.inset_ax3d.set_visible(False)
+        self.navigator.zoomInsetWidget.ax.set_visible(True)
+        self._suppress_inset_enter = True
+        try:
+            self._throttled_update_inset()
+        finally:
+            self._suppress_inset_enter = False
 
     def _clear_threed_inset(self):
         """Erase the 3D inset and hide its frame."""
@@ -574,8 +760,8 @@ class MovieCanvas(ImageCanvas):
     def _draw_threed_inset(self):
 
         """
-        The heavy‐lifting routine: crops, zooms, builds the 3D bars +
-        Gaussian cap, and then makes everything visible.
+        The heavy-lifting routine: crops, zooms, builds the 3D intensity
+        surface plus the Gaussian cap, and then makes everything visible.
         """
         params = self._last_inset_params
         if not params or len(params) != 10:
@@ -595,53 +781,70 @@ class MovieCanvas(ImageCanvas):
         x1, x2 = cx-half, cx+half
         y1, y2 = cy-half, cy+half
         out_shape = (int(round(y2-y1)), int(round(x2-x1)))
-        cropped = subpixel_crop(image, x1, x2, y1, y2, out_shape)
-        zoomed = scipy.ndimage.zoom(cropped, zoom_factor, order=0)
+        cropped = self._inset_subpixel_crop(image, x1, x2, y1, y2, out_shape)
+        zoomed = self._inset_zoom_nearest(cropped, zoom_factor)
+        if zoomed.size == 0:
+            return
 
         # build/reset axes
         ax3d = self.inset_ax3d
         ax3d.cla()
+        ax3d.set_axis_off()
 
-        # grid & bars
+        # grid & surface
         h,w = zoomed.shape
-        x = np.linspace(x1, x2, w);  y = np.linspace(y1, y2, h)
+        x, y = self._inset_pixel_centers(x1, x2, y1, y2, w, h)
         X,Y = np.meshgrid(x,y)
-        xpos, ypos = X.ravel(), Y.ravel()
-        # decide on a norm based on the data range:
-        dz_raw = zoomed.ravel()
-        dz = dz_raw - (float(offset) if offset is not None else 0.0)
-        dx,dy = (x2-x1)/w, (y2-y1)/h
+        raw = np.asarray(zoomed, dtype=np.float64)
+        finite = np.isfinite(raw)
+        if not finite.any():
+            return
+        if not finite.all():
+            fill_value = float(np.nanmin(raw[finite]))
+            raw = np.where(finite, raw, fill_value)
+        try:
+            baseline = float(offset) if offset is not None else 0.0
+        except (TypeError, ValueError):
+            baseline = 0.0
+        if not np.isfinite(baseline):
+            baseline = 0.0
 
-        # determine bar bases & heights
-        z0     = np.minimum(dz, 0.0)
-        height = np.abs(dz)
+        Z = raw - baseline
+        z_bottom = float(np.min(Z))
+        z_top = float(np.max(Z))
+        if not (np.isfinite(z_bottom) and np.isfinite(z_top)):
+            return
+        z_bottom = min(z_bottom, 0.0)
+        z_top = max(z_top, 0.0)
+        if z_top <= z_bottom:
+            z_bottom -= 0.5
+            z_top += 0.5
 
-        dx = (x2 - x1) / w
-        dy = (y2 - y1) / h
-
-        # darkest (black) at min(dz), lightest (white) at max(dz)
-        norm = mcolors.Normalize(vmin=dz.min(), vmax=dz.max())
+        norm_min = float(np.min(Z))
+        norm_max = float(np.max(Z))
+        if norm_max <= norm_min:
+            norm_max = norm_min + 1.0
+        norm = mcolors.Normalize(vmin=norm_min, vmax=norm_max)
         cmap_name = "gray_r" if self.navigator.inverted_cmap else "gray"
         cmap = cm.get_cmap(cmap_name)
-        cols = cmap(norm(dz))
-        cols[:, 3] = 1  # alpha = 1
+        facecolors = cmap(norm(Z))
+        facecolors[..., 3] = 1.0
 
-        bars = ax3d.bar3d(
-            xpos, ypos, z0,
-            dx, dy, height,
-            color=cols,
-            edgecolor='none',
+        surface = ax3d.plot_surface(
+            X, Y, Z,
+            facecolors=facecolors,
+            rstride=1,
+            cstride=1,
             linewidth=0,
-            shade=False
+            antialiased=False,
+            shade=False,
         )
-        bars.set_sort_zpos(0.0)
+        surface.set_sort_zpos(float(z_top))
 
         # Gaussian cap
         if fitted_center is not None and fitted_sigma is not None and fitted_peak is not None:
             x0,y0 = fitted_center;  A = fitted_peak;  σ = fitted_sigma
             G = A*np.exp(-(((X-x0)**2+(Y-y0)**2)/(2*σ**2)))
-            z_lift = dz.max()*0 # off for now
-            G += z_lift
             mesh_color = pointcolor or "#FF4FA3"
             mesh_rgba = mcolors.to_rgba(mesh_color, 0.65)
             fill_rgba = mcolors.to_rgba(mesh_color, 0.18)
@@ -665,22 +868,25 @@ class MovieCanvas(ImageCanvas):
                 alpha=mesh_rgba[3],
             )
             wf.set_zorder(10)
-            z_top = G.max()
-        else:
-            z_top = dz.max()
+            g_min = float(np.nanmin(G))
+            g_max = float(np.nanmax(G))
+            if np.isfinite(g_min):
+                z_bottom = min(z_bottom, g_min)
+            if np.isfinite(g_max):
+                z_top = max(z_top, g_max)
 
         # style & zoom
         ax3d.view_init(elev=60, azim=275)
         ax3d.set_axis_off()
         ax3d.set_facecolor((0,0,0,0));  ax3d.set_xlim(x1,x2);  ax3d.set_ylim(y1,y2)
-        if not np.isfinite(z_top) or z_top <= 0:
+        if not (np.isfinite(z_bottom) and np.isfinite(z_top)) or z_top <= z_bottom:
             # fallback to a small positive range, or let Matplotlib autoscale
             try:
                 ax3d.autoscale(z=True)
             except Exception:
                 pass
         else:
-            ax3d.set_zlim(0, z_top)
+            ax3d.set_zlim(z_bottom, z_top)
         for a in (ax3d.xaxis, ax3d.yaxis, ax3d.zaxis):
             a.pane.fill = False;  a.pane.set_edgecolor('none')
         ax3d.grid(False)
@@ -701,6 +907,9 @@ class MovieCanvas(ImageCanvas):
 
 
     def _on_inset_scroll(self, event):
+        if event.inaxes is self.navigator.zoomInsetWidget.ax:
+            self._show_threed_inset()
+            return
         if event.inaxes is not self.inset_ax3d:
             return
 
@@ -740,20 +949,7 @@ class MovieCanvas(ImageCanvas):
 
     def _on_inset_leave(self, event):
         if event.inaxes in (self.inset_ax3d, self.navigator.zoomInsetWidget.ax):
-            frame = self.navigator.zoomInsetFrame
-            w0, h0 = self._default_inset_size
-            geom = frame.geometry()
-            new_x = geom.x() + geom.width() - w0
-
-            frame.move(new_x, geom.y())
-            frame.resize(w0, h0)
-            frame.layout().invalidate()
-            frame.layout().activate()
-
-            # existing visibility logic
-            self.inset_ax3d.set_visible(False)
-            self.navigator.zoomInsetWidget.ax.set_visible(True)
-            self._throttled_update_inset()
+            self._schedule_hide_threed_inset()
 
     def _throttled_update_inset(self):
         """Perform the heavy inset update using the most recent parameters."""
@@ -773,13 +969,18 @@ class MovieCanvas(ImageCanvas):
         if center is None or np.isnan(center[0]) or np.isnan(center[1]):
             print("Warning: update_inset received invalid center:", center)
             return
+        if hasattr(self, "inset_ax3d") and self.inset_ax3d.get_visible():
+            self._show_threed_inset()
+            return
         half = crop_size / 2.0
         x_center, y_center = center[0], center[1]
         x1, x2 = x_center - half, x_center + half
         y1, y2 = y_center - half, y_center + half
         output_shape = (int(round(y2 - y1)), int(round(x2 - x1)))
-        cropped = subpixel_crop(image, x1, x2, y1, y2, output_shape) 
-        zoomed = scipy.ndimage.zoom(cropped, zoom_factor, order=0)
+        cropped = self._inset_subpixel_crop(image, x1, x2, y1, y2, output_shape)
+        zoomed = self._inset_zoom_nearest(cropped, zoom_factor)
+        if zoomed.size == 0:
+            return
         self.source_image = image
         self.zoom_extent = (x1, x2, y1, y2)
         
@@ -934,6 +1135,8 @@ class MovieCanvas(ImageCanvas):
                 "channel":  ch_num,
                 "orphaned": False
             }
+            if hasattr(self.navigator, "_mark_kymo_needs_default_view"):
+                self.navigator._mark_kymo_needs_default_view(kymo_name)
 
         # self.navigator.last_kymo_by_channel[ch+1] = kymo_name
 

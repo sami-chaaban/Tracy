@@ -197,7 +197,7 @@ class NavigatorRoiMixin:
             self.movieCanvas.roiPoints = roi["points"]
             self.movieCanvas.finalize_roi(
                 suppress_display=True,
-                channels=sorted(channels_for_roi) if channels_for_roi else None,
+                channels=None,
             )
 
         progress.setValue(len(unique_rois))

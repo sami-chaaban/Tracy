@@ -311,6 +311,93 @@ class NavigatorKymoMixin:
             self._kymo_sequence_cursor = cursor
         self.kymoCanvas.setCursor(cursor)
 
+    def _capture_kymo_sequence_background(self, force_draw=False):
+        if not hasattr(self, "kymoCanvas") or self.kymoCanvas is None:
+            return False
+        canvas = self.kymoCanvas.figure.canvas
+        try:
+            if force_draw:
+                self.kymoCanvas.draw()
+            self._kymo_bg = canvas.copy_from_bbox(self.kymoCanvas.ax.bbox)
+            self._kymo_sequence_bg_view = self._kymo_sequence_view_signature()
+            return self._kymo_bg is not None
+        except Exception:
+            try:
+                self.kymoCanvas.draw()
+                self._kymo_bg = canvas.copy_from_bbox(self.kymoCanvas.ax.bbox)
+                self._kymo_sequence_bg_view = self._kymo_sequence_view_signature()
+                return self._kymo_bg is not None
+            except Exception:
+                self._kymo_bg = None
+                self._kymo_sequence_bg_view = None
+                return False
+
+    def _restore_kymo_sequence_background(self):
+        bg = getattr(self, "_kymo_bg", None)
+        if bg is None or not hasattr(self, "kymoCanvas"):
+            return False
+        canvas = self.kymoCanvas.figure.canvas
+        try:
+            canvas.restore_region(bg)
+            canvas.blit(self.kymoCanvas.ax.bbox)
+            return True
+        except Exception:
+            return False
+
+    def _kymo_sequence_view_signature(self):
+        if not hasattr(self, "kymoCanvas") or self.kymoCanvas is None:
+            return None
+        try:
+            bbox = self.kymoCanvas.ax.bbox
+            return (
+                tuple(round(float(v), 6) for v in self.kymoCanvas.ax.get_xlim()),
+                tuple(round(float(v), 6) for v in self.kymoCanvas.ax.get_ylim()),
+                round(float(bbox.width), 3),
+                round(float(bbox.height), 3),
+            )
+        except Exception:
+            return None
+
+    def _kymo_sequence_background_current(self):
+        sig = getattr(self, "_kymo_sequence_bg_view", None)
+        return sig is not None and sig == self._kymo_sequence_view_signature()
+
+    def _iter_kymo_sequence_artists(self):
+        for marker in getattr(self, "analysis_markers", []) or []:
+            if marker is None:
+                continue
+            if isinstance(marker, (list, tuple)):
+                for artist in marker:
+                    if artist is not None:
+                        yield artist
+            else:
+                yield marker
+        for seg in getattr(self, "permanent_analysis_lines", []) or []:
+            if seg is not None:
+                yield seg
+        line = getattr(self, "temp_analysis_line", None)
+        if line is not None:
+            yield line
+
+    def _draw_kymo_sequence_overlay(self):
+        if not hasattr(self, "kymoCanvas") or self.kymoCanvas is None:
+            return
+        if (
+            getattr(self, "_kymo_bg", None) is None
+            or not self._kymo_sequence_background_current()
+        ):
+            if not self._capture_kymo_sequence_background():
+                self.kymoCanvas.draw_idle()
+                return
+        canvas = self.kymoCanvas.figure.canvas
+        try:
+            canvas.restore_region(self._kymo_bg)
+            for artist in self._iter_kymo_sequence_artists():
+                self.kymoCanvas.ax.draw_artist(artist)
+            canvas.blit(self.kymoCanvas.ax.bbox)
+        except Exception:
+            self.kymoCanvas.draw_idle()
+
     def _set_kymo_anchor_edit_mode(self, enabled):
         if getattr(self, "kymo_anchor_edit_mode", False) == enabled:
             return
@@ -693,8 +780,11 @@ class NavigatorKymoMixin:
         line.set_data(xs_disp, ys_disp)
         scatter.set_offsets(np.column_stack([xs_disp, ys_disp]))
 
-        if self.kymoCanvas._is_panning or self.kymoCanvas.manual_zoom or self._kymo_anchor_bg is None:
-            self.kymoCanvas.manual_zoom = False
+        if (
+            self.kymoCanvas._is_panning
+            or self._kymo_anchor_bg is None
+            or getattr(self, "_kymo_anchor_bg_view", None) != self._kymo_sequence_view_signature()
+        ):
             self._capture_kymo_anchor_bg()
             return
 
@@ -738,6 +828,7 @@ class NavigatorKymoMixin:
         self.kymoCanvas.draw()
         canvas = self.kymoCanvas.figure.canvas
         self._kymo_anchor_bg = canvas.copy_from_bbox(self.kymoCanvas.ax.bbox)
+        self._kymo_anchor_bg_view = self._kymo_sequence_view_signature()
         line.set_visible(True)
         scatter.set_visible(True)
         canvas.restore_region(self._kymo_anchor_bg)
@@ -889,8 +980,6 @@ class NavigatorKymoMixin:
         if self.looping:
             self.stoploop()
 
-        self.kymoCanvas.manual_zoom = False
-
         # — only if click was inside the image —
         if (self.kymoCanvas.image is None or 
             event.xdata is None or event.ydata is None):
@@ -931,6 +1020,7 @@ class NavigatorKymoMixin:
 
         # — start a fresh sequence? clear everything —
         if getattr(self, "new_sequence_start", False):
+            self._restore_kymo_sequence_background()
             self.clear_temporary_analysis_markers()
             self.analysis_markers = []
             self.analysis_points  = []
@@ -938,6 +1028,8 @@ class NavigatorKymoMixin:
             # reset both line‐lists
             self.permanent_analysis_lines = []
             self.temp_analysis_line      = None
+            self._kymo_bg = None
+            self._kymo_sequence_bg_view = None
             self.analysis_roi = None
             self.new_sequence_start = False
 
@@ -947,6 +1039,8 @@ class NavigatorKymoMixin:
             self.analysis_anchors = []
             self.permanent_analysis_lines = []
             self.temp_analysis_line      = None
+            self._kymo_bg = None
+            self._kymo_sequence_bg_view = None
             self.trajectory_finalized = False
 
         # — map y to frame index —
@@ -1018,8 +1112,11 @@ class NavigatorKymoMixin:
 
         # — draw a small circle there —
         if should_add:
+            if getattr(self, "_kymo_bg", None) is None:
+                self._capture_kymo_sequence_background()
             marker = self.kymoCanvas.temporary_circle(event.xdata, event.ydata,
-                                                  size=8, color='#7da1ff')
+                                                  size=8, color='#7da1ff',
+                                                  draw=False, animated=True)
             self.analysis_markers.append(marker)
 
         # — initialize the live temp line once —
@@ -1034,12 +1131,7 @@ class NavigatorKymoMixin:
             )
             self.temp_analysis_line.set_animated(True)
 
-            # 2) do one full draw & grab the background
-            canvas = self.kymoCanvas.figure.canvas
-            canvas.draw()  
-            self._kymo_bg = canvas.copy_from_bbox(self.kymoCanvas.ax.bbox)
-
-            # 3) set up a simple throttle
+            # 2) set up a simple throttle
             self._last_kymo_motion = 0.0
 
         # — add a permanent dotted segment if we have ≥2 anchors —
@@ -1051,16 +1143,19 @@ class NavigatorKymoMixin:
                 [x_prev, x_curr], [y_prev, y_curr],
                 color='#7da1ff', linewidth=1.5, linestyle='--'
             )
+            seg.set_animated(True)
             self.permanent_analysis_lines.append(seg)
-            # now redraw so this new segment is baked into the blit-background
-            canvas = self.kymoCanvas.figure.canvas
-            canvas.draw()
-            self._kymo_bg = canvas.copy_from_bbox(self.kymoCanvas.ax.bbox)
+
+        if should_add and not event.dblclick:
+            self._draw_kymo_sequence_overlay()
 
         # we’ll keep permanent lines in self.permanent_analysis_lines; clear them later.
         self.trajectory_finalized = False
 
         if event.dblclick:
+            self._restore_kymo_sequence_background()
+            self._kymo_bg = None
+            self._kymo_sequence_bg_view = None
             self.trajectory_finalized = True
             self.analysis_roi = roi
             self.endKymoClickSequence()
@@ -1543,22 +1638,14 @@ class NavigatorKymoMixin:
         xs, ys = zip(*pts)
         self.temp_analysis_line.set_data(xs, ys)
 
-        # If the user is panning/zooming, fall back to a one‐off full redraw
-        if self.kymoCanvas._is_panning or self.kymoCanvas.manual_zoom:
-            # 1) full redraw to apply the new pan/zoom
-            self.kymoCanvas.draw()
-            # 2) re-snapshot the updated background
-            canvas = self.kymoCanvas.figure.canvas
-            self._kymo_bg = canvas.copy_from_bbox(self.kymoCanvas.ax.bbox)
-            # 3) clear flags so subsequent moves use fast blit
-            self.kymoCanvas.manual_zoom = False
+        if self.kymoCanvas._is_panning:
             return
-
-        # Otherwise do the fast blit loop
-        canvas = self.kymoCanvas.figure.canvas
-        canvas.restore_region(self._kymo_bg)
-        self.kymoCanvas.ax.draw_artist(self.temp_analysis_line)
-        canvas.blit(self.kymoCanvas.ax.bbox)
+        if (
+            getattr(self, "_kymo_bg", None) is None
+            or not self._kymo_sequence_background_current()
+        ):
+            self._capture_kymo_sequence_background()
+        self._draw_kymo_sequence_overlay()
 
     def enter_roi_mode(self):
         # Initialize on ROI mode entry.

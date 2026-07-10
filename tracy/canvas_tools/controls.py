@@ -3,9 +3,9 @@ from ._shared import *
 class RangeSlider(QtWidgets.QSlider):
 
     # Signals to notify when lower or upper value changes.
-    lowerValueChanged = pyqtSignal(int)
-    upperValueChanged = pyqtSignal(int)
-    rangeChanged = pyqtSignal(int, int)
+    lowerValueChanged = pyqtSignal(float)
+    upperValueChanged = pyqtSignal(float)
+    rangeChanged = pyqtSignal(float, float)
     autoRequested = pyqtSignal()
 
     def __init__(self, orientation=Qt.Horizontal, parent=None):
@@ -137,7 +137,6 @@ class RangeSlider(QtWidgets.QSlider):
         x = max(slider_min, min(pos.x(), slider_max))
         # Convert x position back to a value.
         value = self.minimum() + ((x - slider_min) / adjusted_groove_rect.width()) * (self.maximum() - self.minimum())
-        value = int(round(value))
 
         if self._activeHandle == 'lower':
             # Update lower value and keep current upper value

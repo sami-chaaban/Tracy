@@ -22,6 +22,7 @@
    * [Speed Histogram](#speed-histogram)
 4. [Additional Features](#additional-features)
    * [Drift Correction](#drift-correction)
+   * [Pseudoflatfield Correction](#pseudoflatfield-correction)
    * [Colocalization](#colocalization)
    * [Step Finding](#step-finding)
    * [Diffusion](#diffusion)
@@ -262,8 +263,17 @@ Use the **Save** menu to export the current movie display, kymographs, ROIs, or 
 
 1. Identify a stationary reference spot that can be found in most frames.
 2. Click it and ensure it is found (i.e. a magenta circle appears). It does not matter which frame you choose.
-3. Use **Movie » Correct Drift** to track it from start‑to‑end and apply the frame shifts.
+3. Use **Movie » Drift Correction** to track it from start‑to‑end and apply the frame shifts.
 4. Review and save if satisfactory.
+
+### Pseudoflatfield Correction <a name="pseudoflatfield-correction"></a>
+
+1. Use **Movie » Pseudoflatfield Correction** to divide each frame by a Gaussian-blurred version of itself.
+2. Choose the channel and Gaussian sigma/radius. The default is **150 px**.
+3. Preview the original image, Gaussian blurred image, and corrected image for the selected frame.
+4. Save the corrected movie, or save and load it immediately if satisfactory.
+
+Pseudoflat-field division is acceptable for visualisation and sometimes localisation, but it should not be the image from which molecular brightness or stoichiometry is measured.
 
 ### Colocalization <a name="colocalization"></a>
 

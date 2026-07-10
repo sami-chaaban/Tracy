@@ -219,6 +219,7 @@ class KymographNavigator(
         # self.last_kymo_by_channel = {}
         self._roi_zoom_states = {}
         self._last_roi = None
+        self._kymo_view_initialized = set()
 
         self._last_kymo_artist = None
         self._skip_next_right = False

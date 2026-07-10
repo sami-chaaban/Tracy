@@ -1294,6 +1294,11 @@ class NavigatorAnalysisMixin:
             self.trajectoryCanvas.shortcut_recalculate()
 
     def clear_temporary_analysis_markers(self):
+        if hasattr(self, "_restore_kymo_sequence_background"):
+            self._restore_kymo_sequence_background()
+            self._kymo_bg = None
+            self._kymo_sequence_bg_view = None
+
         # Remove the temporary analysis line (not part of a saved trajectory)
         if hasattr(self, "temp_analysis_line") and self.temp_analysis_line is not None:
             try:

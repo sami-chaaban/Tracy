@@ -311,25 +311,32 @@ class NavigatorInputMixin:
             return {'vmin': 0, 'vmax': 255, 'extended_min': 0, 'extended_max': 255}
 
         p15, p99 = np.percentile(finite, (15, 99))
-        new_vmin = int(p15)
-        new_vmax = int(p99 if sum_mode else p99 * 1.1)
+        new_vmin = float(p15)
+        new_vmax = float(p99 if sum_mode else p99 * 1.1)
 
         if new_vmin >= new_vmax:
             p1, p999 = np.percentile(finite, (1, 99.9))
-            new_vmin = int(p1)
-            new_vmax = int(p999)
+            new_vmin = float(p1)
+            new_vmax = float(p999)
         if new_vmin >= new_vmax:
-            new_vmin = int(np.min(finite))
-            new_vmax = int(np.max(finite))
+            new_vmin = float(np.min(finite))
+            new_vmax = float(np.max(finite))
         if new_vmin >= new_vmax:
-            new_vmax = new_vmin + 1
+            pad = max(abs(new_vmin) * 0.05, 0.5)
+            new_vmin -= pad
+            new_vmax += pad
 
         delta = new_vmax - new_vmin
+        extended_min = math.floor(new_vmin - 0.7 * delta)
+        extended_max = math.ceil(new_vmax + 1.4 * delta)
+        if extended_min >= extended_max:
+            extended_min = math.floor(new_vmin) - 1
+            extended_max = math.ceil(new_vmax) + 1
         return {
             'vmin': new_vmin,
             'vmax': new_vmax,
-            'extended_min': new_vmin - int(0.7 * delta),
-            'extended_max': new_vmax + int(1.4 * delta)
+            'extended_min': extended_min,
+            'extended_max': extended_max
         }
 
     def reset_contrast(self):

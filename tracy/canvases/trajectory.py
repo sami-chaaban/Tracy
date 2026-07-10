@@ -5242,6 +5242,28 @@ class TrajectoryCanvas(QWidget):
             return channel
         return 1
 
+    def _fit_generated_kymograph_to_canvas(self, roi_name):
+        nav = self.navigator
+        if nav is None or not roi_name:
+            return
+
+        def fit_if_current():
+            canvas = getattr(nav, "kymoCanvas", None)
+            combo = getattr(nav, "kymoCombo", None)
+            if canvas is None or combo is None or getattr(canvas, "image", None) is None:
+                return
+            kymo_name = combo.currentText()
+            info = nav.kymo_roi_map.get(kymo_name) if kymo_name else None
+            current_roi = info.get("roi") if isinstance(info, dict) else None
+            if current_roi != roi_name:
+                return
+            if hasattr(nav, "_roi_zoom_states"):
+                nav._roi_zoom_states.pop(roi_name, None)
+            canvas.fit_to_full_image()
+
+        fit_if_current()
+        QTimer.singleShot(0, fit_if_current)
+
     def draw_kymographs_from_trajectory_rows(self, rows):
         nav = self.navigator
         if nav is None or getattr(nav, "movie", None) is None:
@@ -5307,8 +5329,9 @@ class TrajectoryCanvas(QWidget):
         if last_channel is not None:
             nav._select_channel(last_channel)
         nav._last_roi = last_roi
-        nav.update_kymo_list_for_channel()
         nav.update_kymo_visibility()
+        nav.update_kymo_list_for_channel()
+        self._fit_generated_kymograph_to_canvas(last_roi)
         nav.update_roi_overlay_if_active()
 
         count = len(created)

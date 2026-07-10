@@ -696,7 +696,8 @@ class NavigatorUiMixin:
         self.frameSlider.setSingleStep(1)
         self.frameSlider.setPageStep(1)
         font_metrics = self.frameNumberLabel.fontMetrics()
-        width = font_metrics.width("99999")
+        measure = getattr(font_metrics, "horizontalAdvance", font_metrics.width)
+        width = measure("99999/99999")
         self.frameNumberLabel.setFixedWidth(width)
         sliderLayout.addWidget(self.frameSlider)
         movieLayout.addWidget(sliderWidget)
@@ -1454,6 +1455,8 @@ class NavigatorUiMixin:
                     continue
                 self.kymo_roi_map.pop(kymo_name, None)
                 self.kymographs.pop(kymo_name, None)
+                if hasattr(self, "_forget_kymo_view_state"):
+                    self._forget_kymo_view_state(kymo_name)
                 if hasattr(self, "kymographs_log"):
                     self.kymographs_log.pop(kymo_name, None)
                 if hasattr(self, "kymo_contrast_settings"):
@@ -2121,9 +2124,13 @@ class NavigatorUiMixin:
         self._apply_checkable_action_style(self.flipYAct)
         movieMenu.addAction(self.flipYAct)
 
-        correctDriftAction = QAction("Correct Drift", self)
+        correctDriftAction = QAction("Drift Correction", self)
         correctDriftAction.triggered.connect(self.correct_drift)
         movieMenu.addAction(correctDriftAction)
+
+        pseudoFlatfieldAction = QAction("Pseudoflatfield Correction", self)
+        pseudoFlatfieldAction.triggered.connect(self.correct_pseudoflatfield)
+        movieMenu.addAction(pseudoFlatfieldAction)
 
         setScaleAction = QAction("Set Scale", self)
         setScaleAction.triggered.connect(self.set_scale)

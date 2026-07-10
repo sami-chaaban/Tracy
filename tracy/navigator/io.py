@@ -373,7 +373,7 @@ class NavigatorIOMixin:
             self.frameSlider.setMinimum(0)
             self.frameSlider.setMaximum(max_frame - 1)
             self.frameSlider.setValue(0)
-            self.frameNumberLabel.setText("1")
+            self.update_movie_frame_label(0)
 
             margin = 0
             full_height, full_width = first_frame.shape[:2]
@@ -1310,6 +1310,7 @@ class NavigatorIOMixin:
                         "channel":  ch+1,
                         "orphaned": False
                     }
+                    self._mark_kymo_needs_default_view(kymo_name)
                 else:
                     # Register as orphaned
                     self.kymo_roi_map[kymo_name] = {
@@ -1334,7 +1335,18 @@ class NavigatorIOMixin:
         if idx > 0:
             self.kymoCombo.setCurrentIndex(idx - 1)
 
-    def update_kymo_list_for_channel(self):
+    def _mark_kymo_needs_default_view(self, kymo_name):
+        if not kymo_name:
+            return
+        if not hasattr(self, "_kymo_view_initialized"):
+            self._kymo_view_initialized = set()
+        self._kymo_view_initialized.discard(kymo_name)
+
+    def _forget_kymo_view_state(self, kymo_name):
+        if hasattr(self, "_kymo_view_initialized"):
+            self._kymo_view_initialized.discard(kymo_name)
+
+    def update_kymo_list_for_channel(self, preferred_kymo=None):
         ch = int(self.movieChannelCombo.currentText())
         if self._last_roi and self.kymoCanvas.zoom_center is not None:
             self._save_zoom_for_roi(self._last_roi)
@@ -1355,27 +1367,30 @@ class NavigatorIOMixin:
         if not names:
             self.kymoCombo.setCurrentIndex(-1)
             self.kymoCombo.blockSignals(False)
-            self.kymoCanvas.ax.cla()
+            self.kymoCanvas.reset_canvas()
             self.kymoCanvas.ax.axis("off")
             self.kymoCanvas.draw_idle()
             return
 
-        # 3) Try to find a “sister” matching the last ROI
+        # 3) Prefer an explicit selection, otherwise try to find a sister
+        # matching the last ROI.
         sel = None
+        if preferred_kymo in names:
+            sel = preferred_kymo
         last_roi = self._last_roi
-        if last_roi is not None:
+        if sel is None and last_roi is not None:
             for name in names:
                 if self.kymo_roi_map[name]["roi"] == last_roi:
                     sel = name
                     break
-        else:
+        elif sel is None:
             sel = names[0]
 
         # 4) If no sister found, we want a blank canvas
         if sel is None:
             self.kymoCombo.setCurrentIndex(-1)
             self.kymoCombo.blockSignals(False)
-            self.kymoCanvas.ax.cla()
+            self.kymoCanvas.reset_canvas()
             self.kymoCanvas.ax.axis("off")
             self.kymoCanvas.draw_idle()
             # don’t change self._last_roi — so that if the user later switches
@@ -1413,15 +1428,21 @@ class NavigatorIOMixin:
 
         # — Grab the new selection
         kymoName = self.kymoCombo.currentText()
+        if not hasattr(self, "_kymo_view_initialized"):
+            self._kymo_view_initialized = set()
+        first_display = kymoName not in self._kymo_view_initialized
         info     = self.kymo_roi_map.get(kymoName)
         if not info:
             # no valid kymo → clear
-            self.kymoCanvas.ax.cla()
+            self.kymoCanvas.reset_canvas()
             self.kymoCanvas.ax.axis("off")
             self.kymoCanvas.draw_idle()
             return
 
         roiName = info["roi"]
+        if first_display:
+            self._roi_zoom_states.pop(roiName, None)
+            self.kymoCanvas.manual_zoom = False
 
         # — Sync the ROI & channel controls
         self.roiCombo.setCurrentText(roiName)
@@ -1441,14 +1462,20 @@ class NavigatorIOMixin:
         self.kymoCanvas.display_image(img)
         if hasattr(self, "kymocontrastControlsWidget"):
             self._apply_kymo_contrast_settings(kymoName)
-        self.kymoCanvas.draw_trajectories_on_kymo()
-        self.kymoCanvas.draw_idle()
 
         # — Restore pan+zoom for this ROI (if any)
-        self._restore_zoom_for_roi(roiName)
+        if not first_display:
+            self._restore_zoom_for_roi(roiName)
+
+        # Draw overlays only after the final kymo view is established. If a
+        # deletion changes the combo selection, drawing before the restore can
+        # leave stale label scaling/blit state until a later manual redraw.
+        self.kymoCanvas.draw_trajectories_on_kymo()
+        self.kymoCanvas.draw()
 
         # — Remember for next save
         self._last_roi = roiName
+        self._kymo_view_initialized.add(kymoName)
 
     def _get_log_kymograph(self, kymo_name, base=None):
         if not kymo_name:
@@ -1482,6 +1509,12 @@ class NavigatorIOMixin:
         if not current:
             return
 
+        current_index = self.kymoCombo.currentIndex()
+        visible_names = [
+            self.kymoCombo.itemText(i)
+            for i in range(self.kymoCombo.count())
+        ]
+
         mapping = self.kymo_roi_map.get(current)
         if not mapping:
             return
@@ -1494,10 +1527,23 @@ class NavigatorIOMixin:
             ]
         else:
             names_to_delete = [current]
+        names_to_delete_set = set(names_to_delete)
+
+        preferred_kymo = None
+        for name in visible_names[current_index + 1:]:
+            if name not in names_to_delete_set:
+                preferred_kymo = name
+                break
+        if preferred_kymo is None:
+            for name in reversed(visible_names[:current_index]):
+                if name not in names_to_delete_set:
+                    preferred_kymo = name
+                    break
 
         for name in names_to_delete:
             self.kymo_roi_map.pop(name, None)
             self.kymographs.pop(name, None)
+            self._forget_kymo_view_state(name)
             if hasattr(self, "kymographs_log"):
                 self.kymographs_log.pop(name, None)
             if hasattr(self, "kymo_contrast_settings"):
@@ -1514,7 +1560,8 @@ class NavigatorIOMixin:
             if idx >= 0:
                 self.roiCombo.removeItem(idx)
 
-        self.update_kymo_list_for_channel()
+        self.kymoCanvas.reset_canvas()
+        self.update_kymo_list_for_channel(preferred_kymo=preferred_kymo)
         self.update_kymo_visibility()
         self.update_roilist_visibility()
 
@@ -1680,6 +1727,8 @@ class NavigatorIOMixin:
         if hasattr(self, "kymographs_log"):
             self.kymographs_log.clear()
         self.kymo_roi_map.clear()
+        if hasattr(self, "_kymo_view_initialized"):
+            self._kymo_view_initialized.clear()
         self._roi_zoom_states.clear()
         self._last_roi = None
         if hasattr(self, "kymo_contrast_settings"):
@@ -1687,7 +1736,7 @@ class NavigatorIOMixin:
         if hasattr(self, "kymo_log_contrast_settings"):
             self.kymo_log_contrast_settings.clear()
         self.kymoCombo.clear()
-        self.kymoCanvas.ax.cla()
+        self.kymoCanvas.reset_canvas()
         self.kymoCanvas.ax.axis("off")
         self.kymoCanvas.draw_idle()
         self.update_kymo_visibility()
@@ -2673,6 +2722,455 @@ class NavigatorIOMixin:
                 self.velocityCanvas.plot_velocity_histogram(current_traj["velocities"])
 
         self.trajectoryCanvas.hide_empty_columns()
+
+    def _current_movie_contrast_limits(self):
+        im_artist = getattr(getattr(self, "movieCanvas", None), "_im", None)
+        if im_artist is not None:
+            try:
+                vmin, vmax = im_artist.get_clim()
+                if vmin is not None and vmax is not None:
+                    return float(vmin), float(vmax)
+            except Exception:
+                pass
+
+        mc = getattr(self, "movieCanvas", None)
+        vmin = getattr(mc, "_vmin", None)
+        vmax = getattr(mc, "_vmax", None)
+        if vmin is None or vmax is None:
+            return None
+        return float(vmin), float(vmax)
+
+    def _apply_contrast_limits_to_canvas(self, canvas, contrast_limits):
+        if contrast_limits is None:
+            return
+        vmin, vmax = contrast_limits
+        if vmin >= vmax:
+            vmax = vmin + 1
+        canvas._default_vmin = vmin
+        canvas._default_vmax = vmax
+        canvas._vmin = vmin
+        canvas._vmax = vmax
+        if canvas._im is not None:
+            canvas.set_display_range(vmin, vmax)
+
+    def _pseudoflatfield_downsample_factor(self, shape, sigma):
+        if len(shape) != 2:
+            return 1
+        min_dim = int(min(shape))
+        if min_dim < 64 or sigma < 32:
+            return 1
+
+        factor = int(max(1, sigma // 18))
+        factor = min(factor, 16, max(1, min_dim // 32))
+        return factor if factor >= 2 else 1
+
+    def _downsample_plane_mean(self, arr, factor):
+        h, w = arr.shape
+        pad_y = (-h) % factor
+        pad_x = (-w) % factor
+        if pad_y or pad_x:
+            mode = "reflect" if h > 1 and w > 1 else "edge"
+            arr = np.pad(arr, ((0, pad_y), (0, pad_x)), mode=mode)
+        ph, pw = arr.shape
+        return arr.reshape(ph // factor, factor, pw // factor, factor).mean(
+            axis=(1, 3),
+            dtype=np.float32,
+        )
+
+    def _resize_plane_linear(self, arr, shape):
+        out_h, out_w = int(shape[0]), int(shape[1])
+        if arr.shape == (out_h, out_w):
+            return arr.astype(np.float32, copy=False)
+
+        in_h, in_w = arr.shape
+        x_old = np.linspace(0.0, 1.0, in_w, dtype=np.float32)
+        x_new = np.linspace(0.0, 1.0, out_w, dtype=np.float32)
+        tmp = np.empty((in_h, out_w), dtype=np.float32)
+        for y in range(in_h):
+            tmp[y] = np.interp(x_new, x_old, arr[y]).astype(np.float32, copy=False)
+
+        y_old = np.linspace(0.0, 1.0, in_h, dtype=np.float32)
+        y_new = np.linspace(0.0, 1.0, out_h, dtype=np.float32)
+        out = np.empty((out_h, out_w), dtype=np.float32)
+        for x in range(out_w):
+            out[:, x] = np.interp(y_new, y_old, tmp[:, x]).astype(np.float32, copy=False)
+        return out
+
+    def _pseudoflatfield_background_plane(self, arr, sigma):
+        factor = self._pseudoflatfield_downsample_factor(arr.shape, sigma)
+        if factor <= 1:
+            return gaussian_filter(arr, sigma=sigma)
+
+        small = self._downsample_plane_mean(arr, factor)
+        background_small = gaussian_filter(small, sigma=max(float(sigma) / factor, 0.01))
+        return self._resize_plane_linear(background_small, arr.shape)
+
+    def _pseudoflatfield_background_and_corrected_plane(self, plane, sigma):
+        arr = np.asarray(plane, dtype=np.float32)
+        sigma = max(float(sigma), 0.01)
+        background = self._pseudoflatfield_background_plane(arr, sigma)
+
+        finite_background = np.isfinite(background)
+        abs_background = np.abs(background[finite_background])
+        eps = np.finfo(np.float32).eps
+        if abs_background.size:
+            low_background = float(np.percentile(abs_background, 1))
+            if np.isfinite(low_background) and low_background > 0:
+                eps = max(eps, low_background * 1e-6)
+
+        valid = finite_background & (np.abs(background) > eps)
+        corrected = np.divide(
+            arr,
+            background,
+            out=np.zeros_like(arr, dtype=np.float32),
+            where=valid,
+        )
+        corrected[~np.isfinite(corrected)] = 0
+        return arr, background.astype(np.float32, copy=False), corrected
+
+    def _pseudoflatfield_correct_plane(self, plane, sigma):
+        _original, _background, corrected = self._pseudoflatfield_background_and_corrected_plane(
+            plane, sigma
+        )
+        return corrected
+
+    def _pseudoflatfield_correct_frame(self, frame, sigma):
+        arr = np.asarray(frame)
+        if arr.ndim == 2:
+            return self._pseudoflatfield_correct_plane(arr, sigma)
+        if arr.ndim != 3:
+            raise ValueError(f"Unsupported frame dimensions: {arr.shape}")
+
+        channel_axis = getattr(self, "_channel_axis", None)
+        channel_axis_in_frame = None
+        if self.movie is not None and self.movie.ndim == 4 and channel_axis is not None:
+            channel_axis_in_frame = int(channel_axis) - 1
+
+        if channel_axis_in_frame is None or not 0 <= channel_axis_in_frame < arr.ndim:
+            return self._pseudoflatfield_correct_plane(arr, sigma)
+
+        corrected = np.empty(arr.shape, dtype=np.float32)
+        for ch in range(arr.shape[channel_axis_in_frame]):
+            src_idx = [slice(None)] * arr.ndim
+            src_idx[channel_axis_in_frame] = ch
+            plane = arr[tuple(src_idx)]
+            corrected[tuple(src_idx)] = self._pseudoflatfield_correct_plane(plane, sigma)
+        return corrected
+
+    def _compute_pseudoflatfield_movie(self, sigma, parent_dialog):
+        if self.movie is None:
+            return None
+
+        n_frames = self.movie.shape[0]
+        corrected = np.empty(self.movie.shape, dtype=np.float32)
+        progress = QProgressDialog(
+            "Applying pseudoflatfield correction...",
+            "Cancel", 0, n_frames, parent_dialog
+        )
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+
+        for i in range(n_frames):
+            if progress.wasCanceled():
+                progress.close()
+                return None
+            try:
+                corrected[i] = self._pseudoflatfield_correct_frame(self.movie[i], sigma)
+            except Exception as e:
+                progress.close()
+                QMessageBox.critical(
+                    parent_dialog,
+                    "Pseudoflatfield Error",
+                    f"Error correcting frame {i + 1}:\n{e}"
+                )
+                return None
+            progress.setValue(i + 1)
+            QApplication.processEvents()
+
+        progress.close()
+        return corrected
+
+    def _default_corrected_movie_path(self, suffix):
+        movie_path = getattr(self, "movie_path", None)
+        movie_dir = getattr(self, "movie_dir", None)
+        if not movie_dir and movie_path:
+            movie_dir = os.path.dirname(os.path.abspath(movie_path))
+        start_dir = movie_dir if movie_dir and os.path.isdir(movie_dir) else (
+            getattr(self, "_last_dir", "") or os.path.expanduser("~")
+        )
+        if not os.path.isdir(start_dir):
+            start_dir = os.path.expanduser("~")
+
+        movie_name = os.path.basename(movie_path) if movie_path else self.movieNameLabel.text().strip()
+        movie_stem = os.path.splitext(movie_name)[0] if movie_name else "movie"
+        if not movie_stem or movie_stem.lower() == "load":
+            movie_stem = "movie"
+        return os.path.join(start_dir, f"{movie_stem}_{suffix}.tif")
+
+    def correct_pseudoflatfield(self):
+        if self.movie is None:
+            QMessageBox.warning(self, "", "Please load a movie first.")
+            return
+
+        n_frames = self.movie.shape[0]
+        current_frame = int(np.clip(self.frameSlider.value(), 0, n_frames - 1))
+        try:
+            current_channel = int(self.movieChannelCombo.currentText())
+        except Exception:
+            current_channel = 1
+
+        initial_contrast = self._current_movie_contrast_limits()
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Pseudoflatfield Correction")
+        dialog.resize(1180, 680)
+        dialog_layout = QVBoxLayout(dialog)
+
+        controls_layout = QHBoxLayout()
+        controls_layout.addStretch(1)
+        channel_dropdown = None
+        if self.movie.ndim == 4:
+            channel_dropdown = QComboBox(dialog)
+            n_channels = self.movie.shape[self._channel_axis]
+            for ch in range(n_channels):
+                channel_dropdown.addItem(f"Channel {ch + 1}", ch + 1)
+            channel_dropdown.setCurrentIndex(max(0, min(current_channel - 1, n_channels - 1)))
+            channel_dropdown.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+            channel_dropdown.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            channel_dropdown.setFixedWidth(max(110, channel_dropdown.sizeHint().width() + 12))
+            controls_layout.addWidget(channel_dropdown)
+
+        controls_layout.addWidget(QLabel("Gaussian sigma / radius", dialog))
+        sigma_spin = QDoubleSpinBox(dialog)
+        sigma_spin.setRange(0.1, 10000.0)
+        sigma_spin.setDecimals(1)
+        sigma_spin.setSingleStep(10.0)
+        sigma_spin.setValue(150.0)
+        sigma_spin.setSuffix(" px")
+        sigma_spin.setKeyboardTracking(False)
+        sigma_spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        controls_layout.addWidget(sigma_spin)
+        controls_layout.addStretch(1)
+        dialog_layout.addLayout(controls_layout)
+
+        preview_layout = QHBoxLayout()
+        dialog_layout.addLayout(preview_layout, 1)
+
+        def add_preview_panel(title):
+            panel = QWidget(dialog)
+            panel_layout = QVBoxLayout(panel)
+            panel_layout.setContentsMargins(0, 0, 0, 0)
+            label = QLabel(title, panel)
+            label.setAlignment(Qt.AlignCenter)
+            panel_layout.addWidget(label)
+            canvas = MovieCanvas(panel, navigator=self)
+            canvas.setMinimumSize(300, 420)
+            self._apply_contrast_limits_to_canvas(canvas, initial_contrast)
+            panel_layout.addWidget(canvas, 1)
+            preview_layout.addWidget(panel, 1)
+            return canvas
+
+        original_canvas = add_preview_panel("Original")
+        blurred_canvas = add_preview_panel("Gaussian blurred")
+        divided_canvas = add_preview_panel("Corrected image")
+
+        frame_layout = QHBoxLayout()
+        frame_label = QLabel(dialog)
+        frame_label.setMinimumWidth(64)
+        frame_layout.addWidget(frame_label)
+        frame_slider = QSlider(Qt.Horizontal, dialog)
+        frame_slider.setMinimum(0)
+        frame_slider.setMaximum(n_frames - 1)
+        frame_slider.setTracking(False)
+        frame_slider.setValue(current_frame)
+        frame_layout.addWidget(frame_slider, 1)
+        dialog_layout.addLayout(frame_layout)
+
+        preview_timer = QTimer(dialog)
+        preview_timer.setSingleShot(True)
+
+        def preview_channel():
+            if channel_dropdown is None:
+                return 1
+            data = channel_dropdown.currentData()
+            return int(data) if data is not None else channel_dropdown.currentIndex() + 1
+
+        def contrast_for_channel(channel, sample=None):
+            if not hasattr(self, "channel_contrast_settings"):
+                self.channel_contrast_settings = {}
+            settings_store = self.channel_contrast_settings
+            settings = settings_store.get(channel)
+            if settings is not None:
+                return float(settings["vmin"]), float(settings["vmax"])
+            if channel == current_channel and initial_contrast is not None:
+                return initial_contrast
+
+            if sample is not None:
+                settings = self._contrast_settings_from_image(sample, sum_mode=False)
+                settings_store[channel] = settings
+                return float(settings["vmin"]), float(settings["vmax"])
+
+            return initial_contrast if initial_contrast is not None else (0.0, 255.0)
+
+        def contrast_for_corrected_image(image):
+            arr = np.asarray(image, dtype=float)
+            finite = arr[np.isfinite(arr)]
+            if finite.size == 0:
+                return 0.0, 1.0
+            vmin, vmax = np.percentile(finite, (1, 99))
+            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
+                vmin = float(np.min(finite))
+                vmax = float(np.max(finite))
+            if vmin >= vmax:
+                vmax = vmin + 1.0
+            return float(vmin), float(vmax)
+
+        def update_preview():
+            frame_idx = frame_slider.value()
+            frame_label.setText(f"{frame_idx + 1}/{n_frames}")
+            channel = preview_channel()
+            if self.movie.ndim == 4:
+                frame = self.get_movie_frame(frame_idx, channel_override=channel)
+            else:
+                frame = self.movie[frame_idx]
+            if frame is None:
+                return
+
+            try:
+                original, blurred, divided = self._pseudoflatfield_background_and_corrected_plane(
+                    frame, sigma_spin.value()
+                )
+            except Exception as e:
+                QMessageBox.critical(dialog, "Preview Error", f"Error generating preview:\n{e}")
+                return
+
+            contrast = contrast_for_channel(channel, original)
+            for canvas, image in (
+                (original_canvas, original),
+                (blurred_canvas, blurred),
+            ):
+                self._apply_contrast_limits_to_canvas(canvas, contrast)
+                if canvas._im is None:
+                    canvas.display_image(image)
+                else:
+                    canvas.update_image_data(image)
+                self._apply_contrast_limits_to_canvas(canvas, contrast)
+
+            corrected_contrast = contrast_for_corrected_image(divided)
+            self._apply_contrast_limits_to_canvas(divided_canvas, corrected_contrast)
+            if divided_canvas._im is None:
+                divided_canvas.display_image(divided)
+            else:
+                divided_canvas.update_image_data(divided)
+            self._apply_contrast_limits_to_canvas(divided_canvas, corrected_contrast)
+
+        def update_frame_label(value=None):
+            if value is None:
+                value = frame_slider.value()
+            frame_label.setText(f"{int(value) + 1}/{n_frames}")
+
+        def schedule_preview_update(*_args):
+            preview_timer.start(120)
+
+        def schedule_frame_preview_update():
+            update_frame_label()
+            schedule_preview_update()
+
+        preview_timer.timeout.connect(update_preview)
+        sigma_spin.valueChanged.connect(schedule_preview_update)
+        frame_slider.valueChanged.connect(update_frame_label)
+        frame_slider.sliderMoved.connect(update_frame_label)
+        frame_slider.sliderReleased.connect(schedule_frame_preview_update)
+        if channel_dropdown is not None:
+            channel_dropdown.currentIndexChanged.connect(schedule_preview_update)
+
+        update_preview()
+
+        btn_layout = QHBoxLayout()
+        btn_save = QPushButton("Save Movie", dialog)
+        btn_save_load = QPushButton("Save and Load Movie", dialog)
+        btn_cancel = QPushButton("Cancel", dialog)
+        btn_layout.addWidget(btn_save)
+        btn_layout.addWidget(btn_save_load)
+        btn_layout.addWidget(btn_cancel)
+        dialog_layout.addLayout(btn_layout)
+
+        saved_file = {"path": None}
+
+        def show_save_warning():
+            QMessageBox.warning(
+                dialog,
+                "Pseudoflatfield Warning",
+                "Warning: pseudoflat-field division is acceptable for visualisation and sometimes localisation, but it should not be the image from which molecular brightness or stoichiometry is measured."
+            )
+
+        def save_movie():
+            show_save_warning()
+
+            default_path = self._default_corrected_movie_path("pseudoflatfield_corrected")
+            fname, _ = QFileDialog.getSaveFileName(
+                dialog,
+                "Save Pseudoflatfield-Corrected Movie",
+                default_path,
+                "TIFF Files (*.tif *.tiff)"
+            )
+            if not fname:
+                return False
+            if not fname.lower().endswith((".tif", ".tiff")):
+                fname += ".tif"
+
+            corrected_movie = self._compute_pseudoflatfield_movie(sigma_spin.value(), dialog)
+            if corrected_movie is None:
+                return False
+
+            try:
+                tifffile.imwrite(
+                    fname,
+                    corrected_movie,
+                    imagej=True,
+                    metadata=getattr(self, "movie_metadata", {})
+                )
+                saved_file["path"] = fname
+                self._last_dir = os.path.dirname(fname) or self._last_dir
+                return True
+            except Exception as e:
+                QMessageBox.critical(dialog, "Save Error", f"Error saving movie:\n{e}")
+                return False
+
+        def save_and_load_movie():
+            if not save_movie():
+                return
+
+            try:
+                self.save_and_load_routine = True
+
+                def after_movie_loaded():
+                    QMessageBox.information(
+                        dialog, "Loaded",
+                        "The corrected movie has been loaded into the main window."
+                    )
+                    self.zoomInsetFrame.setVisible(False)
+                    dialog.accept()
+
+                self.handle_movie_load(
+                    saved_file["path"],
+                    pixelsize=self.pixel_size,
+                    frameinterval=self.frame_interval,
+                    on_loaded=after_movie_loaded,
+                )
+            except Exception as e:
+                QMessageBox.critical(dialog, "Load Error", f"Error loading movie:\n{e}")
+
+        def on_save_clicked():
+            if save_movie():
+                dialog.accept()
+
+        btn_save.clicked.connect(on_save_clicked)
+        btn_save_load.clicked.connect(save_and_load_movie)
+        btn_cancel.clicked.connect(dialog.reject)
+
+        dialog.exec_()
 
     def correct_drift(self):
         """

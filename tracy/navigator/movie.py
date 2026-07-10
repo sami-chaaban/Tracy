@@ -1,6 +1,19 @@
 from ._shared import *
 
 class NavigatorMovieMixin:
+    def _movie_frame_label_text(self, frame_number=None):
+        if getattr(self, "movie", None) is None:
+            return "1"
+        total = int(self.movie.shape[0])
+        if frame_number is None:
+            frame_number = self.frameSlider.value()
+        frame_number = max(0, min(int(frame_number), total - 1))
+        return f"{frame_number + 1}/{total}"
+
+    def update_movie_frame_label(self, frame_number=None):
+        if hasattr(self, "frameNumberLabel"):
+            self.frameNumberLabel.setText(self._movie_frame_label_text(frame_number))
+
     def _maybe_flip_movie_ylim(self, ylim):
         if getattr(self, "flip_movie_y", False):
             return (ylim[1], ylim[0])
@@ -41,7 +54,7 @@ class NavigatorMovieMixin:
         self.frameSlider.blockSignals(True)
         self.frameSlider.setValue(frame_number)
         self.frameSlider.blockSignals(False)
-        self.frameNumberLabel.setText(f"{frame_number + 1}")
+        self.update_movie_frame_label(frame_number)
         
         # Get the new frame.
         if self.movieCanvas.sum_mode:
@@ -250,7 +263,7 @@ class NavigatorMovieMixin:
                                     peak=pk, pointcolor=pointcolor)
                 
             self.frameSlider.setValue(frame)
-            self.frameNumberLabel.setText(f"{frame+1}")
+            self.update_movie_frame_label(frame)
             if hasattr(self, 'analysisSlider'):
                 self.analysisSlider.setValue(index)
 
@@ -931,6 +944,11 @@ class NavigatorMovieMixin:
         self.kymoCanvas.draw()
 
     def cancel_left_click_sequence(self):
+        if hasattr(self, "_restore_kymo_sequence_background"):
+            self._restore_kymo_sequence_background()
+            self._kymo_bg = None
+            self._kymo_sequence_bg_view = None
+
         # If we are in ROI mode, clear the temporary ROI drawing state.
         if self.movieCanvas.roiAddMode:
             # Clear any temporarily drawn ROI line
