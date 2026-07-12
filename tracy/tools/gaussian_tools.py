@@ -3,7 +3,7 @@ Holds the 2D Gaussian fitting function used by curve_fit.
 """
 
 import numpy as np
-from scipy.optimize import curve_fit, least_squares
+from scipy.optimize import curve_fit
 
 def gaussian2d_flat(coords, A, x0, y0, sigma_x, sigma_y, offset):
     """
@@ -18,7 +18,51 @@ def gaussian2d_flat(coords, A, x0, y0, sigma_x, sigma_y, offset):
     )) + offset
     return g.ravel()
 
+
 _fit_cache = {}
+
+
+def prepare_gaussian_fit_patch(frame_image, center, crop_size, margin=5):
+    """Extract the small image region needed by both fitting passes.
+
+    Each pass constrains the center to at most four pixels from its starting
+    point. A five-pixel margin therefore preserves exactly the pixels that a
+    full-frame fit can reach while keeping process-transfer payloads tiny.
+    """
+    H, W = frame_image.shape
+    half = crop_size // 2
+    nominal_x1 = int(round(center[0])) - half
+    nominal_y1 = int(round(center[1])) - half
+    first_x1 = max(0, nominal_x1)
+    first_y1 = max(0, nominal_y1)
+    patch_x1 = max(0, first_x1 - margin)
+    patch_y1 = max(0, first_y1 - margin)
+    patch_x2 = min(W, first_x1 + crop_size + margin)
+    patch_y2 = min(H, first_y1 + crop_size + margin)
+    patch = np.ascontiguousarray(frame_image[patch_y1:patch_y2, patch_x1:patch_x2])
+    local_center = (center[0] - patch_x1, center[1] - patch_y1)
+    return patch, local_center, (patch_x1, patch_y1)
+
+
+def perform_gaussian_fit_job_batch(batch):
+    """Fit one compact batch in a worker process and restore global centers."""
+    output = []
+    for job in batch:
+        (
+            idx, frame, cx, cy, patch, local_center, origin,
+            crop_size, pixel_size, bg_fixed,
+        ) = job
+        fc, sigma, intensity, peak, bkgr = perform_gaussian_fit(
+            patch,
+            local_center,
+            crop_size,
+            pixelsize=pixel_size,
+            bg_fixed=bg_fixed,
+        )
+        if fc is not None:
+            fc = (fc[0] + origin[0], fc[1] + origin[1])
+        output.append((idx, frame, cx, cy, fc, sigma, intensity, peak, bkgr))
+    return output
 
 def perform_gaussian_fit(frame_image,
                          center,
@@ -69,6 +113,7 @@ def perform_gaussian_fit(frame_image,
     xi_full, yi_full, sigma_arr_full = _fit_cache[crop_size]
 
     fitted_center = center
+    previous_popt = None
     for it in range(iterations):
         cx, cy = fitted_center
         x1 = max(0, int(round(cx)) - half)
@@ -124,6 +169,22 @@ def perform_gaussian_fit(frame_image,
             lb = [0, x0_min, y0_min, sigma_min, sigma_min]
             ub = [np.inf, x0_max, y0_max, sigma_max, sigma_max]
 
+        generic_p0 = p0.copy()
+        # Keep free-background fits on their original initialization path.
+        # Those fits are often used for thresholded colocalization decisions,
+        # where even a rare alternate local solution can flip a binary result.
+        used_warm_start = previous_popt is not None and bg_fixed is not None
+
+        # A recentered second pass is the same fit with a better crop. Reuse
+        # the shape and brightness already found by the first pass instead of
+        # making the optimizer rediscover them from generic guesses. Keep the
+        # recentered x/y guesses above because those coordinates are local to
+        # the new crop.
+        if used_warm_start:
+            p0[0] = previous_popt[0]
+            p0[3] = previous_popt[3]
+            p0[4] = previous_popt[4]
+
         # choose which model function / fitting tuple to call
         if bg_fixed is None:
             fit_func = gaussian2d_flat  # expects 6 params
@@ -134,22 +195,48 @@ def perform_gaussian_fit(frame_image,
                 return gaussian2d_flat(
                     xy, A, x0, y0, sx, sy, bg_fixed
                 )
+
             fit_func = gaussian5_flat
             bounds = (lb, ub)
 
-        try:
+        def _solve(initial_parameters):
             popt, _ = curve_fit(
                 fit_func,
                 (xi_full, yi_full),
                 sub.ravel(),
-                p0=p0,
+                p0=initial_parameters,
                 bounds=bounds,
                 sigma=sigma_arr_full.ravel(),
                 max_nfev=max_nfev,
                 method='trf'
             )
+            return popt
+
+        used_generic_fallback = False
+        try:
+            popt = _solve(p0)
         except Exception:
-            return (None,)*5
+            if not used_warm_start:
+                return (None,)*5
+            try:
+                popt = _solve(generic_p0)
+                used_generic_fallback = True
+            except Exception:
+                return (None,)*5
+
+        tol = 4
+        acceptable = (
+            tol < popt[1] < crop_size - tol and
+            tol < popt[2] < crop_size - tol and
+            (it != iterations - 1 or popt[0] >= 4.0)
+        )
+        if used_warm_start and not used_generic_fallback and not acceptable:
+            try:
+                popt = _solve(generic_p0)
+            except Exception:
+                return (None,)*5
+
+        previous_popt = popt
 
         # unpack the fit
         if bg_fixed is None:
@@ -158,7 +245,6 @@ def perform_gaussian_fit(frame_image,
             A, x0_fit, y0_fit, sx, sy = popt
             off = bg_fixed
 
-        tol=4
         # reject edge / bad fits
         if not (tol < x0_fit < crop_size - tol and tol < y0_fit < crop_size - tol):
             return (None, None, None, None, None)

@@ -91,7 +91,98 @@ class ElidedClickableLabel(_ElidedTextMixin, ClickableLabel):
         super().__init__("", parent)
         self._init_elision(text=text, elide_mode=elide_mode)
 
+
+class _BusyDialog(QDialog):
+    """Reusable asynchronous modal dialog with an indeterminate progress bar."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("BusyDialog")
+        self.setWindowTitle("Loading")
+        self.setWindowModality(Qt.WindowModal)
+        self.setSizeGripEnabled(False)
+        self.setStyleSheet("""
+            QLabel {
+                color: #20242d;
+                font-size: 14px;
+            }
+            QProgressBar {
+                min-height: 8px;
+                max-height: 8px;
+                border: 0;
+                border-radius: 4px;
+                background: #e7ebf4;
+            }
+            QProgressBar::chunk {
+                border-radius: 4px;
+                background: #7da1ff;
+            }
+        """)
+        self.setFixedWidth(360)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(10)
+        self.label = QLabel("")
+        self.label.setAlignment(Qt.AlignCenter)
+        self.label.setWordWrap(True)
+        layout.addWidget(self.label)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.setTextVisible(False)
+        layout.addWidget(self.progress)
+        self.hide()
+
+    def set_message(self, text):
+        self.label.setText(text)
+        self.adjustSize()
+        self.setFixedSize(360, self.sizeHint().height())
+
+    def reject(self):
+        # Escape must not dismiss the input blocker while work is active.
+        return
+
+
 class NavigatorUiMixin:
+    def _ensure_busy_overlay(self):
+        overlay = getattr(self, "_busy_overlay", None)
+        if overlay is None:
+            overlay = _BusyDialog(self)
+            self._busy_overlay = overlay
+            self._busy_overlay_owner = None
+        return overlay
+
+    def _position_busy_overlay(self):
+        overlay = getattr(self, "_busy_overlay", None)
+        if overlay is None or not overlay.isVisible():
+            return
+        parent = overlay.parentWidget()
+        if parent is None:
+            return
+        x = max(0, (parent.width() - overlay.width()) // 2)
+        y = max(12, min(80, parent.height() // 12))
+        overlay.move(parent.mapToGlobal(QPoint(x, y)))
+
+    def show_busy_overlay(self, owner, text):
+        overlay = self._ensure_busy_overlay()
+        self._busy_overlay_owner = owner
+        overlay.set_message(text)
+        overlay.open()
+        self._position_busy_overlay()
+        overlay.raise_()
+
+    def hide_busy_overlay(self, owner):
+        if getattr(self, "_busy_overlay_owner", None) != owner:
+            return
+        overlay = getattr(self, "_busy_overlay", None)
+        if overlay is not None:
+            overlay.hide()
+        self._busy_overlay_owner = None
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_busy_overlay()
+
     def create_ui(self):
         # Create the central widget and overall layout.
         central = QWidget()
@@ -109,6 +200,8 @@ class NavigatorUiMixin:
         referenceiconpath = self.resource_path('icons/reference.svg')
         trajoverlayiconpath = self.resource_path('icons/overlay_traj.svg')
         trajoverlayoneiconpath = self.resource_path('icons/overlay_one.svg')
+        spotoverlayiconpath = self.resource_path('icons/spot.svg')
+        spotoverlayoneiconpath = self.resource_path('icons/one.svg')
         roioverlayiconpath = self.resource_path('icons/overlay.svg')
         kymoanchoriconpath = self.resource_path('icons/overlay_anchor.svg')
         invertkymoiconpath = self.resource_path('icons/invert.svg')
@@ -120,6 +213,10 @@ class NavigatorUiMixin:
         self._traj_overlay_icons = {
             "all": QIcon(trajoverlayiconpath),
             "selected": QIcon(trajoverlayoneiconpath),
+        }
+        self._kymo_spot_overlay_icons = {
+            "all": QIcon(spotoverlayiconpath),
+            "selected": QIcon(spotoverlayoneiconpath),
         }
 
         # --- Top Controls Section ---
@@ -464,7 +561,7 @@ class NavigatorUiMixin:
 
         self.kymo_traj_overlay_button = AnimatedIconButton("")
         kymo_traj_filter = BubbleTipFilter(
-            "Overlay trajectory spots (all > one > none)",
+            "Overlay trajectories (all > one > none)",
             self,
             placement="right"
         )
@@ -492,6 +589,40 @@ class NavigatorUiMixin:
         kymocontrastLayout.setAlignment(kymo_traj_container, Qt.AlignBottom)
         self.kymo_traj_overlay_container = kymo_traj_container
 
+        self.kymo_spot_overlay_button = AnimatedIconButton("")
+        kymo_spot_filter = BubbleTipFilter(
+            "Overlay fitted spots (all > one > none)",
+            self,
+            placement="right"
+        )
+        self.kymo_spot_overlay_button.installEventFilter(kymo_spot_filter)
+        self.kymo_spot_overlay_button._bubble_filter = kymo_spot_filter
+        self.kymo_spot_overlay_button.setIcon(self._kymo_spot_overlay_icons["all"])
+        self.kymo_spot_overlay_button.setIconSize(QSize(16, 16))
+        self.kymo_spot_overlay_button.setFixedSize(36, 36)
+        self.kymo_spot_overlay_button.setCheckable(True)
+        self.kymo_spot_overlay_mode = "all"
+        self._apply_kymo_spot_overlay_mode(
+            self.kymo_spot_overlay_mode, redraw=False
+        )
+        self.kymo_spot_overlay_button.setObjectName("Toggle")
+        kymo_spot_container = QWidget()
+        kymo_spot_layout = QVBoxLayout(kymo_spot_container)
+        kymo_spot_layout.setContentsMargins(0, 0, 0, 0)
+        kymo_spot_layout.setSpacing(0)
+        kymo_spot_layout.setAlignment(Qt.AlignHCenter)
+        kymo_spot_label = QLabel("SPOTS")
+        kymo_spot_label.setStyleSheet("color: black; font-size: 10px;")
+        kymo_spot_label.adjustSize()
+        kymo_spot_layout.addSpacing(kymo_label_spacer)
+        kymo_spot_layout.addWidget(
+            self.kymo_spot_overlay_button, alignment=Qt.AlignHCenter
+        )
+        kymo_spot_layout.addWidget(kymo_spot_label, alignment=Qt.AlignHCenter)
+        kymocontrastLayout.addWidget(kymo_spot_container)
+        kymocontrastLayout.setAlignment(kymo_spot_container, Qt.AlignBottom)
+        self.kymo_spot_overlay_container = kymo_spot_container
+
         self.kymo_anchor_overlay_button = AnimatedIconButton("")
         kymoanchorfilter = BubbleTipFilter("Show anchors (hold shift key to edit them)", self, placement="right")
         self.kymo_anchor_overlay_button.installEventFilter(kymoanchorfilter)
@@ -516,6 +647,9 @@ class NavigatorUiMixin:
         anchor_layout.addWidget(anchor_label, alignment=Qt.AlignHCenter)
         kymocontrastLayout.addWidget(anchor_container)
         kymocontrastLayout.setAlignment(anchor_container, Qt.AlignBottom)
+        self.kymo_anchor_overlay_container = anchor_container
+
+        self._sync_kymo_anchor_overlay_enabled()
 
         self.kymo_log_filter_button = AnimatedIconButton("")
         kymologfilter = BubbleTipFilter("Show LoG filtered kymograph", self, placement="right")
@@ -541,6 +675,30 @@ class NavigatorUiMixin:
         log_layout.addWidget(log_label, alignment=Qt.AlignHCenter)
         kymocontrastLayout.addWidget(log_container)
         kymocontrastLayout.setAlignment(log_container, Qt.AlignBottom)
+        self.kymo_log_filter_container = log_container
+
+        # Equal button-center gaps without padding every control out to the
+        # wide ANCHORS label: TRAJ./ANCHORS share the wide slot, while
+        # SPOTS/FILTER share the narrow slot. Each adjacent pair therefore has
+        # the same combined width and the layout's existing 8 px gap.
+        wide_overlay_width = max(
+            self.kymo_traj_overlay_container.sizeHint().width(),
+            self.kymo_anchor_overlay_container.sizeHint().width(),
+        )
+        narrow_overlay_width = max(
+            self.kymo_spot_overlay_container.sizeHint().width(),
+            self.kymo_log_filter_container.sizeHint().width(),
+        )
+        for container in (
+            self.kymo_traj_overlay_container,
+            self.kymo_anchor_overlay_container,
+        ):
+            container.setFixedWidth(wide_overlay_width)
+        for container in (
+            self.kymo_spot_overlay_container,
+            self.kymo_log_filter_container,
+        ):
+            container.setFixedWidth(narrow_overlay_width)
 
         self.kymo_full_button = AnimatedIconButton("")
         kymofullfilter = BubbleTipFilter("Fit full kymograph to canvas", self, placement="right")
@@ -574,6 +732,10 @@ class NavigatorUiMixin:
         # RIGHT SPLITTER: Two columns — the movie widget and the right panel.
         self.rightVerticalSplitter = CustomSplitter(Qt.Vertical)
         self.topRightSplitter = CustomSplitter(Qt.Horizontal)
+        # The outer kymo splitter resizes this nested splitter without emitting
+        # topRightSplitter.splitterMoved. Watch its actual resize events as well
+        # so the plot column cannot be left as a narrow sliver.
+        self.topRightSplitter.installEventFilter(self)
         self.topRightSplitter.splitterMoved.connect(self._remember_right_panel_width)
         self.topRightSplitter.splitterMoved.connect(self._enforce_right_panel_min_width)
         
@@ -1079,20 +1241,13 @@ class NavigatorUiMixin:
             )
         self.traj_overlay_button.clicked.connect(self._cycle_traj_overlay_mode)
         self.kymo_traj_overlay_button.clicked.connect(self._cycle_kymo_traj_overlay_mode)
+        self.kymo_spot_overlay_button.clicked.connect(self._cycle_kymo_spot_overlay_mode)
         self.delete_button.clicked.connect(self.trajectoryCanvas.delete_selected_trajectory)
         
         
         # Connect additional signals (e.g. for mouse motion over the movie canvas).
         self.movieCanvas.mpl_connect("motion_notify_event", self.on_movie_hover)
         self.movieCanvas.mpl_connect("axes_leave_event", self.on_movie_leave)
-
-        # Ensure right panel never ends up as a thin sliver after window resizes.
-        original_resize = self.resizeEvent
-        def new_resize(event):
-            original_resize(event)
-            if hasattr(self, "_enforce_right_panel_min_width"):
-                QTimer.singleShot(0, self._enforce_right_panel_min_width)
-        self.resizeEvent = new_resize
 
         # Create a container (QFrame) for the zoom inset.
         self.zoomInsetFrame = QFrame(self.movieDisplayContainer)
@@ -1126,6 +1281,7 @@ class NavigatorUiMixin:
 
         # Top label: no stretch, stays at its size
         self.zoomInsetLabel = QLabel("", self.zoomInsetFrame)
+        self.zoomInsetLabel.setTextFormat(Qt.RichText)
         self.zoomInsetLabel.setStyleSheet("""
             QLabel {
                 background-color: transparent;
@@ -1157,6 +1313,7 @@ class NavigatorUiMixin:
 
         # Bottom intensity label: no stretch, stays at its size
         self.zoomInsetIntensityLabel = QLabel("", self.zoomInsetFrame)
+        self.zoomInsetIntensityLabel.setTextFormat(Qt.RichText)
         self.zoomInsetIntensityLabel.setStyleSheet("""
             QLabel {
                 background-color: transparent;
@@ -1210,18 +1367,13 @@ class NavigatorUiMixin:
                 im = getattr(canv, attr, None)
                 if im:
                     im.set_cmap("gray_r" if checked else "gray")
-            canv.draw_idle()
+            if canv is not self.movieCanvas:
+                canv.draw_idle()
 
         # Refresh movie-canvas blit backgrounds so stale colormaps aren't restored later.
         mc = getattr(self, "movieCanvas", None)
         if mc is not None and mc._im is not None:
-            mc.draw()
-            canvas = mc.figure.canvas
-            if getattr(self, "temp_movie_analysis_line", None) is not None:
-                mc._bg = None
-            else:
-                mc._bg = canvas.copy_from_bbox(mc.ax.bbox)
-            mc._roi_bg = canvas.copy_from_bbox(mc.ax.bbox)
+            mc._render_movie_view(cache_background=True)
 
     def toggle_flip_y(self, checked: bool):
         # Checked means "unflip" per UI convention requested.
@@ -1483,6 +1635,15 @@ class NavigatorUiMixin:
     def get_kymo_traj_overlay_mode(self):
         return getattr(self, "kymo_traj_overlay_mode", "all")
 
+    def get_kymo_spot_overlay_mode(self):
+        return getattr(self, "kymo_spot_overlay_mode", "all")
+
+    def is_kymo_overlay_visible(self):
+        return (
+            self.get_kymo_traj_overlay_mode() != "off"
+            or self.get_kymo_spot_overlay_mode() != "off"
+        )
+
     def get_traj_overlay_mode(self):
         return self.get_movie_traj_overlay_mode()
 
@@ -1526,6 +1687,30 @@ class NavigatorUiMixin:
             mode_attr="kymo_traj_overlay_mode",
             redraw=redraw,
         )
+        self._sync_kymo_anchor_overlay_enabled()
+
+    def _sync_kymo_anchor_overlay_enabled(self):
+        button = getattr(self, "kymo_anchor_overlay_button", None)
+        if button is not None:
+            # Preserve the user's checked preference while disabled so anchors
+            # return in the same state when trajectory lines are shown again.
+            button.setEnabled(self.get_kymo_traj_overlay_mode() != "off")
+
+    def _apply_kymo_spot_overlay_mode(self, mode, redraw=True):
+        mode = self._normalize_traj_overlay_mode(mode)
+        self.kymo_spot_overlay_mode = mode
+        icon = (
+            self._kymo_spot_overlay_icons["selected"]
+            if mode == "selected"
+            else self._kymo_spot_overlay_icons["all"]
+        )
+        button = getattr(self, "kymo_spot_overlay_button", None)
+        if button is not None:
+            button.setIcon(icon)
+            button.setChecked(mode != "off")
+        if redraw and getattr(self, "kymoCanvas", None) is not None:
+            self.kymoCanvas.draw_trajectories_on_kymo()
+            self.kymoCanvas.draw_idle()
 
     def _cycle_traj_overlay_mode(self):
         if getattr(self, "trajectoryCanvas", None) is None:
@@ -1555,6 +1740,18 @@ class NavigatorUiMixin:
             self._apply_kymo_traj_overlay_mode(candidate)
             return
 
+    def _cycle_kymo_spot_overlay_mode(self):
+        if getattr(self, "trajectoryCanvas", None) is None:
+            return
+        order = ("off", "all", "selected")
+        current = self.get_kymo_spot_overlay_mode()
+        try:
+            idx = order.index(current)
+        except ValueError:
+            idx = 0
+        candidate = order[(idx + 1) % len(order)]
+        self._apply_kymo_spot_overlay_mode(candidate)
+
     def _ensure_traj_overlay_mode_valid(self, redraw=False):
         current = self.get_movie_traj_overlay_mode()
         normalized = self._normalize_traj_overlay_mode(current)
@@ -1570,6 +1767,15 @@ class NavigatorUiMixin:
             self._apply_kymo_traj_overlay_mode(normalized, redraw=redraw)
         elif redraw and getattr(self, "trajectoryCanvas", None) is not None:
             self.trajectoryCanvas.toggle_trajectory_markers()
+
+    def _ensure_kymo_spot_overlay_mode_valid(self, redraw=False):
+        current = self.get_kymo_spot_overlay_mode()
+        normalized = self._normalize_traj_overlay_mode(current)
+        if normalized != current:
+            self._apply_kymo_spot_overlay_mode(normalized, redraw=redraw)
+        elif redraw and getattr(self, "kymoCanvas", None) is not None:
+            self.kymoCanvas.draw_trajectories_on_kymo()
+            self.kymoCanvas.draw_idle()
 
     def _on_o_pressed(self):
         if len(self.trajectoryCanvas.trajectories) == 0:
@@ -1923,7 +2129,7 @@ class NavigatorUiMixin:
         self.kymoCanvas.remove_circle()
 
         # re-draw overlays if toggled
-        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
         self.kymoCanvas.draw_trajectories_on_kymo()
 
         # re-draw intensity / velocity plots
@@ -2163,12 +2369,6 @@ class NavigatorUiMixin:
         connectgapsAction.toggled.connect(self.on_connect_spot_gaps_toggled)
         self._apply_checkable_action_style(connectgapsAction)
         kymoMenu.addAction(connectgapsAction)
-
-        hideKymoSpotsAction = QAction("Hide Spots", self, checkable=True)
-        hideKymoSpotsAction.setChecked(False)
-        hideKymoSpotsAction.toggled.connect(self.on_hide_kymo_spots_toggled)
-        self._apply_checkable_action_style(hideKymoSpotsAction)
-        kymoMenu.addAction(hideKymoSpotsAction)
 
         trajMenu = menubar.addMenu("Trajectories")
 
@@ -2604,14 +2804,9 @@ class NavigatorUiMixin:
         self.kymoCanvas.draw_trajectories_on_kymo()
         self.kymoCanvas.draw_idle()
 
-    def on_hide_kymo_spots_toggled(self, checked: bool):
-        self.hide_kymo_spots = checked
-        self.kymoCanvas.draw_trajectories_on_kymo()
-        self.kymoCanvas.draw_idle()
-
     def on_hide_movie_spots_toggled(self, checked: bool):
         self.hide_movie_spots = checked
-        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
         try:
             self._rebuild_movie_blit_background()
         except Exception:
@@ -2679,7 +2874,7 @@ class NavigatorUiMixin:
         # finally redraw
         self.kymoCanvas.draw_trajectories_on_kymo()
         self.kymoCanvas.draw()
-        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
         self.movieCanvas.draw()
 
         self.trajectoryCanvas.hide_empty_columns()

@@ -247,7 +247,6 @@ class KymographNavigator(
         self._DIFF_A_COL = "α"
 
         self.connect_all_spots = False
-        self.hide_kymo_spots = False
         self.hide_movie_spots = False
         self.slow_computer_mode = False
 
@@ -266,6 +265,10 @@ class KymographNavigator(
             stack.clear()
 
     def closeEvent(self, event):
+        if self.request_movie_load_shutdown():
+            event.ignore()
+            return
+
         thread = getattr(self, "_autopick_thread", None)
         if thread is not None and thread.isRunning():
             stopped = False
@@ -283,6 +286,13 @@ class KymographNavigator(
                 return
 
         traj_canvas = getattr(self, "trajectoryCanvas", None)
+        if (
+            traj_canvas is not None
+            and traj_canvas.request_trajectory_load_shutdown()
+        ):
+            event.ignore()
+            return
+
         traj_thread = getattr(traj_canvas, "_recalc_thread", None) if traj_canvas is not None else None
         if traj_thread is not None and traj_thread.isRunning():
             stopped = False

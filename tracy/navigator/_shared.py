@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QFileDialog, QLabel, QMessageBox, QComboBox, QSpinBox, QShortcut,
     QListView, QSlider, QSizePolicy, QAction, QDialog,
-    QProgressDialog, QApplication, QFrame,
+    QProgressDialog, QProgressBar, QApplication, QFrame,
     QLineEdit, QFormLayout, QGraphicsDropShadowEffect, QDialogButtonBox,
     QInputDialog, QMenu, QLayout, QDoubleSpinBox, QGroupBox, QScrollArea,
     QAbstractSpinBox, QUndoStack

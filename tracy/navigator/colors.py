@@ -10,11 +10,9 @@ class NavigatorColorMixin:
 
         # redraw the trajectories
         self.kymoCanvas.remove_circle()
-        self.kymoCanvas.clear_kymo_trajectory_markers()
         self.kymoCanvas.draw_trajectories_on_kymo()
         self.movieCanvas.remove_gaussian_circle()
-        self.movieCanvas.clear_movie_trajectory_markers()
-        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
 
         self.kymoCanvas.draw()
         self.movieCanvas.draw()
@@ -47,11 +45,9 @@ class NavigatorColorMixin:
         self._value_color_map_cache = {}
         # redraw the trajectories
         self.kymoCanvas.remove_circle()
-        self.kymoCanvas.clear_kymo_trajectory_markers()
         self.kymoCanvas.draw_trajectories_on_kymo()
         self.movieCanvas.remove_gaussian_circle()
-        self.movieCanvas.clear_movie_trajectory_markers()
-        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
 
         self.kymoCanvas.draw()
         self.movieCanvas.draw()

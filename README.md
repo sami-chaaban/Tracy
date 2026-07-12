@@ -206,7 +206,7 @@ tracy &                    # run in the background
 
 * New trajectories append to the **Trajectory Table**.
 * The **TRAJ.** buttons under the movie and kymograph separately control trajectory overlays. Each cycles **all → selected → off**; the movie button affects only the movie canvas, and the kymo button affects only the kymograph (defaults: movie = selected, kymo = all).
-* Use **Movie » Hide Spots** or **Kymograph » Hide Spots** to hide the fitted spot markers on that canvas while keeping trajectory overlays available.
+* The **SPOTS** button below the kymograph independently controls its fitted spot markers and cycles **all → selected → off**. The movie canvas retains its separate **Movie » Hide Spots** menu option; there is no **Kymograph » Hide Spots** menu item.
 * If kymograph panning, zooming, or resizing is sluggish with many overlays visible, enable **View » Slow computer mode**. This temporarily hides kymograph overlays during interaction and redraws them afterward. It is off by default.
 * Click trajectories in the table or use the arrow keys (**`↑`**, **`↓`**). Right‑click for options (e.g. Go to kymograph).
 * Delete a trajectory with `Backspace`.

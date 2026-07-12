@@ -125,38 +125,28 @@ class NavigatorKymoMixin:
         canvas = getattr(self, "kymoCanvas", None)
         if canvas is None:
             return None
-        scatters = getattr(canvas, "scatter_objs_traj", None)
-        if not scatters:
+        picked = canvas.pick_kymo_trajectory_point(event)
+        if picked is None:
+            return None
+        try:
+            traj_idx, point_idx = picked
+            traj = self.trajectoryCanvas.trajectories[traj_idx]
+            scatter_kwargs, line_color = self._get_traj_colors(traj)
+        except Exception:
             return None
 
-        ordered = list(scatters)
-        try:
-            selected_idx = self.trajectoryCanvas.table_widget.currentRow()
-        except Exception:
-            selected_idx = -1
-        if selected_idx is not None and selected_idx >= 0:
-            sel = None
-            for sc in scatters:
-                if getattr(sc, "traj_idx", None) == selected_idx:
-                    sel = sc
-                    break
-            if sel is not None:
-                ordered = [sel] + [sc for sc in scatters if sc is not sel]
-
-        for sc in ordered:
-            if sc is None:
-                continue
+        colors = scatter_kwargs.get("c")
+        if isinstance(colors, (list, tuple, np.ndarray)) and len(colors):
             try:
-                contains, info = sc.contains(event)
+                color = colors[min(int(point_idx), len(colors) - 1)]
             except Exception:
-                continue
-            if not contains:
-                continue
-            ind = info.get("ind") if isinstance(info, dict) else None
-            if ind is None or len(ind) == 0:
-                return self._kymo_scatter_color(sc, 0)
-            return self._kymo_scatter_color(sc, ind[0])
-        return None
+                color = line_color
+        else:
+            color = scatter_kwargs.get("color", line_color)
+        try:
+            return mcolors.to_hex(color, keep_alpha=False)
+        except Exception:
+            return None
 
     def _handle_kymo_anchor_edit_right_click(self, event):
         if event.inaxes != self.kymoCanvas.ax or event.xdata is None or event.ydata is None:
@@ -438,17 +428,20 @@ class NavigatorKymoMixin:
                     if self.trajectoryCanvas._can_record_undo()
                     else None,
                 }
-        kymo_on = getattr(self, "kymo_traj_overlay_button", None) and self.kymo_traj_overlay_button.isChecked()
+        kymo_on = bool(enabled) or (
+            self.is_kymo_overlay_visible()
+            if hasattr(self, "is_kymo_overlay_visible") else False
+        )
         movie_on = getattr(self, "traj_overlay_button", None) and self.traj_overlay_button.isChecked()
-        if kymo_on:
-            if enabled:
-                self._build_kymo_anchor_edit_artists()
-            else:
-                self.kymoCanvas.draw_trajectories_on_kymo()
-                self.kymoCanvas.draw_idle()
+        if enabled and kymo_on:
+            self._build_kymo_anchor_edit_artists()
+        elif not enabled:
+            # This also clears edit handles when both overlay buttons are off.
+            self.kymoCanvas.draw_trajectories_on_kymo()
+            self.kymoCanvas.draw_idle()
         if movie_on:
             try:
-                self.movieCanvas.draw_trajectories_on_movie()
+                self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
                 self.movieCanvas.draw_idle()
             except Exception:
                 pass
@@ -474,7 +467,7 @@ class NavigatorKymoMixin:
                 self.kymoCanvas.draw_trajectories_on_kymo()
                 self.kymoCanvas.draw_idle()
                 try:
-                    self.movieCanvas.draw_trajectories_on_movie()
+                    self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
                     self.movieCanvas.draw_idle()
                 except Exception:
                     pass
@@ -911,6 +904,12 @@ class NavigatorKymoMixin:
 
     def on_kymo_click(self, event):
 
+        # A Matplotlib double-click arrives as a normal click followed by a
+        # dblclick callback.  Record only an accepted normal click; any other
+        # first callback must invalidate the pending double-click rollback.
+        if event.button == 1 and not getattr(event, "dblclick", False):
+            self._kymo_pending_double_click_add = False
+
         if event.button == 3 and self._skip_next_right:
             # we just showed the menu for a label—don’t do live updates
             self._skip_next_right = False
@@ -946,7 +945,7 @@ class NavigatorKymoMixin:
                     return
 
         if (event.button == 1 and event.inaxes is self.kymoCanvas.ax
-                and self.kymo_traj_overlay_button.isChecked()
+                and self.kymo_spot_overlay_button.isChecked()
                 and len(self.analysis_points) == 0):
             current_row = self.trajectoryCanvas.table_widget.currentRow()
             picked = None
@@ -967,10 +966,12 @@ class NavigatorKymoMixin:
                     tbl.blockSignals(False)
 
                     # now update everything else
-                    self.trajectoryCanvas.on_trajectory_selected_by_index(traj_idx)
+                    self.trajectoryCanvas.on_trajectory_selected_by_index(
+                        traj_idx, target_point_index=point_idx
+                    )
+                else:
+                    self.jump_to_analysis_point(point_idx)
 
-                # 2) Same trajectory → pick the point:
-                self.jump_to_analysis_point(point_idx)
                 if self.sumBtn.isChecked():
                     self.sumBtn.setChecked(False)
                 self.intensityCanvas.current_index = point_idx
@@ -1017,6 +1018,13 @@ class NavigatorKymoMixin:
 
         if event.button != 1:  # left‐button only
             return
+
+        first_double_click_press_was_added = bool(
+            getattr(event, "dblclick", False)
+            and getattr(self, "_kymo_pending_double_click_add", False)
+        )
+        # Consume the token now.  A rejected click below must leave it false.
+        self._kymo_pending_double_click_add = False
 
         # — start a fresh sequence? clear everything —
         if getattr(self, "new_sequence_start", False):
@@ -1069,25 +1077,28 @@ class NavigatorKymoMixin:
         #     self.frameNumberLabel.setText(f"{frame_idx+1}")
 
         force_add = False
-        if event.dblclick and self.analysis_anchors:
-            if len(self.analysis_anchors) >= 2:
-                self.analysis_anchors.pop()
-                if self.analysis_points:
-                    self.analysis_points.pop()
-                if getattr(self, "analysis_markers", None):
-                    last_marker = self.analysis_markers.pop()
-                    for obj in last_marker:
-                        try:
-                            obj.remove()
-                        except Exception:
-                            pass
-                if getattr(self, "permanent_analysis_lines", None):
-                    if self.permanent_analysis_lines:
-                        seg = self.permanent_analysis_lines.pop()
-                        try:
-                            seg.remove()
-                        except Exception:
-                            pass
+        if (
+            event.dblclick
+            and first_double_click_press_was_added
+            and len(self.analysis_anchors) >= 2
+        ):
+            self.analysis_anchors.pop()
+            if self.analysis_points:
+                self.analysis_points.pop()
+            if getattr(self, "analysis_markers", None):
+                last_marker = self.analysis_markers.pop()
+                for obj in last_marker:
+                    try:
+                        obj.remove()
+                    except Exception:
+                        pass
+            if getattr(self, "permanent_analysis_lines", None):
+                if self.permanent_analysis_lines:
+                    seg = self.permanent_analysis_lines.pop()
+                    try:
+                        seg.remove()
+                    except Exception:
+                        pass
             force_add = True
 
         if self.analysis_anchors:
@@ -1107,6 +1118,8 @@ class NavigatorKymoMixin:
         if should_add:
             self.analysis_anchors.append((frame_idx, event.xdata, event.ydata))
             self.analysis_points.append((frame_idx, x_orig, y_orig))
+            if not event.dblclick:
+                self._kymo_pending_double_click_add = True
             self._last_kymo_anchor_time = time.perf_counter()
             self._set_kymo_sequence_cursor(True)
 
@@ -1211,12 +1224,9 @@ class NavigatorKymoMixin:
 
         self.live_update_mode = False
 
-        if event.button == 2:
-            canvas = self.kymoCanvas.figure.canvas
-            # 1) ensure the view is fully redrawn
-            self.kymoCanvas.draw()
-            # 2) capture a fresh background for our blit‐loop
-            self._kymo_bg = canvas.copy_from_bbox(self.kymoCanvas.ax.bbox)
+        # KymoCanvas.on_mouse_release already performs the one final draw and
+        # refreshes its background for a middle-button pan. Sequence overlays
+        # keep their own view-signed cache and will recapture it when needed.
 
     def on_kymo_right_click(self, event):
 
@@ -1262,7 +1272,7 @@ class NavigatorKymoMixin:
             return
 
         # Even if the frame hasn't changed, force an update.
-        self.set_current_frame(frame_idx)
+        self.set_current_frame(frame_idx, draw=False)
         frame_image = self.get_movie_frame(frame_idx)
         if frame_image is None:
             return
@@ -1319,18 +1329,8 @@ class NavigatorKymoMixin:
 
         self.movieCanvas.draw_idle()
 
-        # Prepare kymoCanvas for blit: redraw static overlays and cache background
-        self.kymoCanvas.draw_trajectories_on_kymo()
-        # Remove any existing marker patch
-        if getattr(self.kymoCanvas, "_marker", None) is not None:
-            try:
-                self.kymoCanvas._marker.remove()
-            except Exception:
-                pass
-            self.kymoCanvas._marker = None
-        # Cache the clean background for blitting
-        self.kymoCanvas.update_view()
-        # Now blit the new marker
+        # Static trajectories have not changed.  add_circle() captures a clean
+        # background only when needed, then moves one persistent marker.
         self.kymoCanvas.add_circle(event.xdata, event.ydata, color='#7da1ff')
 
     def on_kymo_right_release(self, event):
@@ -1378,20 +1378,13 @@ class NavigatorKymoMixin:
             return
 
     def _kymo_label_hit(self, event):
-        labels = getattr(self.kymoCanvas, "_kymo_label_bboxes", None)
-        if not labels:
+        label = self.kymoCanvas.kymo_label_hit(event)
+        if label is None:
             return None
-        for lbl, bbox in labels.items():
-            try:
-                if not bbox.contains(event.x, event.y):
-                    continue
-            except Exception:
-                continue
-            row = self._kymo_label_to_row.get(lbl, -1)
-            if row is None or row < 0:
-                return None
-            return lbl, row
-        return None
+        row = self._kymo_label_to_row.get(label, -1)
+        if row is None or row < 0:
+            return None
+        return label, row
 
     def _select_kymo_label_row(self, row):
         trajectories = getattr(self.trajectoryCanvas, "trajectories", []) or []
@@ -1448,10 +1441,7 @@ class NavigatorKymoMixin:
         if getattr(self, "analysis_anchors", None) and not getattr(self, "trajectory_finalized", False):
             hovering_label = False
         else:
-            for _lbl, bbox in self.kymoCanvas._kymo_label_bboxes.items():
-                if bbox.contains(event.x, event.y):
-                    hovering_label = True
-                    break
+            hovering_label = self.kymoCanvas.kymo_label_hit(event) is not None
         hover_color = None
         if (not hovering_label
                 and not getattr(self, "kymo_anchor_edit_mode", False)
@@ -1544,7 +1534,7 @@ class NavigatorKymoMixin:
         self._update_legends()
         self.kymoCanvas.draw_trajectories_on_kymo()
         self.kymoCanvas.draw()
-        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
         self.movieCanvas.draw()
         self.trajectoryCanvas._push_trajectory_state_command(f"Edit {col_name}", undo_before)
 
@@ -1604,7 +1594,12 @@ class NavigatorKymoMixin:
                 self._update_kymo_anchor_drag(event)
             return
         if self.live_update_mode:
+            now = time.perf_counter()
+            if now - getattr(self, "_last_kymo_live_motion", 0.0) < 0.02:
+                return
+            self._last_kymo_live_motion = now
             self.on_kymo_right_click(event)
+            return
         elif (hasattr(self, "analysis_anchors")
             and self.analysis_anchors
             and not getattr(self, "trajectory_finalized", False)

@@ -152,56 +152,50 @@ class NavigatorRoiMixin:
             )
             return
 
-        progress = QProgressDialog("Generating kymographs…", "Cancel", 0, len(unique_rois), self)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.show()
+        # This can run as the final stage of trajectory import. Reuse its
+        # existing modal busy popup instead of duplicating progress text in
+        # the bottom status bar. Do not pump nested Qt events here.
+        status_text = (
+            "Generating kymograph from trajectory metadata..."
+            if len(unique_rois) == 1
+            else f"Generating {len(unique_rois)} kymographs from trajectory metadata..."
+        )
+        existing_busy_owner = getattr(self, "_busy_overlay_owner", None)
+        popup_owner = existing_busy_owner or "kymograph-generation"
+        show_busy = getattr(self, "show_busy_overlay", None)
+        hide_busy = getattr(self, "hide_busy_overlay", None)
+        if callable(show_busy):
+            show_busy(popup_owner, status_text)
 
-        # 2) for each ROI dict...
-        for idx, roi in enumerate(unique_rois):
-            progress.setValue(idx)
-            QApplication.processEvents()
-            if progress.wasCanceled():
-                break
+        try:
+            # 2) for each ROI dict...
+            for roi in unique_rois:
+                # Pick the channel from the first matching trajectory.
+                channels_for_roi = set()
+                for traj in self.trajectoryCanvas.trajectories:
+                    traj_roi = traj.get("roi")
+                    if not (traj_roi is roi or traj_roi == roi):
+                        continue
+                    traj_channel = traj.get("channel")
+                    if traj_channel is None:
+                        continue
+                    try:
+                        channels_for_roi.add(int(traj_channel))
+                    except (TypeError, ValueError):
+                        continue
 
-            # 2a) find its name key in self.rois
-            roi_name = None
-            for name, roi_data in self.rois.items():
-                if roi_data is roi:
-                    roi_name = name
-                    break
+                if channels_for_roi:
+                    self._select_channel(min(channels_for_roi))
 
-            # 2b) pick channel from the first matching trajectory
-            channel = None
-            channels_for_roi = set()
-            for traj in self.trajectoryCanvas.trajectories:
-                traj_roi = traj.get("roi")
-                if not (traj_roi is roi or traj_roi == roi):
-                    continue
-                traj_channel = traj.get("channel")
-                if traj_channel is None:
-                    continue
-                try:
-                    channels_for_roi.add(int(traj_channel))
-                except (TypeError, ValueError):
-                    continue
-
-            if channels_for_roi:
-                channel = min(channels_for_roi)
-
-
-            if channel is not None:
-                self._select_channel(channel)
-
-            # 2c) replay the ROI
-            self.movieCanvas.roiPoints = roi["points"]
-            self.movieCanvas.finalize_roi(
-                suppress_display=True,
-                channels=None,
-            )
-
-        progress.setValue(len(unique_rois))
-        progress.close()
+                # Replay the ROI.
+                self.movieCanvas.roiPoints = roi["points"]
+                self.movieCanvas.finalize_roi(
+                    suppress_display=True,
+                    channels=None,
+                )
+        finally:
+            if existing_busy_owner is None and callable(hide_busy):
+                hide_busy(popup_owner)
 
         self._last_roi = None
         self.kymoCanvas.manual_zoom = False
@@ -248,6 +242,59 @@ class NavigatorRoiMixin:
                 best_along = cum[i] + t * np.sqrt(seg_len_sq)
         frac = best_along / total
         return frac * kymo_width
+
+    def _compute_kymo_x_many(self, cache, x_orig, y_orig, kymo_width):
+        """Vectorized equivalent of ``_compute_kymo_x`` for overlay redraws."""
+        xr, yr, cumulative, total = cache
+        xs, ys = np.broadcast_arrays(
+            np.asarray(x_orig, dtype=float),
+            np.asarray(y_orig, dtype=float),
+        )
+        shape = xs.shape
+        xs = xs.ravel()
+        ys = ys.ravel()
+        result = np.full(xs.shape, np.nan, dtype=float)
+        if total <= 0 or len(xr) < 2 or not xs.size:
+            return result.reshape(shape)
+
+        seg_x = np.diff(xr)
+        seg_y = np.diff(yr)
+        seg_len_sq = seg_x * seg_x + seg_y * seg_y
+        usable = seg_len_sq > 0
+        if not np.any(usable):
+            return result.reshape(shape)
+
+        x_start = xr[:-1][usable]
+        y_start = yr[:-1][usable]
+        seg_x = seg_x[usable]
+        seg_y = seg_y[usable]
+        seg_len_sq = seg_len_sq[usable]
+        seg_len = np.sqrt(seg_len_sq)
+        seg_cumulative = cumulative[:-1][usable]
+
+        valid_indices = np.nonzero(np.isfinite(xs) & np.isfinite(ys))[0]
+        if not len(valid_indices):
+            return result.reshape(shape)
+
+        # Bound the temporary point-by-segment matrices for long tracks/ROIs.
+        chunk_size = max(1, int(1_000_000 // len(seg_x)))
+        for start in range(0, len(valid_indices), chunk_size):
+            indices = valid_indices[start:start + chunk_size]
+            px = xs[indices, None]
+            py = ys[indices, None]
+            t = (
+                (px - x_start) * seg_x + (py - y_start) * seg_y
+            ) / seg_len_sq
+            np.clip(t, 0.0, 1.0, out=t)
+            proj_x = x_start + t * seg_x
+            proj_y = y_start + t * seg_y
+            dist_sq = (proj_x - px) ** 2 + (proj_y - py) ** 2
+            nearest = np.argmin(dist_sq, axis=1)
+            row = np.arange(len(indices))
+            along = seg_cumulative[nearest] + t[row, nearest] * seg_len[nearest]
+            result[indices] = (along / total) * kymo_width
+
+        return result.reshape(shape)
 
     # def on_analysis_slider_changed(self, index):
     #     self.movieCanvas.manual_zoom = True

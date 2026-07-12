@@ -20,6 +20,10 @@ QPushButton#Toggle:pressed,
 QPushButton#Toggle:checked {
     background-color: #97b4ff;
 }
+QPushButton#Toggle:disabled {
+    background-color: transparent;
+    color: #9a9a9a;
+}
 QPushButton,
 QPushButton#Passive {
     background-color: transparent;

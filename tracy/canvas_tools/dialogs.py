@@ -62,6 +62,13 @@ class _KymoPreviewNavigator:
     def get_traj_overlay_mode(self):
         return self.get_kymo_traj_overlay_mode()
 
+    def get_kymo_spot_overlay_mode(self):
+        if self.force_overlay:
+            return "all"
+        if self._source and hasattr(self._source, "get_kymo_spot_overlay_mode"):
+            return self._source.get_kymo_spot_overlay_mode()
+        return "all"
+
     def _compute_roi_cache(self, roi):
         if self._source and hasattr(self._source, "_compute_roi_cache"):
             return self._source._compute_roi_cache(roi)
@@ -71,6 +78,16 @@ class _KymoPreviewNavigator:
         if self._source and hasattr(self._source, "_compute_kymo_x"):
             return self._source._compute_kymo_x(*args, **kwargs)
         return 0.0
+
+    def _compute_kymo_x_many(self, cache, xs, ys, kymo_width):
+        if self._source and hasattr(self._source, "_compute_kymo_x_many"):
+            return self._source._compute_kymo_x_many(
+                cache, xs, ys, kymo_width
+            )
+        return np.asarray([
+            self._compute_kymo_x(cache, x, y, kymo_width)
+            for x, y in zip(xs, ys)
+        ], dtype=float)
 
     def compute_kymo_x_from_roi(self, *args, **kwargs):
         if self._source and hasattr(self._source, "compute_kymo_x_from_roi"):
@@ -82,10 +99,20 @@ class _KymoPreviewNavigator:
             return self._source._traj_matches_current_kymo(*args, **kwargs)
         return False
 
+    def _roi_matches(self, *args, **kwargs):
+        if self._source and hasattr(self._source, "_roi_matches"):
+            return self._source._roi_matches(*args, **kwargs)
+        return False
+
     def _get_traj_colors(self, *args, **kwargs):
         if self._source and hasattr(self._source, "_get_traj_colors"):
             return self._source._get_traj_colors(*args, **kwargs)
         return {}, "#ff00ff"
+
+    def _get_uniform_traj_color(self, *args, **kwargs):
+        if self._source and hasattr(self._source, "_get_uniform_traj_color"):
+            return self._source._get_uniform_traj_color(*args, **kwargs)
+        return None
 
 class ChannelAxisDialog(QDialog):
     def __init__(self, axis_options, parent=None):

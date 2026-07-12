@@ -98,9 +98,21 @@ class BubbleTipFilter(QObject):
 
         self._force_show = False
 
-        QApplication.instance().installEventFilter(self)
+        # The owner installs this filter on its target widget. Installing every
+        # tooltip filter application-wide routes all timer and dialog events
+        # through dozens of Python callbacks; an escaped exception there makes
+        # PyQt abort the process instead of raising normally.
 
     def _showBubble(self, force: bool = False):
+        try:
+            self._showBubbleImpl(force)
+        except RuntimeError:
+            # The target can disappear while this delayed timer is pending.
+            self._timer.stop()
+            self._wobj = None
+            self.bubble = None
+
+    def _showBubbleImpl(self, force: bool = False):
         if force:
             self._force_show = True
         if not self._wobj:
@@ -131,26 +143,34 @@ class BubbleTipFilter(QObject):
         QTimer.singleShot(3000, self._hideBubble)
 
     def eventFilter(self, obj, ev):
-        # — Global mouse‐move: maybe hide
-        if ev.type() == QEvent.MouseMove and self.bubble and not self._force_show:
-            self._checkHide()
+        try:
+            # Mouse movement over the target/bubble may hide the tip.
+            if ev.type() == QEvent.MouseMove and self.bubble and not self._force_show:
+                self._checkHide()
 
-        # Stop timer/hide when pressing inside the target widget (or its children).
-        if ev.type() == QEvent.MouseButtonPress and self._wobj is not None:
-            if isinstance(obj, QWidget) and (obj is self._wobj or self._wobj.isAncestorOf(obj)):
+            # Stop timer/hide when pressing inside the target widget (or children).
+            if ev.type() == QEvent.MouseButtonPress and self._wobj is not None:
+                if isinstance(obj, QWidget) and (
+                    obj is self._wobj or self._wobj.isAncestorOf(obj)
+                ):
+                    self._timer.stop()
+                    self._hideBubble()
+
+            # Enter on our button.
+            if ev.type() == QEvent.Enter and getattr(obj, "_bubble_filter", None) is self:
+                self._wobj = obj
+                self._timer.start()
+
+            # Leave or click on our button.
+            elif ev.type() in (QEvent.Leave, QEvent.MouseButtonPress) \
+                 and getattr(obj, "_bubble_filter", None) is self:
                 self._timer.stop()
                 self._hideBubble()
-
-        # — Enter on *our* button?
-        if ev.type() == QEvent.Enter and getattr(obj, "_bubble_filter", None) is self:
-            self._wobj = obj
-            self._timer.start()
-
-        # — Leave or click on *our* button?
-        elif ev.type() in (QEvent.Leave, QEvent.MouseButtonPress) \
-             and getattr(obj, "_bubble_filter", None) is self:
+        except Exception:
+            # QObject.eventFilter is a no-throw boundary: PyQt calls qFatal if
+            # an exception escapes while Qt is dispatching an event.
             self._timer.stop()
-            self._hideBubble()
+            self.bubble = None
 
         return False  # Always let events continue
 
@@ -167,10 +187,14 @@ class BubbleTipFilter(QObject):
 
     def _hideBubble(self):
         self._force_show = False
-        if self.bubble:
-            self.bubble.hide()
-            self.bubble.deleteLater()
-            self.bubble = None
+        bubble = self.bubble
+        self.bubble = None
+        if bubble:
+            try:
+                bubble.hide()
+                bubble.deleteLater()
+            except RuntimeError:
+                pass
 
 class CenteredBubble(QWidget):
     def __init__(self, text: str, parent=None, pen_width=1):

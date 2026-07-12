@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
 
+import multiprocessing
+
+# PyInstaller worker processes must be diverted before importing Qt or the
+# application module; otherwise a spawned fitter can relaunch the GUI.
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+
 import glob
 import os
 import sys
@@ -75,6 +82,11 @@ def _consume_debug_flag(argv):
         cleaned.append(arg)
     return debug_mode, cleaned
 
+
+def _retain_main_window(app, navigator):
+    """Keep the top-level Qt window alive for the QApplication lifetime."""
+    app._tracy_main_window = navigator
+
 def _startup_logger():
     enabled = os.environ.get("TRACY_STARTUP_TRACE", "").lower() in ("1", "true", "yes")
     t0 = time.perf_counter()
@@ -134,6 +146,7 @@ def _ensure_mpl_font_cache(log, mpl, font_manager):
         log(f"font cache write failed: {exc}")
 
 def main():
+    multiprocessing.freeze_support()
     log = _startup_logger()
     log("main start")
     debug_mode, cleaned_argv = _consume_debug_flag(sys.argv)
@@ -242,6 +255,7 @@ def main():
         startup.set_message("Preparing workspace…")
         _finalize_ui()
         navigator = result["navigator_cls"](debug_mode=debug_mode)
+        _retain_main_window(app, navigator)
         log("navigator initialized")
 
         navigator.showMaximized()

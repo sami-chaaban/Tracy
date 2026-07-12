@@ -29,6 +29,13 @@ class MovieCanvas(ImageCanvas):
         self.enableInteraction = True
 
         self._update_pending = False
+        self._view_redraw_timer = QTimer(self)
+        self._view_redraw_timer.setSingleShot(True)
+        self._view_redraw_timer.timeout.connect(self._perform_deferred_view_draw)
+        self._deferred_cache_background = False
+        self._resize_finalize_timer = QTimer(self)
+        self._resize_finalize_timer.setSingleShot(True)
+        self._resize_finalize_timer.timeout.connect(self._finish_movie_resize_draw)
         self._inset_update_pending = False
         self._last_inset_params = None
 
@@ -73,7 +80,15 @@ class MovieCanvas(ImageCanvas):
         self._movie_selected_label_artists = []
         self.movie_clickable_artists = []
         self.movie_label_artists = []
+        self._movie_base_label_bboxes: dict[Text, Bbox] = {}
+        self._movie_selected_label_bboxes: dict[Text, Bbox] = {}
+        self._movie_base_label_bbox_signature = None
+        self._movie_selected_label_bbox_signature = None
         self._movie_label_bboxes: dict[Text, Bbox] = {}
+        self._movie_base_cullable_collections = []
+        self._movie_base_cull_generation = 0
+        self._movie_base_cull_signature = None
+        self._movie_base_overlay_signature = None
 
         self._ctrl_panning = False
         self._last_pan = 0.0
@@ -97,8 +112,21 @@ class MovieCanvas(ImageCanvas):
         self._inset_owner = None
         self._suppress_inset_enter = False
         self._inset_event_filter_targets = []
+        self._inset_rotation_suspended = False
+        self._inset_rotation_step_degrees = 0.35
+        self._inset_rotation_timer = QTimer(self)
+        self._inset_rotation_timer.setInterval(80)
+        self._inset_rotation_timer.timeout.connect(self._advance_inset_auto_rotation)
 
         self.setAcceptDrops(True)
+
+    def draw(self, *args, **kwargs):
+        # Limit changes are sometimes animated directly on the Axes. Cull at
+        # the draw boundary so those paths restore automatically as they enter
+        # view, even when update_view() was not the caller.
+        if hasattr(self, "_movie_base_cullable_collections"):
+            self._update_movie_base_overlay_visibility()
+        return super().draw(*args, **kwargs)
 
     def enterEvent(self, event):
         owner = getattr(self, "_inset_owner", None)
@@ -130,6 +158,15 @@ class MovieCanvas(ImageCanvas):
                 return False
             if event_type in (QEvent.Leave, QEvent.HoverLeave):
                 self._schedule_hide_threed_inset()
+                return False
+            if (
+                event_type == QEvent.MouseButtonPress
+                and obj is getattr(self.navigator, "zoomInsetWidget", None)
+                and event.button() == Qt.LeftButton
+            ):
+                # Stop before Matplotlib receives the same press and begins its
+                # normal Axes3D drag handling.
+                self._stop_inset_auto_rotation(user_interaction=True)
                 return False
         return False
 
@@ -295,17 +332,14 @@ class MovieCanvas(ImageCanvas):
                 event.modifiers()
             )
             super().mouseReleaseEvent(fake)
+            self.update_view(cache_background=True)
             return
 
         # — finish real middle‐button pan —
         if event.button() == Qt.MiddleButton:
             self._is_panning = False
             super().mouseReleaseEvent(event)
-            # do a blocking full draw then snapshot the ROI/marker background
-            canvas = self.figure.canvas
-            self.draw()                             # synchronous full redraw
-            self._roi_bbox = self.ax.bbox           # cache axes bbox
-            self._roi_bg   = canvas.copy_from_bbox(self._roi_bbox)
+            self.update_view(cache_background=True)
             return
 
         # — everything else —
@@ -347,14 +381,11 @@ class MovieCanvas(ImageCanvas):
             self._im.set_data(image)
             self._im.set_extent(extent)
 
-        # Adjust the view limits based on the new scale and current zoom_center.
-        if self._flip_y_enabled():
-            self.update_view()
-        else:
-            self.draw()
-        QTimer.singleShot(1, self.update_view)
+        # Apply final limits and render once. The old path drew immediately and
+        # then queued the same full labelled render again one millisecond later.
+        self.update_view()
 
-    def update_image_data(self, image):
+    def update_image_data(self, image, *, draw=True):
         """Update only the image data without changing the current axes limits."""
         if image is None:
             return
@@ -365,49 +396,120 @@ class MovieCanvas(ImageCanvas):
         else:
             # update pixels…
             self._im.set_data(image)
+            if not draw:
+                # The caller is composing more overlay changes and will issue
+                # one final draw.  Any old blit background contains old pixels.
+                self._bg = None
+                self._roi_bg = None
+                return
             # …draw…
             self.draw()
             # …then recapture blit backgrounds so hover/blit won’t restore an old frame
-            canvas = self.figure.canvas
-            # If navigator is running a blitted temp line, let navigator rebuild a clean bg
-            if getattr(self.navigator, "temp_movie_analysis_line", None) is not None:
-                self._bg = None
-            else:
-                self._bg = canvas.copy_from_bbox(self.ax.bbox)
-            self._roi_bg = canvas.copy_from_bbox(self.ax.bbox)
+            self._capture_movie_view_background()
+            self._draw_temp_movie_analysis_line()
 
-    def update_view(self):
-        if self.image is None or self.zoom_center is None:
-            return
+    def _draw_temp_movie_analysis_line(self):
+        lines = (
+            getattr(self.navigator, "temp_movie_analysis_line", None),
+            getattr(self, "tempRoiLine", None),
+        )
+        drawn = False
+        seen = set()
+        for line in lines:
+            if line is None or id(line) in seen:
+                continue
+            seen.add(id(line))
+            try:
+                if not line.get_visible():
+                    continue
+                self.ax.draw_artist(line)
+                drawn = True
+            except Exception:
+                pass
+        if drawn:
+            try:
+                self.figure.canvas.blit(self.ax.bbox)
+            except Exception:
+                pass
 
-        # 1) compute new limits
+    def _capture_movie_view_background(self):
+        canvas = self.figure.canvas
+        self._roi_bbox = self.ax.bbox
+        # Both consumers restore the same clean axes pixels. BufferRegion is
+        # read-only during restore, so one capture safely serves both caches.
+        background = canvas.copy_from_bbox(self._roi_bbox)
+        self._bg = background
+        self._roi_bg = background
+        self._refresh_movie_label_bboxes(base=False, selected=True)
+
+    def _render_movie_view(self, *, cache_background):
+        self.draw()
+        if cache_background:
+            self._capture_movie_view_background()
+        else:
+            self._bg = None
+            self._roi_bg = None
+        # Animated analysis lines are intentionally absent from the clean
+        # background; paint the same artist back without another full render.
+        self._draw_temp_movie_analysis_line()
+
+    def _schedule_deferred_view_draw(self, cache_background=False):
+        self._deferred_cache_background = (
+            self._deferred_cache_background or bool(cache_background)
+        )
+        if not self._view_redraw_timer.isActive():
+            self._view_redraw_timer.start(8)
+
+    def _perform_deferred_view_draw(self):
+        cache_background = bool(self._deferred_cache_background)
+        self._deferred_cache_background = False
+        self._render_movie_view(cache_background=cache_background)
+        if not self._is_panning:
+            self.manual_zoom = False
+
+    def _set_movie_view_limits(self):
+        if getattr(self, "image", None) is None or getattr(self, "zoom_center", None) is None:
+            return False
         widget_w = self.width()
         widget_h = self.height()
         view_w = widget_w * self.scale
         view_h = widget_h * self.scale
         cx, cy = self.zoom_center
-        self.ax.set_xlim(cx - view_w/2, cx + view_w/2)
+        self.ax.set_xlim(cx - view_w / 2, cx + view_w / 2)
         if self._flip_y_enabled():
-            self.ax.set_ylim(cy + view_h/2, cy - view_h/2)
+            self.ax.set_ylim(cy + view_h / 2, cy - view_h / 2)
         else:
-            self.ax.set_ylim(cy - view_h/2, cy + view_h/2)
+            self.ax.set_ylim(cy - view_h / 2, cy + view_h / 2)
+        return True
 
-        # 2) **blocking** full draw
-        self.draw()
+    def _finish_movie_resize_draw(self):
+        # FigureCanvasQT queues its own coalesced draw from resizeEvent. Wait
+        # until that render completes, then capture its pixels without drawing
+        # the labelled overlays a second time.
+        if getattr(self, "_draw_pending", False):
+            self._resize_finalize_timer.start(0)
+            return
+        if self.image is None or self.width() <= 1 or self.height() <= 1:
+            return
+        self._capture_movie_view_background()
+        self._draw_temp_movie_analysis_line()
+        self.manual_zoom = False
 
-        # 3) grab a fresh clean background
-        #    (no animated artists in place yet)
-        canvas = self.figure.canvas
-        # If navigator is running a blitted temp line, let navigator rebuild a clean bg
-        if getattr(self.navigator, "temp_movie_analysis_line", None) is not None:
+    def update_view(self, cache_background=True, defer=False):
+        if not self._set_movie_view_limits():
+            return
+
+        if defer:
             self._bg = None
-        else:
-            self._bg = canvas.copy_from_bbox(self.ax.bbox)
-        self._roi_bbox = self.ax.bbox
-        self._roi_bg   = canvas.copy_from_bbox(self._roi_bbox)
-        self._refresh_movie_label_bboxes()
+            self._roi_bg = None
+            self._schedule_deferred_view_draw(cache_background=cache_background)
+            return
 
-        # reset manual-zoom flag
+        if self._view_redraw_timer.isActive():
+            self._view_redraw_timer.stop()
+        self._deferred_cache_background = False
+        self._render_movie_view(cache_background=cache_background)
+
         self.manual_zoom = False
 
     def on_scroll(self, event):
@@ -443,7 +545,7 @@ class MovieCanvas(ImageCanvas):
         # 4) store & schedule redraw
         self.scale       = new_scale
         self.zoom_center = (new_cx, new_cy)
-        self.update_view()
+        self.update_view(cache_background=True, defer=True)
         # schedule a single zoom/pan update per event loop
     #     if not self._update_pending:
     #         self._update_pending = True
@@ -515,7 +617,7 @@ class MovieCanvas(ImageCanvas):
         self._pan_start = (event.x, event.y)
         self.manual_zoom = True
         
-        self.update_view()
+        self.update_view(cache_background=False, defer=True)
         # schedule a single, throttled redraw
         # if not self._update_pending:
         #     self._update_pending = True
@@ -524,14 +626,9 @@ class MovieCanvas(ImageCanvas):
     def on_mouse_release(self, event):
         # this is the Matplotlib MouseEvent handler — do NOT call the Qt super()
         if event.button == 2 and event.inaxes == self.ax:
-            # finish the pan: full redraw + fresh blit‐background
-            self.draw()
-            canvas = self.figure.canvas
-            self._roi_bbox = self.ax.bbox
-            self._roi_bg   = canvas.copy_from_bbox(self._roi_bbox)
-            # also update the general bg used for blit‐markers
-            self._bg = canvas.copy_from_bbox(self.ax.bbox)
-            self.manual_zoom = False
+            # The Qt release wrapper performs the single final draw after all
+            # Matplotlib release callbacks have run.
+            self._is_panning = False
 
     def resizeEvent(self, event):
         # 1) remember current view center in data coords
@@ -552,8 +649,12 @@ class MovieCanvas(ImageCanvas):
             base = max(w / widget_w, h / widget_h)
             self.max_scale = base * self.padding
 
-        # 3) redraw using the existing scale & center
-        self.update_view()
+        # FigureCanvasQT already queued one coalesced draw in super(). Apply
+        # the final limits now and capture that draw once it completes.
+        if self._set_movie_view_limits():
+            self._bg = None
+            self._roi_bg = None
+            self._resize_finalize_timer.start(0)
 
     def _inset_subpixel_crop(self, image, x1, x2, y1, y2, output_shape):
         """Bilinear crop for inset previews without depending on scipy.ndimage."""
@@ -616,6 +717,32 @@ class MovieCanvas(ImageCanvas):
                 handle.write("\n")
         except Exception:
             pass
+
+    @staticmethod
+    def _format_inset_measurement(prefix, value):
+        return (
+            f'<span style="font-size: 10px;">{prefix}:</span> '
+            f'<span style="font-size: 16px;">{float(value):.2f}</span>'
+        )
+
+    @classmethod
+    def _format_inset_coordinates(cls, fitted_center):
+        if fitted_center is None:
+            return ""
+        return (
+            cls._format_inset_measurement("X", fitted_center[0])
+            + "&nbsp;&nbsp;"
+            + cls._format_inset_measurement("Y", fitted_center[1])
+        )
+
+    def _set_inset_labels(self, fitted_center, intensity_value):
+        self.navigator.zoomInsetLabel.setText(
+            self._format_inset_coordinates(fitted_center)
+        )
+        intensity_text = ""
+        if fitted_center is not None and intensity_value is not None:
+            intensity_text = self._format_inset_measurement("I", intensity_value)
+        self.navigator.zoomInsetIntensityLabel.setText(intensity_text)
         
     def update_inset(self, image, center, crop_size, zoom_factor=2,
                     fitted_center=None, fitted_sigma=None,
@@ -626,6 +753,13 @@ class MovieCanvas(ImageCanvas):
                                 fitted_peak, offset, intensity_value, pointcolor)
 
         if getattr(self.navigator, "hide_inset", False):
+            self._stop_inset_auto_rotation()
+            self._inset_rotation_suspended = False
+            if hasattr(self, "inset_ax3d"):
+                self.inset_ax3d.set_visible(False)
+            widget = getattr(self.navigator, "zoomInsetWidget", None)
+            if widget is not None:
+                widget.ax.set_visible(True)
             if hasattr(self.navigator, "zoomInsetFrame"):
                 self.navigator.zoomInsetFrame.setVisible(False)
             return
@@ -660,6 +794,9 @@ class MovieCanvas(ImageCanvas):
             self._enter_cid = cid.mpl_connect('axes_enter_event', self._on_inset_enter)
             self._leave_cid = cid.mpl_connect('axes_leave_event', self._on_inset_leave)
             self._scroll3d_cid = cid.mpl_connect('scroll_event', self._on_inset_scroll)
+            self._press3d_cid = cid.mpl_connect(
+                'button_press_event', self._on_inset_button_press
+            )
 
         if not getattr(self, '_inset_update_pending', False):
             self._inset_update_pending = True
@@ -707,18 +844,101 @@ class MovieCanvas(ImageCanvas):
 
         QTimer.singleShot(delay_ms, hide_if_outside)
 
-    def _show_threed_inset(self):
+    def _inset_frame_is_visible(self):
+        frame = getattr(self.navigator, "zoomInsetFrame", None)
+        if frame is None:
+            return True
+        try:
+            return bool(frame.isVisible())
+        except Exception:
+            return True
+
+    def _start_inset_auto_rotation(self):
+        if self._inset_rotation_suspended:
+            return
         if getattr(self.navigator, "hide_inset", False):
             return
-        if not hasattr(self, "inset_ax3d"):
+        ax3d = getattr(self, "inset_ax3d", None)
+        if ax3d is None or not ax3d.get_visible() or not self._inset_frame_is_visible():
             return
+        if not self._inset_rotation_timer.isActive():
+            self._inset_rotation_timer.start()
+
+    def _stop_inset_auto_rotation(self, user_interaction=False):
+        self._inset_rotation_timer.stop()
+        if user_interaction:
+            self._inset_rotation_suspended = True
+
+    def _advance_inset_auto_rotation(self):
+        ax3d = getattr(self, "inset_ax3d", None)
+        if (
+            self._inset_rotation_suspended
+            or getattr(self.navigator, "hide_inset", False)
+            or ax3d is None
+            or not ax3d.get_visible()
+            or not self._inset_frame_is_visible()
+        ):
+            self._stop_inset_auto_rotation()
+            return
+
+        try:
+            elevation = float(ax3d.elev)
+            azimuth = (float(ax3d.azim) + self._inset_rotation_step_degrees) % 360.0
+            ax3d.view_init(elev=elevation, azim=azimuth)
+            self.navigator.zoomInsetWidget.draw_idle()
+        except Exception:
+            self._stop_inset_auto_rotation()
+
+    def _on_inset_button_press(self, event):
+        button = getattr(event, "button", None)
+        button_value = getattr(button, "value", button)
+        if event.inaxes is self.inset_ax3d and button_value == 1:
+            self._stop_inset_auto_rotation(user_interaction=True)
+
+    def _show_threed_inset(self, refresh=False):
+        if getattr(self, "_suppress_inset_enter", False):
+            return
+        if getattr(self.navigator, "hide_inset", False):
+            self._stop_inset_auto_rotation()
+            return
+        if not hasattr(self, "inset_ax3d"):
+            self._stop_inset_auto_rotation()
+            return
+
+        was_visible = (
+            self.inset_ax3d.get_visible() and self._inset_frame_is_visible()
+        )
+        if was_visible and not refresh:
+            # One physical hover can produce several nested Qt/Matplotlib enter
+            # events. Do not rebuild the surface or reset the user's camera.
+            self._start_inset_auto_rotation()
+            return
+
+        preserved_view = None
+        if refresh and was_visible:
+            try:
+                preserved_view = (float(self.inset_ax3d.elev), float(self.inset_ax3d.azim))
+            except Exception:
+                preserved_view = None
+        if not was_visible:
+            # A fresh hover gets one automatic rotation session. A click only
+            # suspends it until the pointer leaves this inset.
+            self._inset_rotation_suspended = False
+
         if self.navigator.looping:
             self.navigator.stoploop()
         self.navigator.zoomInsetWidget.ax.set_visible(False)
         self.inset_ax3d.set_visible(True)
         try:
             self._draw_threed_inset()
+            if preserved_view is not None:
+                self.inset_ax3d.view_init(
+                    elev=preserved_view[0], azim=preserved_view[1]
+                )
+                self.navigator.zoomInsetWidget.draw_idle()
+            self._start_inset_auto_rotation()
         except Exception:
+            self._stop_inset_auto_rotation()
             self._log_inset_3d_error()
             try:
                 self.inset_ax3d.set_visible(False)
@@ -728,6 +948,8 @@ class MovieCanvas(ImageCanvas):
                 pass
 
     def _hide_threed_inset(self):
+        self._stop_inset_auto_rotation()
+        self._inset_rotation_suspended = False
         if not hasattr(self, "inset_ax3d"):
             return
         if not self.inset_ax3d.get_visible():
@@ -751,9 +973,13 @@ class MovieCanvas(ImageCanvas):
 
     def _clear_threed_inset(self):
         """Erase the 3D inset and hide its frame."""
+        self._stop_inset_auto_rotation()
+        self._inset_rotation_suspended = False
         ax3d = self.inset_ax3d
         ax3d.cla()                # clear contents
         ax3d.set_axis_off()       # hide axes
+        ax3d.set_visible(False)
+        self.navigator.zoomInsetWidget.ax.set_visible(True)
         self.navigator.zoomInsetFrame.setVisible(False)
         self.navigator.zoomInsetWidget.draw()
 
@@ -895,15 +1121,7 @@ class MovieCanvas(ImageCanvas):
         self.navigator.zoomInsetWidget.draw()
         self.navigator.zoomInsetFrame.setVisible(True)
 
-        # update the labels
-        if fitted_center is not None:
-            self.navigator.zoomInsetLabel.setText(f"{fitted_center[0]:.2f}, {fitted_center[1]:.2f}")
-        else:
-            self.navigator.zoomInsetLabel.setText("")
-        if fitted_center is not None and intensity_value is not None:
-            self.navigator.zoomInsetIntensityLabel.setText(f"{intensity_value:.2f}")
-        else:
-            self.navigator.zoomInsetIntensityLabel.setText("")
+        self._set_inset_labels(fitted_center, intensity_value)
 
 
     def _on_inset_scroll(self, event):
@@ -955,6 +1173,7 @@ class MovieCanvas(ImageCanvas):
         """Perform the heavy inset update using the most recent parameters."""
         self._inset_update_pending = False
         if getattr(self.navigator, "hide_inset", False):
+            self._stop_inset_auto_rotation()
             if hasattr(self.navigator, "zoomInsetFrame"):
                 self.navigator.zoomInsetFrame.setVisible(False)
             return
@@ -970,7 +1189,7 @@ class MovieCanvas(ImageCanvas):
             print("Warning: update_inset received invalid center:", center)
             return
         if hasattr(self, "inset_ax3d") and self.inset_ax3d.get_visible():
-            self._show_threed_inset()
+            self._show_threed_inset(refresh=True)
             return
         half = crop_size / 2.0
         x_center, y_center = center[0], center[1]
@@ -1002,23 +1221,13 @@ class MovieCanvas(ImageCanvas):
             inset_ax.set_yticks([])
             inset_ax.axis('off')
 
-            # Update the overlay text; center it horizontally.
-            if fitted_center is not None:
-                fc_x, fc_y = fitted_center
-                center_text = f"{fc_x:.2f}, {fc_y:.2f}"
-            else:
-                center_text = ""
-            self.navigator.zoomInsetLabel.setText(center_text)
             # Optionally, draw magenta circles if fit parameters are provided.
             if fitted_center is not None and fitted_sigma is not None and intensity_value is not None:
                 self.inset_circle = Circle(fitted_center, radius=fitted_sigma * 2, 
                                 edgecolor=pointcolor, facecolor='none', linewidth=2, alpha=1)
                 inset_ax.add_patch(self.inset_circle)
 
-            if fitted_center is not None and intensity_value is not None:
-                self.navigator.zoomInsetIntensityLabel.setText(f"{intensity_value:.2f}")
-            else:
-                self.navigator.zoomInsetIntensityLabel.setText("")
+            self._set_inset_labels(fitted_center, intensity_value)
             self.navigator.zoomInsetWidget.draw()
             # Finally, show the whole zoom inset frame.
             self.navigator.zoomInsetFrame.setVisible(True)
@@ -1053,6 +1262,10 @@ class MovieCanvas(ImageCanvas):
             self._roi_bg   = canvas.copy_from_bbox(self._roi_bbox)
             # 3) create the line artist (but don’t redraw full figure)
             self.tempRoiLine, = self.ax.plot(xs, ys, '--', linewidth=1.5, color='#81C784')
+            # Keep this transient line out of every clean full-render background;
+            # the ROI motion loop paints it with draw_artist() just like the
+            # temporary analysis line.
+            self.tempRoiLine.set_animated(True)
         else:
             # restore the clean background
             canvas.restore_region(self._roi_bg)
@@ -1350,13 +1563,8 @@ class MovieCanvas(ImageCanvas):
             self.draw()
 
         # ── recapture blit backgrounds so future blits use the sum‐mode image ──
-        canvas = self.figure.canvas
-        # If navigator is running a blitted temp line, let navigator rebuild a clean bg
-        if getattr(self.navigator, "temp_movie_analysis_line", None) is not None:
-            self._bg = None
-        else:
-            self._bg = canvas.copy_from_bbox(self.ax.bbox)
-        self._roi_bg = canvas.copy_from_bbox(self.ax.bbox)
+        self._capture_movie_view_background()
+        self._draw_temp_movie_analysis_line()
 
     def clear_sum_cache(self, channel=None):
         """
@@ -1401,11 +1609,8 @@ class MovieCanvas(ImageCanvas):
                 self.navigator._rebuild_movie_blit_background()
             else:
                 self.draw()
-                canvas = self.figure.canvas
-                self._bg = canvas.copy_from_bbox(self.ax.bbox)
-            canvas = self.figure.canvas
-            self._roi_bbox = self.ax.bbox
-            self._roi_bg = canvas.copy_from_bbox(self._roi_bbox)
+                self._capture_movie_view_background()
+                self._draw_temp_movie_analysis_line()
         except Exception:
             pass
 
@@ -1447,6 +1652,7 @@ class MovieCanvas(ImageCanvas):
     def clear_canvas(self):
         """Clear the canvas by removing all overlays and resetting internal state."""
         self.stop_idle_animation()
+        self.clear_movie_trajectory_markers(draw_idle=False)
         # Clear the axes.
         self.ax.cla()
         # Remove stored image, marker, and any overlay objects.
@@ -1648,27 +1854,261 @@ class MovieCanvas(ImageCanvas):
             + list(getattr(self, "_movie_base_label_artists", []))
         )
 
-    def _refresh_movie_label_bboxes(self):
-        self._movie_label_bboxes.clear()
-        labels = list(getattr(self, "movie_label_artists", None) or [])
-        if not labels:
+    @staticmethod
+    def _movie_collection_segment_bounds(segments):
+        bounds = np.full((len(segments), 4), np.nan, dtype=float)
+        for index, segment in enumerate(segments):
+            points = np.asarray(segment, dtype=float)
+            if points.ndim != 2 or points.shape[1] < 2:
+                continue
+            finite = np.isfinite(points[:, 0]) & np.isfinite(points[:, 1])
+            if not np.any(finite):
+                continue
+            x = points[finite, 0]
+            y = points[finite, 1]
+            bounds[index] = (np.min(x), np.max(x), np.min(y), np.max(y))
+        return bounds
+
+    def _invalidate_movie_base_culling(self):
+        self._movie_base_cull_generation = (
+            int(getattr(self, "_movie_base_cull_generation", 0)) + 1
+        )
+        self._movie_base_cull_signature = None
+
+    def _register_movie_base_collection(self, collection, segments, colors=None):
+        source_segments = tuple(np.asarray(segment, dtype=float) for segment in segments)
+        collection._tracy_movie_source_segments = source_segments
+        collection._tracy_movie_segment_bounds = self._movie_collection_segment_bounds(
+            source_segments
+        )
+        collection._tracy_movie_source_colors = (
+            tuple(colors) if colors is not None and len(colors) == len(source_segments)
+            else None
+        )
+        collection._tracy_movie_visible_indices = None
+        collection._tracy_movie_visible_index_array = None
+        self._movie_base_cullable_collections.append(collection)
+        self._invalidate_movie_base_culling()
+
+    def _movie_culling_margin_pixels(self):
+        radius_points = 0.0
+        for collection in list(
+            getattr(self, "_movie_base_cullable_collections", []) or []
+        ):
+            try:
+                widths = np.asarray(collection.get_linewidths(), dtype=float)
+                finite = widths[np.isfinite(widths)]
+                if finite.size:
+                    radius_points = max(
+                        radius_points, 0.5 * float(np.max(np.abs(finite)))
+                    )
+            except Exception:
+                pass
+        try:
+            radius_pixels = float(
+                self.figure.canvas.get_renderer().points_to_pixels(radius_points)
+            )
+        except Exception:
+            radius_pixels = radius_points * float(self.figure.dpi) / 72.0
+        return max(4.0, radius_pixels + 2.0)
+
+    def _update_movie_base_overlay_visibility(self):
+        try:
+            signature = (
+                tuple(float(value) for value in self.ax.get_xlim()),
+                tuple(float(value) for value in self.ax.get_ylim()),
+                tuple(float(value) for value in self.ax.bbox.bounds),
+                float(self.figure.dpi),
+                int(getattr(self, "_movie_base_cull_generation", 0)),
+            )
+        except Exception:
+            signature = None
+        if signature is not None and signature == self._movie_base_cull_signature:
+            return
+        labels = list(getattr(self, "_movie_base_label_artists", []) or [])
+        if labels:
+            try:
+                anchors = np.asarray([label.xy for label in labels], dtype=float)
+                display = self.ax.transData.transform(anchors)
+                visible = self.ax.patch.contains_points(display, radius=1.0)
+                for label, is_visible in zip(labels, visible):
+                    label.set_visible(bool(is_visible))
+            except Exception:
+                # Annotation's own clipping remains the exact fallback.
+                for label in labels:
+                    label.set_visible(True)
+
+        collections = list(
+            getattr(self, "_movie_base_cullable_collections", []) or []
+        )
+        if not collections:
+            self._movie_base_cull_signature = signature
+            return
+        try:
+            xlim = self.ax.get_xlim()
+            ylim = self.ax.get_ylim()
+            x_low, x_high = sorted((float(xlim[0]), float(xlim[1])))
+            y_low, y_high = sorted((float(ylim[0]), float(ylim[1])))
+            bbox = self.ax.bbox
+            margin_pixels = self._movie_culling_margin_pixels()
+            x_margin = margin_pixels * (x_high - x_low) / max(float(bbox.width), 1.0)
+            y_margin = margin_pixels * (y_high - y_low) / max(float(bbox.height), 1.0)
+        except Exception:
+            return
+
+        for collection in collections:
+            segments = getattr(collection, "_tracy_movie_source_segments", ())
+            bounds = getattr(collection, "_tracy_movie_segment_bounds", None)
+            if bounds is None or len(bounds) != len(segments):
+                continue
+            finite = np.isfinite(bounds).all(axis=1)
+            intersects = (
+                finite
+                & (bounds[:, 1] >= x_low - x_margin)
+                & (bounds[:, 0] <= x_high + x_margin)
+                & (bounds[:, 3] >= y_low - y_margin)
+                & (bounds[:, 2] <= y_high + y_margin)
+            )
+            index_array = np.flatnonzero(intersects)
+            previous = getattr(
+                collection, "_tracy_movie_visible_index_array", None
+            )
+            if previous is not None and np.array_equal(index_array, previous):
+                continue
+            collection.set_segments([segments[int(i)] for i in index_array])
+            colors = getattr(collection, "_tracy_movie_source_colors", None)
+            if colors is not None:
+                collection.set_color([colors[int(i)] for i in index_array])
+            collection._tracy_movie_visible_index_array = index_array.copy()
+            collection._tracy_movie_visible_indices = tuple(
+                int(i) for i in index_array
+            )
+        self._movie_base_cull_signature = signature
+
+    def _refresh_movie_label_bboxes(self, *, base=True, selected=True):
+        groups = []
+        if base:
+            # Hundreds of renderer-derived text extents can cost more than the
+            # trajectories themselves.  Base labels are hit-tested lazily from
+            # their current transformed anchors; only two selected extents are
+            # worth materializing eagerly.
+            self._movie_base_label_bboxes.clear()
+            self._movie_base_label_bbox_signature = None
+        if selected:
+            groups.append((
+                list(getattr(self, "_movie_selected_label_artists", []) or []),
+                self._movie_selected_label_bboxes,
+            ))
+        for _labels, bbox_map in groups:
+            bbox_map.clear()
+        if not groups:
             return
         try:
             renderer = self.figure.canvas.get_renderer()
         except Exception:
             return
-        for label in labels:
+        for labels, bbox_map in groups:
+            for label in labels:
+                try:
+                    bbox = label.get_window_extent(renderer)
+                    label.update_bbox_position_size(renderer)
+                    bbox = label.get_window_extent(renderer)
+                    patch = label.get_bbox_patch()
+                    if patch is not None:
+                        try:
+                            bbox = Bbox.union([
+                                bbox, patch.get_window_extent(renderer)
+                            ])
+                        except Exception:
+                            pass
+                    bbox_map[label] = bbox.expanded(1.5, 1.5)
+                except Exception:
+                    pass
+        signature = self._movie_label_view_signature()
+        if selected:
+            self._movie_selected_label_bbox_signature = signature
+
+    def _movie_label_view_signature(self):
+        try:
+            return (
+                tuple(float(value) for value in self.ax.get_xlim()),
+                tuple(float(value) for value in self.ax.get_ylim()),
+                tuple(float(value) for value in self.ax.bbox.bounds),
+                float(self.figure.dpi),
+            )
+        except Exception:
+            return None
+
+    def _movie_label_hit_current_transform(self, labels, event):
+        """Narrow stale-cache hits cheaply, then ask Matplotlib exactly."""
+        labels = [label for label in (labels or []) if label.get_visible()]
+        if not labels:
+            return None
+        try:
+            point_scale = float(self.figure.dpi) / 72.0
+            anchors = np.asarray([label.xy for label in labels], dtype=float)
+            offsets = np.asarray(
+                [label.get_position() for label in labels], dtype=float
+            ) * point_scale
+            centers = self.ax.transData.transform(anchors) + offsets
+            font_px = np.asarray(
+                [float(label.get_fontsize()) for label in labels], dtype=float
+            ) * point_scale
+            text_lengths = np.asarray(
+                [len(label.get_text()) for label in labels], dtype=float
+            )
+            # circle boxstyle expands both axes with long text; use a generous
+            # square prefilter and let Annotation.contains reject false hits.
+            half_extents = np.maximum(
+                24.0, 0.62 * text_lengths * font_px + 12.0
+            )
+            nearby = np.nonzero(
+                (np.abs(centers[:, 0] - float(event.x)) <= half_extents)
+                & (np.abs(centers[:, 1] - float(event.y)) <= half_extents)
+            )[0]
+        except Exception:
+            nearby = range(len(labels))
+        for label_idx in nearby:
+            label = labels[int(label_idx)]
             try:
-                bbox = label.get_window_extent(renderer)
-                patch = label.get_bbox_patch()
-                if patch is not None:
-                    try:
-                        bbox = bbox.union(patch.get_window_extent(renderer))
-                    except Exception:
-                        pass
-                self._movie_label_bboxes[label] = bbox.expanded(1.5, 1.5)
+                renderer = self.figure.canvas.get_renderer()
+                label.get_window_extent(renderer)
+                label.update_bbox_position_size(renderer)
+                label.get_window_extent(renderer)
+                hit, _details = label.contains(event)
+                if hit:
+                    return label
             except Exception:
-                pass
+                continue
+        return None
+
+    def movie_label_hit(self, event):
+        signature = self._movie_label_view_signature()
+        groups = (
+            (
+                self._movie_selected_label_bboxes,
+                self._movie_selected_label_artists,
+                self._movie_selected_label_bbox_signature,
+            ),
+            (
+                self._movie_base_label_bboxes,
+                self._movie_base_label_artists,
+                self._movie_base_label_bbox_signature,
+            ),
+        )
+        for bbox_map, labels, cached_signature in groups:
+            if cached_signature != signature:
+                label = self._movie_label_hit_current_transform(labels, event)
+                if label is not None:
+                    return label
+                continue
+            for label, bbox in bbox_map.items():
+                try:
+                    if bbox.contains(event.x, event.y):
+                        return label
+                except Exception:
+                    continue
+        return None
 
     def _remove_movie_artists(self, artists):
         for marker in artists:
@@ -1722,6 +2162,237 @@ class MovieCanvas(ImageCanvas):
             point_alphas.append(alpha)
         return point_alphas
 
+    def _add_movie_endpoint_labels(
+        self, idx, x0, y0, x1, y1, markers, label_artists, *, highlighted
+    ):
+        traj = self.navigator.trajectoryCanvas.trajectories[idx]
+        traj_label = traj.get("file_index") or str(traj["trajectory_number"])
+        disp_a = self.ax.transData.transform((x0, y0))
+        disp_b = self.ax.transData.transform((x1, y1))
+        vector = disp_b - disp_a
+        norm = float(np.hypot(*vector))
+        unit = vector / norm if norm else np.array([1.0, 0.0])
+
+        for (cx, cy, suffix), sign in (
+            ((x0, y0, "A"), -1),
+            ((x1, y1, "B"), +1),
+        ):
+            dx, dy = unit * (15 * sign)
+            label = self.ax.annotate(
+                f"{traj_label}{suffix}",
+                xy=(cx, cy),
+                xytext=(dx, dy),
+                textcoords="offset points",
+                color=("white" if highlighted else "black"),
+                fontsize=8,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                bbox=dict(
+                    boxstyle="circle,pad=0.3",
+                    facecolor=("#7da1ff" if highlighted else "#cbd9ff"),
+                    alpha=(0.9 if highlighted else 0.6),
+                    linewidth=(1.5 if highlighted else 1.0),
+                ),
+                zorder=(10 if highlighted else 2),
+            )
+            label.traj_idx = idx
+            markers.append(label)
+            label_artists.append(label)
+
+    def _draw_movie_base_trajectories_batched(
+        self, markers, label_artists, *, current_ch, trajectory_indices=None
+    ):
+        """Draw all unhighlighted paths with two Matplotlib collections."""
+        search_paths = []
+        search_colors = []
+        spot_segments = []
+        spot_colors = []
+        hide_spots = getattr(self.navigator, "hide_movie_spots", False)
+
+        trajectories = self.navigator.trajectoryCanvas.trajectories
+        if trajectory_indices is None:
+            trajectory_indices = range(len(trajectories))
+        for idx in trajectory_indices:
+            if not (0 <= int(idx) < len(trajectories)):
+                continue
+            idx = int(idx)
+            traj = trajectories[idx]
+            traj_ch = traj.get("channel")
+            if traj_ch is not None and traj_ch != current_ch:
+                continue
+
+            original_coords = traj.get("original_coords", [])
+            if len(original_coords) > 0:
+                try:
+                    original = np.asarray(original_coords, dtype=float)
+                except (TypeError, ValueError):
+                    original = np.empty((0, 2), dtype=float)
+                if original.ndim == 2 and original.shape[0] and original.shape[1] >= 2:
+                    original = original[:, :2]
+                    search_paths.append(original)
+                    search_colors.append(
+                        self.navigator._get_uniform_traj_color(traj) or "#7da1ff"
+                    )
+                    self._add_movie_endpoint_labels(
+                        idx,
+                        original[0, 0], original[0, 1],
+                        original[-1, 0], original[-1, 1],
+                        markers,
+                        label_artists,
+                        highlighted=False,
+                    )
+
+            if hide_spots:
+                continue
+            spots = traj.get("spot_centers", [])
+            if len(spots) < 2:
+                continue
+            points = np.asarray([
+                (point[0], point[1])
+                if isinstance(point, (tuple, list, np.ndarray)) and len(point) >= 2
+                else (np.nan, np.nan)
+                for point in spots
+            ], dtype=float)
+            valid = np.isfinite(points).all(axis=1)
+            scatter_kwargs, line_color = self.navigator._get_traj_colors(traj)
+            point_colors = scatter_kwargs.get("c")
+            per_point = (
+                isinstance(point_colors, (list, tuple, np.ndarray))
+                and len(point_colors) == len(points)
+            )
+            uniform_color = mcolors.to_rgba(line_color, 0.7)
+            if per_point:
+                normalized_colors = [
+                    mcolors.to_rgba(color, 0.7) for color in point_colors
+                ]
+                if all(
+                    color == normalized_colors[0]
+                    for color in normalized_colors[1:]
+                ):
+                    per_point = False
+                    uniform_color = normalized_colors[0]
+
+            if per_point:
+                segment_indices = np.nonzero(valid[:-1] & valid[1:])[0]
+                if not len(segment_indices):
+                    continue
+                spot_segments.extend(np.stack(
+                    [points[segment_indices], points[segment_indices + 1]], axis=1
+                ))
+                spot_colors.extend(
+                    [normalized_colors[point_idx] for point_idx in segment_indices]
+                )
+            else:
+                padded = np.concatenate(([False], valid, [False]))
+                changes = np.diff(padded.astype(np.int8))
+                run_starts = np.nonzero(changes == 1)[0]
+                run_ends = np.nonzero(changes == -1)[0]
+                for run_start, run_end in zip(run_starts, run_ends):
+                    if run_end - run_start < 2:
+                        continue
+                    spot_segments.append(points[run_start:run_end])
+                    spot_colors.append(uniform_color)
+
+        if search_paths:
+            search_color_arg = search_colors
+            if all(color == search_colors[0] for color in search_colors[1:]):
+                search_color_arg = search_colors[0]
+            collection = LineCollection(
+                search_paths,
+                colors=search_color_arg,
+                linewidths=1.5,
+                linestyles="--",
+                alpha=0.6,
+                zorder=1,
+            )
+            try:
+                collection.set_capstyle("round")
+            except Exception:
+                pass
+            self.ax.add_collection(collection)
+            self._register_movie_base_collection(
+                collection,
+                search_paths,
+                None if isinstance(search_color_arg, str) else search_colors,
+            )
+            markers.append(collection)
+
+        if spot_segments:
+            spot_color_arg = spot_colors
+            if all(color == spot_colors[0] for color in spot_colors[1:]):
+                spot_color_arg = spot_colors[0]
+            collection = LineCollection(
+                spot_segments,
+                colors=spot_color_arg,
+                linewidths=1.5,
+                zorder=3,
+            )
+            self.ax.add_collection(collection)
+            self._register_movie_base_collection(
+                collection,
+                spot_segments,
+                None if not isinstance(spot_color_arg, list) else spot_colors,
+            )
+            markers.append(collection)
+
+    def _movie_base_overlay_cache_signature(self, trajectory_count):
+        nav = getattr(self, "navigator", None)
+        if nav is None:
+            return None
+        try:
+            mode = nav.get_movie_traj_overlay_mode()
+        except Exception:
+            mode = "all"
+        return (
+            int(trajectory_count),
+            self._current_movie_channel(),
+            mode,
+            bool(getattr(nav, "hide_movie_spots", False)),
+        )
+
+    def append_trajectory_to_movie_base(self, trajectory_index):
+        """Append one new movie base overlay without rebuilding old paths."""
+        nav = getattr(self, "navigator", None)
+        if nav is None:
+            return False
+        trajectories = nav.trajectoryCanvas.trajectories
+        idx = int(trajectory_index)
+        if not (0 <= idx < len(trajectories)):
+            return False
+
+        mode = nav.get_movie_traj_overlay_mode()
+        if mode != "all":
+            self._movie_base_overlay_signature = (
+                self._movie_base_overlay_cache_signature(len(trajectories))
+            )
+            return True
+
+        current_signature = self._movie_base_overlay_cache_signature(
+            len(trajectories)
+        )
+        if self._movie_base_overlay_signature == current_signature:
+            return True
+        expected_signature = self._movie_base_overlay_cache_signature(idx)
+        if self._movie_base_overlay_signature != expected_signature:
+            return False
+
+        markers = []
+        labels = []
+        self._draw_movie_base_trajectories_batched(
+            markers,
+            labels,
+            current_ch=self._current_movie_channel(),
+            trajectory_indices=(idx,),
+        )
+        self.movie_trajectory_markers.extend(markers)
+        self._movie_base_label_artists.extend(labels)
+        self._refresh_movie_clickable_artists()
+        self._refresh_movie_label_bboxes(base=True, selected=False)
+        self._update_movie_base_overlay_visibility()
+        self._movie_base_overlay_signature = current_signature
+        return True
+
     def _draw_movie_trajectory(
         self,
         idx,
@@ -1739,13 +2410,12 @@ class MovieCanvas(ImageCanvas):
         if traj_ch is not None and traj_ch != current_ch:
             return
 
-        traj_label = traj.get("file_index") or str(traj["trajectory_number"])
         original_coords = traj.get("original_coords", [])
         lw_search = 2.0 if highlighted else 1.5
         alpha_search = 0.9 if highlighted else 0.6
         z_search = 8 if highlighted else 1
 
-        if original_coords:
+        if len(original_coords) > 0:
             xs = [pt[0] for pt in original_coords]
             ys = [pt[1] for pt in original_coords]
             search_line_color = self.navigator._get_uniform_traj_color(traj) or "#7da1ff"
@@ -1762,37 +2432,13 @@ class MovieCanvas(ImageCanvas):
             )
             markers.append(dotted_line)
 
-            dispA = self.ax.transData.transform((xs[0], ys[0]))
-            dispB = self.ax.transData.transform((xs[-1], ys[-1]))
-            v = dispB - dispA
-            norm = (v[0]**2 + v[1]**2) ** 0.5
-            u = (v / norm) if norm else np.array([1.0, 0.0])
-            offset_px = 15
-
-            for (cx, cy, suffix), sign in [((xs[0], ys[0], 'A'), -1),
-                                           ((xs[-1], ys[-1], 'B'), +1)]:
-                dx, dy = u * (offset_px * sign)
-                lbl = self.ax.annotate(
-                    f"{traj_label}{suffix}",
-                    xy=(cx, cy),
-                    xytext=(dx, dy),
-                    textcoords="offset points",
-                    color=('white' if highlighted else 'black'),
-                    fontsize=8,
-                    fontweight="bold",
-                    ha="center",
-                    va="center",
-                    bbox=dict(
-                        boxstyle='circle,pad=0.3',
-                        facecolor=('#7da1ff' if highlighted else '#cbd9ff'),
-                        alpha=(0.9 if highlighted else 0.6),
-                        linewidth=(1.5 if highlighted else 1.0)
-                    ),
-                    zorder=(10 if highlighted else 2)
-                )
-                lbl.traj_idx = idx
-                markers.append(lbl)
-                label_artists.append(lbl)
+            self._add_movie_endpoint_labels(
+                idx,
+                xs[0], ys[0], xs[-1], ys[-1],
+                markers,
+                label_artists,
+                highlighted=highlighted,
+            )
 
         spot_centers = traj.get('spot_centers', [])
         xs_pts = [pt[0] if pt is not None else np.nan for pt in spot_centers]
@@ -1907,11 +2553,11 @@ class MovieCanvas(ImageCanvas):
         self._movie_selected_clickable_artists = clickables
         self._movie_selected_label_artists = labels
         self._refresh_movie_clickable_artists()
-        self._refresh_movie_label_bboxes()
+        self._refresh_movie_label_bboxes(base=False, selected=True)
         if draw_idle:
             self.ax.figure.canvas.draw_idle()
 
-    def draw_trajectories_on_movie(self):
+    def draw_trajectories_on_movie(self, draw_idle=True):
         self.clear_movie_trajectory_markers(draw_idle=False)
         if self.navigator is None:
             return
@@ -1925,25 +2571,23 @@ class MovieCanvas(ImageCanvas):
             markers = []
             clickables = []
             labels = []
-            for idx in range(len(self.navigator.trajectoryCanvas.trajectories)):
-                self._draw_movie_trajectory(
-                    idx,
-                    markers,
-                    clickables,
-                    labels,
-                    highlighted=False,
-                    include_scatter=False,
-                    fade_current_frame=False,
-                    current_ch=current_ch,
-                )
+            self._draw_movie_base_trajectories_batched(
+                markers, labels, current_ch=current_ch
+            )
             self.movie_trajectory_markers = markers
             self._movie_base_clickable_artists = clickables
             self._movie_base_label_artists = labels
             self._refresh_movie_clickable_artists()
-            self._refresh_movie_label_bboxes()
+            self._refresh_movie_label_bboxes(base=True, selected=False)
 
         self.draw_selected_trajectory_on_movie(draw_idle=False)
-        self.ax.figure.canvas.draw_idle()
+        self._movie_base_overlay_signature = (
+            self._movie_base_overlay_cache_signature(
+                len(self.navigator.trajectoryCanvas.trajectories)
+            )
+        )
+        if draw_idle:
+            self.ax.figure.canvas.draw_idle()
 
     def clear_movie_selected_trajectory_markers(self, draw_idle=False):
         self._remove_movie_artists(getattr(self, "movie_selected_trajectory_markers", []))
@@ -1951,7 +2595,7 @@ class MovieCanvas(ImageCanvas):
         self._movie_selected_clickable_artists = []
         self._movie_selected_label_artists = []
         self._refresh_movie_clickable_artists()
-        self._refresh_movie_label_bboxes()
+        self._refresh_movie_label_bboxes(base=False, selected=True)
         if draw_idle:
             self.ax.figure.canvas.draw_idle()
 
@@ -1965,7 +2609,14 @@ class MovieCanvas(ImageCanvas):
         self._movie_base_label_artists = []
         self._movie_selected_label_artists = []
         self._refresh_movie_clickable_artists()
+        self._movie_base_label_bboxes.clear()
+        self._movie_selected_label_bboxes.clear()
+        self._movie_base_label_bbox_signature = None
+        self._movie_selected_label_bbox_signature = None
         self._movie_label_bboxes.clear()
+        self._movie_base_cullable_collections = []
+        self._invalidate_movie_base_culling()
+        self._movie_base_overlay_signature = None
         if draw_idle:
             self.ax.figure.canvas.draw_idle()
     

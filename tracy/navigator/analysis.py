@@ -1,5 +1,55 @@
 from ._shared import *
 from .extra_calculations import ExtraCalculationSpec
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing as mp
+
+from ..tools.gaussian_tools import (
+    perform_gaussian_fit_job_batch,
+    prepare_gaussian_fit_patch,
+)
+
+
+_DEFAULT_GAUSSIAN_PROCESS_THRESHOLD = 50
+
+
+def _gaussian_process_config(job_count, processes_unavailable=False):
+    """Return (threshold, workers, use_processes) for a Gaussian fit batch."""
+    job_count = max(0, int(job_count))
+    try:
+        threshold = max(
+            1,
+            int(os.environ.get(
+                "TRACY_GAUSSIAN_PROCESS_THRESHOLD",
+                _DEFAULT_GAUSSIAN_PROCESS_THRESHOLD,
+            )),
+        )
+    except (TypeError, ValueError):
+        threshold = _DEFAULT_GAUSSIAN_PROCESS_THRESHOLD
+
+    if processes_unavailable or os.environ.get(
+        "TRACY_DISABLE_GAUSSIAN_PROCESSES", ""
+    ).lower() in {"1", "true", "yes", "on"}:
+        return threshold, 1, False
+
+    try:
+        override = int(os.environ.get("TRACY_GAUSSIAN_WORKERS", "0"))
+    except (TypeError, ValueError):
+        override = 0
+    if override > 0:
+        workers = min(override, max(1, job_count))
+    elif job_count < 2:
+        workers = 1
+    else:
+        cpu_count = os.cpu_count() or 2
+        job_limited_workers = max(2, job_count // 50)
+        workers = min(
+            6,
+            max(1, cpu_count // 2),
+            job_count,
+            job_limited_workers,
+        )
+    use_processes = job_count >= threshold and workers >= 2
+    return threshold, workers, use_processes
 
 class NavigatorAnalysisMixin:
     def _extra_calc_specs(self):
@@ -34,11 +84,12 @@ class NavigatorAnalysisMixin:
         ]
     def _capture_movie_bg(self):
         """Called when axes‐transition animation completes."""
-        mc     = self.movieCanvas
-        canvas = mc.figure.canvas
-        # grab the clean background for blitting
-        mc._bg     = canvas.copy_from_bbox(mc.ax.bbox)
-        mc._roi_bg = canvas.copy_from_bbox(mc.ax.bbox)
+        mc = self.movieCanvas
+        # The animation's final draw_idle is still queued when `finished`
+        # fires. Render the final limits now and suppress that duplicate idle.
+        if getattr(mc, "_draw_pending", False):
+            mc._draw_pending = False
+        mc._render_movie_view(cache_background=True)
 
         # **recompute** zoom_center & scale from the *actual* new xlim/ylim**
         x0, x1 = mc.ax.get_xlim()
@@ -267,19 +318,111 @@ class NavigatorAnalysisMixin:
             )
             return idx, frame, cx, cy, fc, sigma, intensity, peak, bkgr
 
+        def _update_progress(value):
+            if progress:
+                progress.setValue(value)
+                QApplication.processEvents()
+                if progress.wasCanceled():
+                    self._is_canceled = True
+            return bool(getattr(self, "_is_canceled", False))
+
+        usable_jobs = [job for job in jobs if job[4] is not None]
+        _threshold, workers, use_processes = _gaussian_process_config(
+            len(usable_jobs),
+            processes_unavailable=getattr(
+                self, "_gaussian_processes_unavailable", False
+            ),
+        )
+
         completed = 0
         try:
-            for job in jobs:
-                if getattr(self, "_is_canceled", False):
-                    break
-                result = _fit(job)
-                results[result[0]] = result
-                completed += 1
-                if progress:
-                    progress.setValue(completed)
-                    QApplication.processEvents()
-                    if progress.wasCanceled():
-                        self._is_canceled = True
+            if use_processes:
+                compact_jobs = []
+                for job in jobs:
+                    idx, frame, cx, cy, img, crop_size, pixel_size, bg_fixed = job
+                    if img is None:
+                        results[idx] = (idx, frame, cx, cy, None, None, None, None, None)
+                        completed += 1
+                        continue
+                    patch, local_center, origin = prepare_gaussian_fit_patch(
+                        img, (cx, cy), crop_size
+                    )
+                    compact_jobs.append((
+                        idx, frame, cx, cy, patch, local_center, origin,
+                        crop_size, pixel_size, bg_fixed,
+                    ))
+
+                # Several chunks per process amortize serialization while still
+                # keeping progress and cancellation responsive.
+                chunk_size = max(1, int(np.ceil(len(compact_jobs) / (workers * 6))))
+                chunks = [
+                    compact_jobs[start:start + chunk_size]
+                    for start in range(0, len(compact_jobs), chunk_size)
+                ]
+
+                old_thread_env = {
+                    name: os.environ.get(name)
+                    for name in (
+                        "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS",
+                        "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+                    )
+                }
+                for name in old_thread_env:
+                    os.environ[name] = "1"
+
+                executor = None
+                try:
+                    executor = ProcessPoolExecutor(
+                        max_workers=workers,
+                        mp_context=mp.get_context("spawn"),
+                    )
+                    futures = [
+                        executor.submit(perform_gaussian_fit_job_batch, chunk)
+                        for chunk in chunks
+                    ]
+                    for future in as_completed(futures):
+                        chunk_results = future.result()
+                        for result in chunk_results:
+                            results[result[0]] = result
+                        completed += len(chunk_results)
+                        if _update_progress(completed):
+                            for pending in futures:
+                                pending.cancel()
+                            break
+                except Exception as exc:
+                    # Frozen-app or OS process restrictions should never make
+                    # trajectory analysis fail; transparently retry serially.
+                    print(f"Gaussian process pool unavailable; using serial fits: {exc}")
+                    self._gaussian_processes_unavailable = True
+                    if executor is not None:
+                        executor.shutdown(wait=True, cancel_futures=True)
+                        executor = None
+                    results = [None] * total
+                    completed = 0
+                    for job in jobs:
+                        if getattr(self, "_is_canceled", False):
+                            break
+                        result = _fit(job)
+                        results[result[0]] = result
+                        completed += 1
+                        if _update_progress(completed):
+                            break
+                finally:
+                    if executor is not None:
+                        executor.shutdown(wait=True, cancel_futures=True)
+                    for name, old_value in old_thread_env.items():
+                        if old_value is None:
+                            os.environ.pop(name, None)
+                        else:
+                            os.environ[name] = old_value
+            else:
+                for job in jobs:
+                    if getattr(self, "_is_canceled", False):
+                        break
+                    result = _fit(job)
+                    results[result[0]] = result
+                    completed += 1
+                    if _update_progress(completed):
                         break
         finally:
             if progress:

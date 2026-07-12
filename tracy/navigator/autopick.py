@@ -3520,7 +3520,7 @@ class NavigatorAutoPickMixin:
             if added > 0:
                 self.kymoCanvas.draw_trajectories_on_kymo()
                 self.kymoCanvas.draw_idle()
-                self.movieCanvas.draw_trajectories_on_movie()
+                self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
                 self.movieCanvas.draw_idle()
         except Exception as exc:
             self._clear_autopick_preview_overlay()

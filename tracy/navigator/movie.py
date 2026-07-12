@@ -40,7 +40,7 @@ class NavigatorMovieMixin:
         """
         self.set_current_frame(frame_idx)
 
-    def set_current_frame(self, frame_number):
+    def set_current_frame(self, frame_number, *, draw=True):
         if self.movie is None:
             return
         max_frame = self.movie.shape[0]
@@ -63,7 +63,7 @@ class NavigatorMovieMixin:
             frame_image = self.get_movie_frame(frame_number)
             if frame_image is not None:
                 # Update only the image data (without recalculating view limits)
-                self.movieCanvas.update_image_data(frame_image)
+                self.movieCanvas.update_image_data(frame_image, draw=False)
         
         # Restore the saved view limits (thus preserving the manual zoom)
         self.movieCanvas.ax.set_xlim(current_xlim)
@@ -71,13 +71,21 @@ class NavigatorMovieMixin:
 
         # Refresh overlays so frame-dependent styling (e.g., fades) stays in sync.
         try:
-            self.movieCanvas.draw_selected_trajectory_on_movie()
+            self.movieCanvas.draw_selected_trajectory_on_movie(draw_idle=False)
         except Exception:
             pass
 
-        self.movieCanvas.draw_idle()
-        canvas = self.movieCanvas.figure.canvas
-        self.movieCanvas._bg = canvas.copy_from_bbox(self.movieCanvas.ax.bbox)
+        if draw:
+            self.movieCanvas._render_movie_view(cache_background=True)
+
+    def _refresh_movie_frame_trajectory_overlay(self, refresh_all=False):
+        """Refresh frame-dependent trajectory styling without issuing a draw."""
+        if refresh_all:
+            self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
+        else:
+            # The selected trajectory's spot alpha gradient follows the frame
+            # slider, including during playback.  Base trajectories stay cached.
+            self.movieCanvas.draw_selected_trajectory_on_movie(draw_idle=False)
 
     def jump_to_analysis_point(self, index, animate="ramp", zoom=False, refresh_movie_overlay=False):
 
@@ -99,6 +107,7 @@ class NavigatorMovieMixin:
         kc = self.kymoCanvas
         ic = getattr(self, 'intensityCanvas', None)
         hc = getattr(self, 'histogramCanvas', None)
+        kymo_screen_updated = False
 
         # cache arrays once
         centers = np.asarray(self.analysis_search_centers)  # shape (N,2)
@@ -179,7 +188,7 @@ class NavigatorMovieMixin:
             frame_img = self.get_movie_frame(frame)
             if frame_img is None:
                 return
-            mc.update_image_data(frame_img)
+            mc.update_image_data(frame_img, draw=False)
 
             # ——— 4) Restore manual zoom limits if needed ———
             if animate != "discrete" and mc.manual_zoom and not zoom:
@@ -253,6 +262,7 @@ class NavigatorMovieMixin:
                                 xk, disp_frame,
                                 color=marker_color
                             )
+                            kymo_screen_updated = True
 
             # ——— 7) Histogram & sliders ———
             if hc:
@@ -267,26 +277,21 @@ class NavigatorMovieMixin:
             if hasattr(self, 'analysisSlider'):
                 self.analysisSlider.setValue(index)
 
-            if refresh_movie_overlay:
-                mc.draw_trajectories_on_movie()
-            elif not self.looping:
-                mc.draw_selected_trajectory_on_movie()
+            self._refresh_movie_frame_trajectory_overlay(
+                refresh_all=refresh_movie_overlay
+            )
 
         finally:
             mc.setUpdatesEnabled(True)
             kc.setUpdatesEnabled(True)
 
-            # 1) draw the movie axes so that the new frame + overlays are on screen
-            self.movieCanvas.draw()
-
-            # 2) recapture the blit background for the movie axes
-            canvas = mc.figure.canvas
-            mc._bg = canvas.copy_from_bbox(mc.ax.bbox)
-            # mc._roi_bg = canvas.copy_from_bbox(mc.ax.bbox)
+            # Draw the updated frame and overlays once, then retain one clean
+            # background for both movie blit consumers.
+            self.movieCanvas._render_movie_view(cache_background=True)
 
             # During playback the kymo only needs its moving circle updated.
             # add_circle() handles that by blitting over a cached static kymo.
-            if not self.looping:
+            if not self.looping and not kymo_screen_updated:
                 self.kymoCanvas.draw()
 
             self.frameSlider.blockSignals(False)
@@ -321,14 +326,12 @@ class NavigatorMovieMixin:
                 # set the logical center & draw
                 
                 mc.zoom_center = (cx_new, cy_new)
-                mc.draw_idle()
-                # grab clean background
-                canvas = mc.figure.canvas
-                mc._bg     = canvas.copy_from_bbox(mc.ax.bbox)
-                mc._roi_bg = canvas.copy_from_bbox(mc.ax.bbox)
                 # recompute scale so future scrolls/pans start here
                 w = mc.width() or 1
                 mc.scale = (new_xlim[1] - new_xlim[0]) / w
+                # Render the final limits once, then capture the pixels that were
+                # actually drawn (rather than copying before draw_idle runs).
+                mc._render_movie_view(cache_background=True)
             else:
                 t = i / steps
                 interp_xlim = (initial_xlim[0]*(1-t) + new_xlim[0]*t,
@@ -437,18 +440,15 @@ class NavigatorMovieMixin:
         self.movieCanvas.draw_idle()
 
     def _movie_label_hit(self, event):
-        bboxes = getattr(self.movieCanvas, "_movie_label_bboxes", None)
-        if bboxes:
-            for label, bbox in bboxes.items():
-                try:
-                    if not bbox.contains(event.x, event.y):
-                        continue
-                except Exception:
-                    continue
+        hit_test = getattr(self.movieCanvas, "movie_label_hit", None)
+        if hit_test is not None:
+            label = hit_test(event)
+            if label is not None:
                 traj_idx = getattr(label, "traj_idx", None)
                 if traj_idx is None:
                     return None
                 return label, traj_idx
+            return None
 
         for label in getattr(self.movieCanvas, "movie_label_artists", []):
             try:
@@ -531,6 +531,8 @@ class NavigatorMovieMixin:
                     if traj_idx is None:
                         continue
 
+                    point_idx = info.get("ind", [None])[0]
+
                     # 1) If they clicked a new trajectory (different row), update table selection
                     current_row = self.trajectoryCanvas.table_widget.currentRow()
                     if traj_idx != current_row:
@@ -539,13 +541,16 @@ class NavigatorMovieMixin:
                         tbl.selectRow(traj_idx)
                         tbl.blockSignals(False)
                         # trigger whatever happens when a trajectory is selected:
-                        self.trajectoryCanvas.on_trajectory_selected_by_index(traj_idx)
+                        self.trajectoryCanvas.on_trajectory_selected_by_index(
+                            traj_idx,
+                            target_point_index=(point_idx if point_idx is not None else 0),
+                        )
 
                     # 2) If they clicked on a scatter‐dot (info["ind"] exists), jump to that point:
                     #    info["ind"][0] is the index into traj["spot_centers"].
-                    point_idx = info.get("ind", [None])[0]
                     if point_idx is not None:
-                        self.jump_to_analysis_point(point_idx)
+                        if traj_idx == current_row:
+                            self.jump_to_analysis_point(point_idx)
                         if self.sumBtn.isChecked():
                             self.sumBtn.setChecked(False)
                         self.intensityCanvas.current_index = point_idx
@@ -709,6 +714,12 @@ class NavigatorMovieMixin:
 
         if not self.movieCanvas.roiAddMode or not self.movieCanvas.roiPoints:
             return
+        if (
+            self.movieCanvas._is_panning
+            or self.movieCanvas._roi_bg is None
+            or getattr(self.movieCanvas, "_roi_bbox", None) is None
+        ):
+            return
 
         # throttle to ~50 Hz
         now = time.perf_counter()
@@ -773,9 +784,10 @@ class NavigatorMovieMixin:
             self.endMovieClickSequence()
 
     def on_movie_release(self, event):
-        if event.button == 2 and event.inaxes == self.movieCanvas.ax:
-            # pan just ended → redraw & recapture
-            self.movieCanvas.update_view()
+        # MovieCanvas.mouseReleaseEvent owns the single final pan render and
+        # background capture. Keeping this callback draw-free avoids rendering
+        # the same labelled overlays a second time.
+        return
 
     def on_movie_motion(self, event):
         # Fast‐blit update for the temporary analysis line.
@@ -785,7 +797,12 @@ class NavigatorMovieMixin:
             return
 
         # If we’re panning or zooming, do a full redraw & snapshot (hiding the line while snapshotting).
-        if self.movieCanvas._is_panning or self.movieCanvas.manual_zoom:
+        if self.movieCanvas._is_panning:
+            # MovieCanvas has already queued the latest view. Its deferred draw
+            # repaints this animated line over the clean canvas without a second
+            # full render.
+            return
+        if self.movieCanvas.manual_zoom:
             self.movieCanvas._bg = None
             self._rebuild_movie_blit_background()
             self.movieCanvas.manual_zoom = False
@@ -833,7 +850,6 @@ class NavigatorMovieMixin:
         must be captured *without* that line, otherwise restore_region() can wipe or
         double-draw overlays.
         """
-        canvas = self.movieCanvas.figure.canvas
         line = getattr(self, "temp_movie_analysis_line", None)
 
         if line is not None:
@@ -846,17 +862,17 @@ class NavigatorMovieMixin:
         # Full draw to make sure all "static" artists (image, overlays, circles, etc.) are baked in.
         self.movieCanvas.draw()
 
-        # Snapshot background without the animated line.
-        self.movieCanvas._bg = canvas.copy_from_bbox(self.movieCanvas.ax.bbox)
+        # Snapshot one clean background for both analysis-line and ROI blits.
+        self.movieCanvas._capture_movie_view_background()
 
-        # Make the line visible again and draw it once so the user sees it immediately.
+        # Make the line visible again and paint all transient lines once so the
+        # user sees them immediately without baking either into the background.
         if line is not None:
             try:
                 line.set_visible(True)
-                self.movieCanvas.ax.draw_artist(line)
-                canvas.blit(self.movieCanvas.ax.bbox)
             except Exception:
                 pass
+        self.movieCanvas._draw_temp_movie_analysis_line()
 
     def _show_movie_context_menu(self, row, global_pos: QPoint):
         if not self.trajectoryCanvas.custom_columns:
@@ -935,7 +951,7 @@ class NavigatorMovieMixin:
         self._update_legends()
         self.kymoCanvas.draw_trajectories_on_kymo()
         self.kymoCanvas.draw_idle()
-        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
         self.movieCanvas.draw_idle()
 
     def escape_left_click_sequence(self):
@@ -1031,6 +1047,7 @@ class NavigatorMovieMixin:
         self.analysis_points = []
         self.analysis_anchors = []
         self.analysis_roi = None
+        self._kymo_pending_double_click_add = False
         # self.kymoCanvas.unsetCursor()
         if hasattr(self, "_set_kymo_sequence_cursor"):
             self._set_kymo_sequence_cursor(False)

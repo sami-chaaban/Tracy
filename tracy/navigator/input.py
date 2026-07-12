@@ -191,6 +191,14 @@ class NavigatorInputMixin:
             self.kymo_traj_overlay_button.setVisible(has_rows)
         if hasattr(self, "kymo_traj_overlay_container"):
             self.kymo_traj_overlay_container.setVisible(has_rows)
+        if hasattr(self, "kymo_spot_overlay_button"):
+            self.kymo_spot_overlay_button.setVisible(has_rows)
+        if hasattr(self, "kymo_spot_overlay_container"):
+            self.kymo_spot_overlay_container.setVisible(has_rows)
+        if hasattr(self, "kymo_anchor_overlay_button"):
+            self.kymo_anchor_overlay_button.setVisible(has_rows)
+        if hasattr(self, "kymo_anchor_overlay_container"):
+            self.kymo_anchor_overlay_container.setVisible(has_rows)
         self.delete_button.setVisible(has_rows)
         if hasattr(self, "delete_container"):
             self.delete_container.setVisible(has_rows)
@@ -201,6 +209,8 @@ class NavigatorInputMixin:
         self._ensure_traj_overlay_mode_valid(redraw=False)
         if hasattr(self, "_ensure_kymo_traj_overlay_mode_valid"):
             self._ensure_kymo_traj_overlay_mode_valid(redraw=False)
+        if hasattr(self, "_ensure_kymo_spot_overlay_mode_valid"):
+            self._ensure_kymo_spot_overlay_mode_valid(redraw=False)
 
     def _collapse_right_panel_on_startup(self):
         if getattr(self, "_right_panel_startup_done", False):
@@ -265,6 +275,16 @@ class NavigatorInputMixin:
         if 0 < right_w < min_w:
             splitter.setSizes([total_width, 0])
 
+    def _schedule_right_panel_min_width_enforcement(self):
+        if getattr(self, "_right_panel_min_width_check_pending", False):
+            return
+        self._right_panel_min_width_check_pending = True
+        QTimer.singleShot(0, self._run_right_panel_min_width_enforcement)
+
+    def _run_right_panel_min_width_enforcement(self):
+        self._right_panel_min_width_check_pending = False
+        self._enforce_right_panel_min_width()
+
     # def eventFilter(self, obj, event):
     #     # intercept wheel events when our radius dialog is up
     #     if (self._radiusDialog is not None 
@@ -282,6 +302,16 @@ class NavigatorInputMixin:
     #     return super().eventFilter(obj, event)
 
     def eventFilter(self, obj, ev):
+
+        top_right_splitter = getattr(self, "topRightSplitter", None)
+        if (
+            top_right_splitter is not None
+            and obj is top_right_splitter
+            and ev.type() == QEvent.Resize
+        ):
+            # Parent/outer splitter changes do not emit this splitter's
+            # splitterMoved signal, so enforce after Qt finishes relayout.
+            self._schedule_right_panel_min_width_enforcement()
 
         ch_overlay = getattr(self, "_ch_overlay", None)
         if ch_overlay is not None and obj is ch_overlay and ev.type() == ev.Show:

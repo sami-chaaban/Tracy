@@ -1,5 +1,6 @@
 from ._shared import *
 from scipy.ndimage import gaussian_laplace
+import traceback
 
 
 def _decode_tiff_text(value):
@@ -77,73 +78,165 @@ class NavigatorIOMixin:
         )
 
     def _movie_load_is_running(self):
-        return getattr(self, "_movie_load_future", None) is not None
+        return (
+            getattr(self, "_movie_load_future", None) is not None
+            or bool(getattr(self, "_movie_load_applying", False))
+        )
 
-    def _cleanup_async_movie_load(self, future, executor, timer, progress):
-        if timer is not None:
-            timer.stop()
-            timer.deleteLater()
-        if progress is not None:
-            progress.close()
-            progress.deleteLater()
+    def _ensure_async_movie_loader(self):
+        if getattr(self, "_movie_load_timer", None) is not None:
+            return
+        self._movie_load_future = None
+        self._movie_load_executor = None
+        self._movie_load_request = None
+        self._movie_load_applying = False
+        self._movie_load_shutdown_requested = False
+        self._movie_load_status_text = None
+        self._movie_load_timer = QTimer(self)
+        self._movie_load_timer.setInterval(100)
+        self._movie_load_timer.timeout.connect(self._poll_async_movie_load)
+
+    def _set_movie_load_status(self, text, show_popup=True):
+        show_overlay = getattr(self, "show_busy_overlay", None)
+        hide_overlay = getattr(self, "hide_busy_overlay", None)
+        if show_popup and callable(show_overlay):
+            show_overlay("movie-load", text)
+            # The popup owns progress feedback; do not duplicate it in the
+            # application's bottom status bar.
+            self._movie_load_status_bar = None
+            self._movie_load_status_text = None
+            return
+
+        if not show_popup and callable(hide_overlay):
+            hide_overlay("movie-load")
+
+        # Keep a fallback for stripped-down harnesses/platforms where the
+        # popup facility is unavailable.
+        try:
+            status_bar = self.statusBar()
+            status_bar.showMessage(text)
+        except RuntimeError:
+            return
+        self._movie_load_status_bar = status_bar
+        self._movie_load_status_text = text
+
+    def _clear_movie_load_status(self):
+        text = getattr(self, "_movie_load_status_text", None)
+        status_bar = getattr(self, "_movie_load_status_bar", None)
+        if status_bar is not None:
+            try:
+                if text is not None and status_bar.currentMessage() == text:
+                    status_bar.clearMessage()
+            except RuntimeError:
+                pass
+        hide_overlay = getattr(self, "hide_busy_overlay", None)
+        if callable(hide_overlay):
+            hide_overlay("movie-load")
+        self._movie_load_status_bar = None
+        self._movie_load_status_text = None
+
+    def _cleanup_async_movie_load(self, future):
+        if getattr(self, "_movie_load_future", None) is not future:
+            return
+        self._movie_load_timer.stop()
+        executor = self._movie_load_executor
+        self._movie_load_future = None
+        self._movie_load_executor = None
+        self._movie_load_request = None
         if executor is not None:
-            executor.shutdown(wait=False)
-        if getattr(self, "_movie_load_future", None) is future:
-            self._movie_load_future = None
-            self._movie_load_executor = None
-            self._movie_load_timer = None
-            self._movie_load_progress = None
+            # The poller calls this only after future.done().
+            executor.shutdown(wait=True)
+
+    def _finish_movie_load_shutdown(self):
+        if not getattr(self, "_movie_load_shutdown_requested", False):
+            return
+        self._movie_load_shutdown_requested = False
+        QTimer.singleShot(0, self.close)
+
+    def request_movie_load_shutdown(self):
+        if not self._movie_load_is_running():
+            return False
+        self._movie_load_shutdown_requested = True
+        future = getattr(self, "_movie_load_future", None)
+        if future is not None:
+            future.cancel()
+        self._set_movie_load_status("Finishing movie load before exit...")
+        return True
+
+    def _poll_async_movie_load(self):
+        future = getattr(self, "_movie_load_future", None)
+        if future is None or not future.done():
+            return
+
+        request = dict(self._movie_load_request or {})
+        try:
+            result = future.result()
+        except Exception as exc:
+            self._cleanup_async_movie_load(future)
+            self._clear_movie_load_status()
+            if self._movie_load_shutdown_requested:
+                self._finish_movie_load_shutdown()
+                return
+            QMessageBox.critical(self, "Error", f"Could not load movie:\n{str(exc)}")
+            return
+
+        if self._movie_load_shutdown_requested:
+            self._cleanup_async_movie_load(future)
+            self._clear_movie_load_status()
+            self._finish_movie_load_shutdown()
+            return
+
+        self._movie_load_applying = True
+        self._cleanup_async_movie_load(future)
+        self._set_movie_load_status(
+            f"Opening movie... {os.path.basename(request.get('fname', 'movie'))}",
+        )
+        try:
+            self.load_movie(
+                request.get("fname"),
+                pixelsize=request.get("pixelsize"),
+                frameinterval=request.get("frameinterval"),
+                _movie_read_result=result,
+                _skip_preflight=True,
+                _on_loaded=request.get("on_loaded"),
+            )
+        except Exception as exc:
+            traceback.print_exc()
+            if not self._movie_load_shutdown_requested:
+                QMessageBox.critical(self, "Error", f"Could not open movie:\n{str(exc)}")
+        finally:
+            self._movie_load_applying = False
+            self._clear_movie_load_status()
+            self._finish_movie_load_shutdown()
 
     def _start_async_movie_load(self, fname, pixelsize=None, frameinterval=None, on_loaded=None):
+        self._ensure_async_movie_loader()
         if self._movie_load_is_running():
             self.flash_message("Movie load already in progress")
             return
 
-        progress = QProgressDialog(
-            f"Loading movie...\n{os.path.basename(fname)}",
-            "Cancel", 0, 0, self
-        )
-        progress.setWindowTitle("Loading movie")
-        progress.setCancelButton(None)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setAutoClose(False)
-        progress.setAutoReset(False)
-        progress.show()
-        QApplication.processEvents()
+        executor = None
+        try:
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(_read_movie_file_for_load, fname)
+        except Exception as exc:
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
+            QMessageBox.critical(self, "Error", f"Could not start movie loading:\n{str(exc)}")
+            return
 
-        executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(_read_movie_file_for_load, fname)
-        timer = QTimer(self)
-        timer.setInterval(100)
-
-        def poll_movie_load():
-            if not future.done():
-                return
-
-            try:
-                result = future.result()
-            except Exception as exc:
-                self._cleanup_async_movie_load(future, executor, timer, progress)
-                QMessageBox.critical(self, "Error", f"Could not load movie:\n{str(exc)}")
-                return
-
-            self._cleanup_async_movie_load(future, executor, timer, progress)
-            self.load_movie(
-                fname,
-                pixelsize=pixelsize,
-                frameinterval=frameinterval,
-                _movie_read_result=result,
-                _skip_preflight=True,
-                _on_loaded=on_loaded,
-            )
-
-        timer.timeout.connect(poll_movie_load)
         self._movie_load_future = future
         self._movie_load_executor = executor
-        self._movie_load_timer = timer
-        self._movie_load_progress = progress
-        timer.start()
+        self._movie_load_request = {
+            "fname": fname,
+            "pixelsize": pixelsize,
+            "frameinterval": frameinterval,
+            "on_loaded": on_loaded,
+        }
+        self._set_movie_load_status(
+            f"Loading movie... {os.path.basename(fname)}"
+        )
+        self._movie_load_timer.start()
 
     def load_movie(
         self,
@@ -386,7 +479,6 @@ class NavigatorIOMixin:
                 self.trajectoryCanvas.clear_trajectories(prompt=False)
                 self.clear_flag = False
 
-            self.movieCanvas.draw_idle()
             self.movieCanvas.clear_sum_cache()
 
             self.update_scale_label()
@@ -577,6 +669,21 @@ class NavigatorIOMixin:
         self.update_movie_channel_combo()
 
     def on_channel_changed(self, index):
+        try:
+            self._on_channel_changed(index)
+        except Exception as exc:
+            # This method is a Qt signal boundary. An exception escaping a
+            # PyQt slot can abort the process on macOS instead of propagating.
+            traceback.print_exc()
+            try:
+                self.statusBar().showMessage(
+                    f"Could not update channel {index + 1}: {exc}",
+                    6000,
+                )
+            except RuntimeError:
+                pass
+
+    def _on_channel_changed(self, index):
         # only multi-channel movies
         if self.movie is None or self.movie.ndim != 4:
             return
@@ -648,8 +755,7 @@ class NavigatorIOMixin:
         self._ch_overlay.show()
 
         # 10) clear & redraw trajectories on the movie, now that channel has changed
-        self.movieCanvas.clear_movie_trajectory_markers()
-        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
 
         if self.intensityCanvas.point_highlighted and ch == self.analysis_channel and self.intensityCanvas._last_plot_args is not None:
 
@@ -1251,6 +1357,7 @@ class NavigatorIOMixin:
             # 5) hand off to a helper that processes a DataFrame
             # You should refactor load_trajectories() into load_trajectories_from_df(df)
             self.trajectoryCanvas.load_trajectories_from_df(df)
+            self.trajectoryCanvas._queue_loaded_trajectory_selection(0)
             self.kymoCombo.setEnabled(True)
 
         except Exception as e:
@@ -1948,10 +2055,13 @@ class NavigatorIOMixin:
         overlay_line_scale = 0.65
 
         prev_kymo_overlay_mode = None
+        prev_kymo_spot_overlay_mode = None
         if do_overlay:
             prev_kymo_overlay_mode = self.get_kymo_traj_overlay_mode()
+            prev_kymo_spot_overlay_mode = self.get_kymo_spot_overlay_mode()
             # Force kymo overlays on for export, independent of current UI overlay mode.
             self.kymo_traj_overlay_mode = "all"
+            self.kymo_spot_overlay_mode = "all"
 
         try:
             for i, name in enumerate(sel_names):
@@ -2527,6 +2637,8 @@ class NavigatorIOMixin:
             prog.close()
             if prev_kymo_overlay_mode is not None:
                 self.kymo_traj_overlay_mode = prev_kymo_overlay_mode
+            if prev_kymo_spot_overlay_mode is not None:
+                self.kymo_spot_overlay_mode = prev_kymo_spot_overlay_mode
             # just re-select the original kymo; that will reset ROI, channel, contrast, overlays, etc.
             if current in self.kymographs:
                 self.kymoCombo.setCurrentText(current)

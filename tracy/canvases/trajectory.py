@@ -1,5 +1,6 @@
 from ._shared import *
 from .. import __version__
+from concurrent.futures import ThreadPoolExecutor
 import traceback
 
 
@@ -74,6 +75,45 @@ class _TrajectoryStateCommand(QUndoCommand):
 
     def undo(self):
         self._canvas._restore_undo_state(self._before_state)
+
+
+class _TrajectoryAddCommand(QUndoCommand):
+    """Undo one appended trajectory without snapshotting the whole dataset."""
+
+    def __init__(
+        self,
+        canvas,
+        row,
+        trajectory,
+        past_centers_before,
+        past_centers_added,
+        counter_before,
+        counter_after,
+        selection_before,
+        selection_after,
+    ):
+        super().__init__("Add Trajectory")
+        self._canvas = canvas
+        self._row = int(row)
+        # Command-owned copies prevent later navigator/list mutations from
+        # changing what Redo restores. Only the newly added track is copied.
+        self._trajectory = copy.deepcopy(trajectory)
+        self._past_centers_before = int(past_centers_before)
+        self._past_centers_added = copy.deepcopy(list(past_centers_added))
+        self._counter_before = int(counter_before)
+        self._counter_after = int(counter_after)
+        self._selection_before = copy.deepcopy(selection_before)
+        self._selection_after = copy.deepcopy(selection_after)
+        self._first_redo = True
+
+    def redo(self):
+        if self._first_redo:
+            self._first_redo = False
+            return
+        self._canvas._apply_trajectory_add_command(self, adding=True)
+
+    def undo(self):
+        self._canvas._apply_trajectory_add_command(self, adding=False)
 
 
 class TrajectoryCanvas(QWidget):
@@ -194,6 +234,30 @@ class TrajectoryCanvas(QWidget):
         self.current_index = None
         self._recalc_thread = None
         self._recalc_worker = None
+        self._trajectory_load_future = None
+        self._trajectory_load_executor = None
+        self._trajectory_load_filename = None
+        self._trajectory_load_timer = QTimer(self)
+        self._trajectory_load_timer.setInterval(100)
+        self._trajectory_load_timer.timeout.connect(
+            self._poll_async_trajectory_load
+        )
+        self._pending_trajectory_load_filename = None
+        self._trajectory_load_start_timer = QTimer(self)
+        self._trajectory_load_start_timer.setSingleShot(True)
+        self._trajectory_load_start_timer.timeout.connect(
+            self._start_pending_trajectory_load
+        )
+        self._trajectory_load_status_bar = None
+        self._trajectory_load_status_text = None
+        self._trajectory_load_applying = False
+        self._trajectory_load_shutdown_requested = False
+        self._pending_loaded_selection_row = None
+        self._trajectory_selection_timer = QTimer(self)
+        self._trajectory_selection_timer.setSingleShot(True)
+        self._trajectory_selection_timer.timeout.connect(
+            self._apply_pending_loaded_selection
+        )
 
     @staticmethod
     def _as_list(value):
@@ -255,6 +319,125 @@ class TrajectoryCanvas(QWidget):
             "current_index": getattr(self, "current_index", None),
         }
 
+    def _capture_trajectory_selection_state(self):
+        selected_rows = []
+        try:
+            selected_rows = [
+                idx.row()
+                for idx in self.table_widget.selectionModel().selectedRows()
+                if 0 <= idx.row() < len(self.trajectories)
+            ]
+        except Exception:
+            pass
+        return {
+            "selected_rows": selected_rows,
+            "current_index": getattr(self, "current_index", None),
+        }
+
+    def _restore_trajectory_selection_state(self, state):
+        selected_rows = [
+            int(row)
+            for row in state.get("selected_rows", [])
+            if 0 <= int(row) < len(self.trajectories)
+        ]
+        current_index = state.get("current_index", None)
+        if isinstance(current_index, int) and 0 <= current_index < len(self.trajectories):
+            restore_row = current_index
+        elif selected_rows:
+            restore_row = selected_rows[0]
+        elif self.trajectories:
+            restore_row = 0
+        else:
+            restore_row = None
+
+        self.table_widget.clearSelection()
+        if restore_row is not None:
+            self.table_widget.selectRow(restore_row)
+        self.current_index = restore_row
+        return restore_row
+
+    def _apply_trajectory_add_command(self, command, *, adding):
+        """Apply the small inverse/forward delta stored by Add Trajectory."""
+        nav = self.navigator
+        if nav is not None:
+            nav._undo_restore_depth = getattr(nav, "_undo_restore_depth", 0) + 1
+        added_pending_colocalization = False
+        try:
+            row = command._row
+            self.table_widget.blockSignals(True)
+            try:
+                if adding:
+                    row = max(0, min(row, len(self.trajectories)))
+                    restored = copy.deepcopy(command._trajectory)
+                    self.trajectories.insert(row, restored)
+                    self.table_widget.insertRow(row)
+                    self.updateTableRow(row, restored)
+                    added_pending_colocalization = bool(
+                        restored.get("colocalization_pending", False)
+                    )
+                    self._trajectory_counter = command._counter_after
+                    selection_state = command._selection_after
+                else:
+                    if not (0 <= row < len(self.trajectories)):
+                        return
+                    self.trajectories.pop(row)
+                    self.table_widget.removeRow(row)
+                    self._trajectory_counter = command._counter_before
+                    selection_state = command._selection_before
+
+                if nav is not None:
+                    # Add inserts one contiguous tail. Remove/reinsert that
+                    # exact slice by position so identical older centers—and
+                    # any later non-command entries—remain untouched.
+                    center_start = min(
+                        command._past_centers_before,
+                        len(nav.past_centers),
+                    )
+                    center_end = min(
+                        center_start + len(command._past_centers_added),
+                        len(nav.past_centers),
+                    )
+                    if adding:
+                        nav.past_centers[center_start:center_start] = (
+                            copy.deepcopy(command._past_centers_added)
+                        )
+                    else:
+                        del nav.past_centers[center_start:center_end]
+
+                restore_row = self._restore_trajectory_selection_state(
+                    selection_state
+                )
+            finally:
+                self.table_widget.blockSignals(False)
+
+            if restore_row is not None:
+                self.on_trajectory_selected_by_index(restore_row, zoom=False)
+            elif self.intensity_canvas is not None:
+                self.intensity_canvas.current_index = None
+
+            # Undo/Redo are infrequent and may follow arbitrary view changes;
+            # retain the conservative complete refresh for exact visuals.
+            if self.movieCanvas is not None:
+                self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
+                self.movieCanvas.draw_idle()
+            if self.kymoCanvas is not None:
+                self.kymoCanvas.draw_trajectories_on_kymo()
+                self.kymoCanvas.draw_idle()
+            if nav is not None:
+                nav.update_table_visibility()
+                nav._rebuild_color_by_actions()
+                nav._update_legends()
+                if adding and added_pending_colocalization:
+                    QTimer.singleShot(
+                        0,
+                        lambda row=row: self._compute_pending_colocalization_for_row(row),
+                    )
+        finally:
+            if nav is not None:
+                nav._undo_restore_depth = max(
+                    0, getattr(nav, "_undo_restore_depth", 1) - 1
+                )
+
     def _push_trajectory_state_command(self, text, before_state):
         if before_state is None or not self._can_record_undo():
             return
@@ -289,7 +472,7 @@ class TrajectoryCanvas(QWidget):
             self.kymoCanvas.draw_trajectories_on_kymo()
             self.kymoCanvas.draw_idle()
         if self.movieCanvas is not None:
-            self.movieCanvas.draw_trajectories_on_movie()
+            self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
             self.movieCanvas.draw_idle()
         nav._rebuild_color_by_actions()
         self.hide_empty_columns()
@@ -375,7 +558,7 @@ class TrajectoryCanvas(QWidget):
                 self.intensity_canvas.current_index = None
 
             if self.movieCanvas is not None:
-                self.movieCanvas.draw_trajectories_on_movie()
+                self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
                 self.movieCanvas.draw_idle()
             if self.kymoCanvas is not None:
                 self.kymoCanvas.draw_trajectories_on_kymo()
@@ -586,7 +769,7 @@ class TrajectoryCanvas(QWidget):
             self.kymoCanvas.draw_trajectories_on_kymo()
             self.kymoCanvas.draw_idle()
         if self.movieCanvas is not None:
-            self.movieCanvas.draw_trajectories_on_movie()
+            self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
             self.movieCanvas.draw_idle()
         if self.navigator is not None:
             self.navigator._update_legends()
@@ -1751,6 +1934,51 @@ class TrajectoryCanvas(QWidget):
                     break
             self.table_widget.setColumnHidden(col, not has_value)
 
+    def _report_trajectory_selection_error(self, exc):
+        traceback.print_exc()
+        status_bar_getter = getattr(self.navigator, "statusBar", None)
+        if not callable(status_bar_getter):
+            return
+        try:
+            status_bar_getter().showMessage(
+                f"Trajectories loaded, but the selected view could not update: {exc}",
+                6000,
+            )
+        except RuntimeError:
+            pass
+
+    def _set_loaded_table_selection(self, row):
+        """Select a loaded row without firing a half-built selection update."""
+        if row < 0 or row >= self.table_widget.rowCount():
+            return False
+        signals_were_blocked = self.table_widget.blockSignals(True)
+        try:
+            self.table_widget.selectRow(row)
+        finally:
+            self.table_widget.blockSignals(signals_were_blocked)
+        self.current_index = row
+        return True
+
+    def _queue_loaded_trajectory_selection(self, row=0):
+        if not self._set_loaded_table_selection(row):
+            return
+        self._pending_loaded_selection_row = row
+        self._trajectory_selection_timer.start(0)
+
+    def _apply_pending_loaded_selection(self):
+        row = self._pending_loaded_selection_row
+        self._pending_loaded_selection_row = None
+        if row is None or row < 0 or row >= len(self.trajectories):
+            return
+        try:
+            self.on_trajectory_selected_by_index(
+                row,
+                zoom=False,
+                refresh_overlays=False,
+            )
+        except Exception as exc:
+            self._report_trajectory_selection_error(exc)
+
     def on_trajectory_selected_by_table(self):
         try:
             selected_rows = self.table_widget.selectionModel().selectedRows()
@@ -1761,14 +1989,27 @@ class TrajectoryCanvas(QWidget):
             index = selected_rows[0].row()
             self.on_trajectory_selected_by_index(index, zoom=True)
         except Exception as exc:
-            traceback.print_exc()
-            QMessageBox.critical(self, "Selection Error", f"Could not select trajectory:\n{str(exc)}")
+            # Never enter a modal event loop from a Qt selection signal. PyQt
+            # treats a second exception in an application event filter as fatal.
+            self._report_trajectory_selection_error(exc)
 
-    def on_trajectory_selected_by_index(self, index, zoom=False, refresh_overlays=False):
+    def on_trajectory_selected_by_index(
+        self,
+        index,
+        zoom=False,
+        refresh_overlays=False,
+        target_point_index=0,
+        refresh_kymo_overlay=None,
+        refresh_movie_overlay=None,
+    ):
         if index < 0 or index >= len(self.trajectories):
             return
 
         self.current_index = index
+        if refresh_kymo_overlay is None:
+            refresh_kymo_overlay = refresh_overlays
+        if refresh_movie_overlay is None:
+            refresh_movie_overlay = refresh_overlays
 
         # ——— locals & block redraws ———
         nav = self.navigator
@@ -1837,9 +2078,16 @@ class TrajectoryCanvas(QWidget):
 
             # ——— 5) Refresh kymograph overlays. For ordinary selection changes,
             # only the selected highlight layer needs to change.
-            kymo_on = getattr(nav, "kymo_traj_overlay_button", None) and nav.kymo_traj_overlay_button.isChecked()
+            kymo_on = (
+                nav.is_kymo_overlay_visible()
+                if hasattr(nav, "is_kymo_overlay_visible")
+                else bool(
+                    getattr(nav, "kymo_traj_overlay_button", None)
+                    and nav.kymo_traj_overlay_button.isChecked()
+                )
+            )
             if kymo_on:
-                if refresh_overlays or not hasattr(kc, "draw_selected_trajectory_on_kymo"):
+                if refresh_kymo_overlay or not hasattr(kc, "draw_selected_trajectory_on_kymo"):
                     kc.draw_trajectories_on_kymo()
                 else:
                     kc.draw_selected_trajectory_on_kymo(draw_idle=False)
@@ -1849,10 +2097,10 @@ class TrajectoryCanvas(QWidget):
             # mc.setUpdatesEnabled(True)
             # kc.setUpdatesEnabled(True)
             nav.jump_to_analysis_point(
-                0,
+                max(0, min(int(target_point_index), len(nav.analysis_frames) - 1)),
                 animate="ramp",
                 zoom=zoom,
-                refresh_movie_overlay=refresh_overlays,
+                refresh_movie_overlay=refresh_movie_overlay,
             )
             # mc.draw_idle()
             # kc.draw_idle()
@@ -1869,7 +2117,16 @@ class TrajectoryCanvas(QWidget):
             # print("❌ No trajectory data found!")
             return
 
-        undo_before = self._snapshot_undo_state() if self._can_record_undo() else None
+        record_add_undo = self._can_record_undo()
+        if record_add_undo:
+            add_undo_before = {
+                "row": len(self.trajectories),
+                "counter": int(self._trajectory_counter),
+                "past_centers": len(getattr(self.navigator, "past_centers", [])),
+                "selection": self._capture_trajectory_selection_state(),
+            }
+        else:
+            add_undo_before = None
 
         channel = self.navigator.analysis_channel
         if channel is None:
@@ -1999,6 +2256,10 @@ class TrajectoryCanvas(QWidget):
         spot_centers = traj_data["spot_centers"]
         average_velocity = traj_data.get("average_velocity")
 
+        if len(frames) == 0 or len(intensities) == 0:
+            print("Error: no frames or intensities to add!")
+            return
+
         new = [
             (f, cx, cy)
             for f, c in zip(frames, spot_centers)
@@ -2006,10 +2267,6 @@ class TrajectoryCanvas(QWidget):
             for cx, cy in [c]
         ]
         self.navigator.past_centers.extend(new)
-
-        if len(frames) == 0 or len(intensities) == 0:
-            print("Error: no frames or intensities to add!")
-            return
 
         self.trajectories.append(traj_data)
 
@@ -2118,10 +2375,43 @@ class TrajectoryCanvas(QWidget):
 
         # Also update the current index in the plot canvas and trigger a selection update.
         self.intensity_canvas.current_index = new_row
-        self.on_trajectory_selected_by_index(new_row, zoom=True, refresh_overlays=True)
+        append_kymo = getattr(
+            self.kymoCanvas, "append_trajectory_to_kymo_base", None
+        )
+        append_movie = getattr(
+            self.movieCanvas, "append_trajectory_to_movie_base", None
+        )
+        try:
+            kymo_appended = bool(append_kymo(new_row)) if callable(append_kymo) else False
+        except Exception:
+            kymo_appended = False
+        try:
+            movie_appended = bool(append_movie(new_row)) if callable(append_movie) else False
+        except Exception:
+            movie_appended = False
+
+        self.on_trajectory_selected_by_index(
+            new_row,
+            zoom=True,
+            refresh_kymo_overlay=not kymo_appended,
+            refresh_movie_overlay=not movie_appended,
+        )
         if new_row == 0:
             QTimer.singleShot(0, lambda: self.navigator.jump_to_analysis_point(0, animate="discrete", zoom=True))
-        self._push_trajectory_state_command("Add Trajectory", undo_before)
+        if add_undo_before is not None and self._can_record_undo():
+            self.navigator.undo_stack.push(
+                _TrajectoryAddCommand(
+                    self,
+                    new_row,
+                    traj_data,
+                    add_undo_before["past_centers"],
+                    new,
+                    add_undo_before["counter"],
+                    self._trajectory_counter,
+                    add_undo_before["selection"],
+                    self._capture_trajectory_selection_state(),
+                )
+            )
         if traj_data.get("colocalization_pending", False):
             QTimer.singleShot(0, lambda row=new_row: self._compute_pending_colocalization_for_row(row))
 
@@ -2217,11 +2507,196 @@ class TrajectoryCanvas(QWidget):
         return df, nodes_map, clicks_map
 
     def _trajectory_load_is_running(self):
-        return False
+        return (
+            getattr(self, "_trajectory_load_future", None) is not None
+            or bool(getattr(self, "_trajectory_load_applying", False))
+            or getattr(self, "_pending_trajectory_load_filename", None) is not None
+        )
+
+    def _set_trajectory_load_status(self, text, show_popup=True):
+        """Show import progress in the modal busy popup."""
+        show_overlay = getattr(self.navigator, "show_busy_overlay", None)
+        hide_overlay = getattr(self.navigator, "hide_busy_overlay", None)
+        if show_popup and callable(show_overlay):
+            show_overlay("trajectory-load", text)
+            self._trajectory_load_status_bar = None
+            self._trajectory_load_status_text = None
+            return
+
+        if not show_popup and callable(hide_overlay):
+            hide_overlay("trajectory-load")
+
+        # Fallback for non-GUI harnesses that do not provide the popup.
+        status_bar_getter = getattr(self.navigator, "statusBar", None)
+        if not callable(status_bar_getter):
+            return
+        try:
+            status_bar = status_bar_getter()
+            status_bar.showMessage(text)
+        except RuntimeError:
+            return
+        self._trajectory_load_status_bar = status_bar
+        self._trajectory_load_status_text = text
+
+    def _clear_trajectory_load_status(self):
+        status_bar = getattr(self, "_trajectory_load_status_bar", None)
+        status_text = getattr(self, "_trajectory_load_status_text", None)
+        if status_bar is not None:
+            try:
+                # Do not erase a newer message posted by another operation.
+                if status_bar.currentMessage() == status_text:
+                    status_bar.clearMessage()
+            except RuntimeError:
+                pass
+        hide_overlay = getattr(self.navigator, "hide_busy_overlay", None)
+        if callable(hide_overlay):
+            hide_overlay("trajectory-load")
+        self._trajectory_load_status_bar = None
+        self._trajectory_load_status_text = None
+
+    def _cleanup_async_trajectory_load(self, future):
+        if getattr(self, "_trajectory_load_future", None) is not future:
+            return
+
+        self._trajectory_load_timer.stop()
+        executor = self._trajectory_load_executor
+        self._trajectory_load_future = None
+        self._trajectory_load_executor = None
+        self._trajectory_load_filename = None
+        if executor is not None:
+            # This is called only after future.done(), so waiting is immediate
+            # and gives the worker a deterministic lifetime.
+            executor.shutdown(wait=True)
+
+    def _finish_trajectory_load_shutdown(self):
+        if not self._trajectory_load_shutdown_requested:
+            return
+        self._trajectory_load_shutdown_requested = False
+        navigator = self.navigator
+        if navigator is not None:
+            QTimer.singleShot(0, navigator.close)
+
+    def request_trajectory_load_shutdown(self):
+        """Defer window destruction until a running workbook read is safe."""
+        if not self._trajectory_load_is_running():
+            return False
+        self._trajectory_load_shutdown_requested = True
+        future = self._trajectory_load_future
+        if future is not None:
+            future.cancel()
+        self._set_trajectory_load_status(
+            "Finishing trajectory dataset load before exit..."
+        )
+        if future is None and self._pending_trajectory_load_filename is not None:
+            self._trajectory_load_start_timer.stop()
+            self._pending_trajectory_load_filename = None
+            self._clear_trajectory_load_status()
+            self._finish_trajectory_load_shutdown()
+        return True
+
+    def _defer_async_trajectory_load(self, filename):
+        if self._trajectory_load_is_running():
+            self.navigator.flash_message("Trajectory load already in progress")
+            return
+        self._pending_trajectory_load_filename = filename
+        self._trajectory_load_start_timer.start(0)
+
+    def _start_pending_trajectory_load(self):
+        filename = self._pending_trajectory_load_filename
+        self._pending_trajectory_load_filename = None
+        if self._trajectory_load_shutdown_requested:
+            self._finish_trajectory_load_shutdown()
+            return
+        if filename:
+            self._start_async_trajectory_load(filename)
+
+    def _poll_async_trajectory_load(self):
+        future = self._trajectory_load_future
+        if future is None or not future.done():
+            return
+
+        filename = self._trajectory_load_filename
+        display_name = os.path.basename(filename) if filename else "dataset"
+        try:
+            result = future.result()
+        except Exception as exc:
+            self._cleanup_async_trajectory_load(future)
+            self._clear_trajectory_load_status()
+            if self._trajectory_load_shutdown_requested:
+                self._finish_trajectory_load_shutdown()
+                return
+            QMessageBox.critical(
+                self,
+                "Load Error",
+                f"Failed to load trajectories:\n{str(exc)}",
+            )
+            return
+
+        if self._trajectory_load_shutdown_requested:
+            self._cleanup_async_trajectory_load(future)
+            self._clear_trajectory_load_status()
+            self._finish_trajectory_load_shutdown()
+            return
+
+        # Keep the operation visibly busy while the parsed workbook is applied.
+        self._trajectory_load_applying = True
+        self._cleanup_async_trajectory_load(future)
+        self._set_trajectory_load_status(
+            f"Importing trajectory dataset... {display_name}",
+        )
+        try:
+            self.load_trajectories(
+                filename=filename,
+                _read_result=result,
+                _skip_preflight=True,
+            )
+        except Exception as exc:
+            traceback.print_exc()
+            if not self._trajectory_load_shutdown_requested:
+                QMessageBox.critical(
+                    self,
+                    "Load Error",
+                    f"Failed to import trajectories:\n{str(exc)}",
+                )
+        finally:
+            self._trajectory_load_applying = False
+            self._clear_trajectory_load_status()
+            self._finish_trajectory_load_shutdown()
+
+    def _start_async_trajectory_load(self, filename):
+        if self._trajectory_load_is_running():
+            self.navigator.flash_message("Trajectory load already in progress")
+            return
+
+        executor = None
+        try:
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(_read_trajectory_file_for_load, filename)
+        except Exception as exc:
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
+            QMessageBox.critical(
+                self,
+                "Load Error",
+                f"Could not start trajectory loading:\n{str(exc)}",
+            )
+            return
+
+        # Set the running state before showing any UI feedback.  The status bar
+        # is a child of the main window, not a modal Cocoa sheet.
+        self._trajectory_load_future = future
+        self._trajectory_load_executor = executor
+        self._trajectory_load_filename = filename
+        display_name = os.path.basename(filename)
+        self._set_trajectory_load_status(
+            f"Loading dataset... {display_name}"
+        )
+        self._trajectory_load_timer.start()
 
     def load_trajectories(self, filename=None, _read_result=None, _skip_preflight=False):
         if isinstance(filename, bool):
             filename = None
+        selected_from_dialog = False
 
         if not _skip_preflight:
             if self._trajectory_load_is_running():
@@ -2263,6 +2738,7 @@ class TrajectoryCanvas(QWidget):
                 )
                 if not filename:
                     return
+                selected_from_dialog = True
         else:
             filename = str(filename)
 	        
@@ -2270,25 +2746,13 @@ class TrajectoryCanvas(QWidget):
         ext = os.path.splitext(filename)[1].lower()
 
         if _read_result is None:
-            progress = QProgressDialog(
-                f"Loading trajectories...\n{os.path.basename(filename)}",
-                None, 0, 0, self
-            )
-            progress.setWindowTitle("Loading trajectories")
-            progress.setWindowModality(Qt.WindowModal)
-            progress.setMinimumDuration(0)
-            progress.setAutoClose(False)
-            progress.setAutoReset(False)
-            progress.show()
-            try:
-                _read_result = _read_trajectory_file_for_load(filename)
-            except Exception as exc:
-                traceback.print_exc()
-                QMessageBox.critical(self, "Load Error", f"Failed to load trajectories:\n{str(exc)}")
-                return
-            finally:
-                progress.close()
-                progress.deleteLater()
+            if selected_from_dialog:
+                # Let the native macOS file sheet fully unwind before starting
+                # another asynchronous UI lifecycle.
+                self._defer_async_trajectory_load(filename)
+            else:
+                self._start_async_trajectory_load(filename)
+            return
 
         anchors_map = {}
         roi_map     = {}
@@ -2784,6 +3248,10 @@ class TrajectoryCanvas(QWidget):
                         )
                         return
 
+        # Defer the first expensive selection update until all import prompts
+        # and optional kymograph generation have completely unwound.
+        self._queue_loaded_trajectory_selection(0)
+
     def load_trackmate_spots(self):
         if self.navigator.movie is None:
             QMessageBox.warning(self, "",
@@ -2838,6 +3306,7 @@ class TrajectoryCanvas(QWidget):
         )
 
         self.navigator.update_table_visibility()
+        self._queue_loaded_trajectory_selection(0)
 
     def load_trajectories_from_df(self, df, anchors_map=None, roi_map=None, nodes_map=None, clicks_map=None, segment_diffusion_map=None, forcerecalc=False):
 
@@ -3013,22 +3482,18 @@ class TrajectoryCanvas(QWidget):
             recalc_mode = True
 
         # --- Process each trajectory ---
-        # Create a list of groups so we can report progress.
+        # Avoid a modal progress sheet here.  Pumping nested Qt events while
+        # this model is only half-built permits selection and close handlers to
+        # re-enter the import and has caused hard Qt aborts on macOS.
         groups = list(df.groupby("Trajectory"))
-        progress = QProgressDialog("Processing...", "Cancel", 0, len(groups), self)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setAutoClose(False)
-        progress.setAutoReset(False)
-        progress.show()
 
         loaded = []
         self.navigator.past_centers = []
 
         force_cancel = False
 
-        for t, (traj_num, group) in enumerate(groups):
-            if progress.wasCanceled() or force_cancel:
+        for traj_num, group in groups:
+            if force_cancel:
                 break
 
             # —— extract & validate channel column ——
@@ -3378,10 +3843,6 @@ class TrajectoryCanvas(QWidget):
             self.navigator.past_centers.extend(new)
 
             loaded.append(traj)
-            progress.setValue(t+1)
-            QApplication.processEvents()
-
-        progress.close()
 
         if force_cancel:
             return
@@ -3454,9 +3915,9 @@ class TrajectoryCanvas(QWidget):
         self._trajectory_counter = max(traj["trajectory_number"] for traj in loaded) + 1
 
         if self.table_widget.rowCount() > 0:
-            self.table_widget.selectRow(0)
+            self._set_loaded_table_selection(0)
 
-        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
         self.kymoCanvas.draw_trajectories_on_kymo()
 
         self.movieCanvas.draw()
@@ -3506,7 +3967,13 @@ class TrajectoryCanvas(QWidget):
             dist_txt = time_txt = netspeed_txt = ""
 
         total_pts = len(frames)
-        valid_pts = sum(1 for v in ints if v and v>0)
+        valid_pts = 0
+        for value in ints:
+            try:
+                if value is not None and np.isfinite(float(value)) and float(value) > 0:
+                    valid_pts += 1
+            except (TypeError, ValueError):
+                pass
         valid_pct = int(100 * valid_pts / total_pts) if total_pts else 0
 
         avg_txt = "" if avg_int is None else f"{avg_int:.2f}"
@@ -3872,8 +4339,18 @@ class TrajectoryCanvas(QWidget):
         if original_nodes is not None:
             restore_traj["nodes"] = copy.deepcopy(original_nodes)
 
+        old = self.trajectories[row]
+        anchors = self._as_list(old.get("anchors", []))
+        nodes = self._as_list(old.get("nodes", []))
+        has_kymo_anchor_geometry = len(anchors) > 1 and old.get("roi") is not None
+        uses_sparse_node_markers = len(nodes) > 1 and not has_kymo_anchor_geometry
+
         mode = getattr(self.navigator, "tracking_mode", "Independent")
-        if mode not in ("Independent", "Same center"):
+        if mode not in ("Independent", "Same center") or uses_sparse_node_markers:
+            # Movie-derived trajectories store sparse click nodes, whereas the
+            # fitted trajectory contains every interpolated frame.  The partial
+            # path expects dense markers and would otherwise collapse the
+            # rebuilt trajectory to only the clicked frames.
             self.recalculate_trajectory(
                 prompt=False,
                 rows=[row],
@@ -3881,7 +4358,6 @@ class TrajectoryCanvas(QWidget):
             )
             return
 
-        old = self.trajectories[row]
         try:
             new_traj = self._rebuild_one_trajectory_partial(
                 old,
@@ -4833,22 +5309,33 @@ class TrajectoryCanvas(QWidget):
         else:
             movie_mode = self.navigator.get_movie_traj_overlay_mode()
             kymo_mode = self.navigator.get_kymo_traj_overlay_mode()
-        if kymo_mode == "off":
+            spot_mode_getter = getattr(
+                self.navigator, "get_kymo_spot_overlay_mode", None
+            )
+            kymo_spot_mode = (
+                spot_mode_getter() if callable(spot_mode_getter) else "all"
+            )
+        if self.navigator is None:
+            kymo_spot_mode = "all"
+        if kymo_mode == "off" and kymo_spot_mode == "off":
             self.kymoCanvas.clear_kymo_trajectory_markers()
         else:
             self.kymoCanvas.draw_trajectories_on_kymo()
         if movie_mode == "off":
             self.movieCanvas.clear_movie_trajectory_markers()
         else:
-            self.movieCanvas.draw_trajectories_on_movie()
+            self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
         
-        self.movieCanvas.draw()
         self.kymoCanvas.draw()
+        movie_drawn = False
         if self.navigator is not None:
             try:
                 self.navigator._rebuild_movie_blit_background()
+                movie_drawn = True
             except Exception:
                 pass
+        if not movie_drawn:
+            self.movieCanvas.draw()
 
     def _any_traj_overlay_enabled(self):
         nav = self.navigator
@@ -4856,7 +5343,11 @@ class TrajectoryCanvas(QWidget):
             return False
         movie_on = getattr(nav, "traj_overlay_button", None) and nav.traj_overlay_button.isChecked()
         kymo_on = getattr(nav, "kymo_traj_overlay_button", None) and nav.kymo_traj_overlay_button.isChecked()
-        return bool(movie_on or kymo_on)
+        kymo_spots_on = (
+            getattr(nav, "kymo_spot_overlay_button", None)
+            and nav.kymo_spot_overlay_button.isChecked()
+        )
+        return bool(movie_on or kymo_on or kymo_spots_on)
 
     def delete_selected_trajectory(self):
         # 1) Get all selected rows
@@ -4917,7 +5408,7 @@ class TrajectoryCanvas(QWidget):
             self._trajectory_counter = max_num + 1
 
         # 8) Redraw everything
-        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
         if self.navigator is not None:
             self.kymoCanvas.draw_trajectories_on_kymo()
             self.navigator.update_table_visibility()
@@ -5140,9 +5631,10 @@ class TrajectoryCanvas(QWidget):
         canvas.manual_zoom = True
         canvas.scale = scale
         canvas.zoom_center = (cx, cy)
-        canvas.draw_trajectories_on_kymo()
+        # The selection/kymograph-switch paths have already built the overlay
+        # artists.  Changing axes limits transforms those existing artists;
+        # update_view also rescales labels and refreshes the blit background.
         canvas.update_view(cache_background=True)
-        canvas.draw_idle()
         return True
 
     def _focus_trajectory_within_kymograph(self, kymo_name, row):
@@ -5502,7 +5994,7 @@ class TrajectoryCanvas(QWidget):
 
         self.kymoCanvas.draw_trajectories_on_kymo()
         self.kymoCanvas.draw()
-        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
         self.movieCanvas.draw()
         self.navigator._update_legends()
         self._push_trajectory_state_command(f"Edit {col_name}", undo_before)
@@ -5552,7 +6044,7 @@ class TrajectoryCanvas(QWidget):
 
         self.kymoCanvas.draw_trajectories_on_kymo()
         self.kymoCanvas.draw()
-        self.movieCanvas.draw_trajectories_on_movie()
+        self.movieCanvas.draw_trajectories_on_movie(draw_idle=False)
         self.movieCanvas.draw()
         if self.navigator.color_by_column == col_name:
             self.navigator._update_legends()
