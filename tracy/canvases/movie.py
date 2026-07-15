@@ -175,7 +175,7 @@ class MovieCanvas(ImageCanvas):
 
     def _dropped_load_file(self, mime_data):
         if mime_data is None or not mime_data.hasUrls():
-            return None, None, "Drop one local file (.tif/.tiff or .xlsx/.csv)."
+            return None, None, "Drop one local movie, ROI, or trajectory file."
 
         local_paths = []
         for url in mime_data.urls():
@@ -190,11 +190,14 @@ class MovieCanvas(ImageCanvas):
             return None, None, "Dropped item is not a valid file."
 
         ext = os.path.splitext(path)[1].lower()
+        if ext in (".roi", ".zip"):
+            return path, "rois", None
         if ext not in (".tif", ".tiff"):
             if ext in (".xlsx", ".csv"):
                 return path, "trajectories", None
             return None, None, (
-                "Unsupported file type. Drop a movie (.tif/.tiff) or trajectories (.xlsx/.csv)."
+                "Unsupported file type. Drop a movie (.tif/.tiff), line ROIs (.roi/.zip), "
+                "or trajectories (.xlsx/.csv)."
             )
 
         return path, "movie", None
@@ -238,6 +241,21 @@ class MovieCanvas(ImageCanvas):
                     QMessageBox.critical(nav or message_parent, "Load failed", f"Could not load movie:\n{exc}")
 
             QTimer.singleShot(0, _load_dropped_movie)
+            return
+
+        if kind == "rois":
+            if navigator is None or not hasattr(navigator, "load_roi"):
+                QMessageBox.warning(message_parent, "Load failed", "ROI loader is unavailable.")
+                return
+
+            def _load_dropped_rois(path=dropped_path, nav=navigator):
+                try:
+                    nav.load_roi(files=[path])
+                except Exception as exc:
+                    traceback.print_exc()
+                    QMessageBox.critical(nav or message_parent, "Load failed", f"Could not load line ROIs:\n{exc}")
+
+            QTimer.singleShot(0, _load_dropped_rois)
             return
 
         if kind == "trajectories":
@@ -512,6 +530,28 @@ class MovieCanvas(ImageCanvas):
 
         self.manual_zoom = False
 
+    def fit_to_full_image(self):
+        """Reset pan/zoom so the whole movie frame fills the canvas."""
+        if self.image is None:
+            return
+        if self._view_redraw_timer.isActive():
+            self._view_redraw_timer.stop()
+        self._deferred_cache_background = False
+        self._is_panning = False
+        self._pan_start = None
+        self._orig_xlim = None
+        self._orig_ylim = None
+
+        h, w = self.image.shape[:2]
+        widget_w = max(self.width(), 1)
+        widget_h = max(self.height(), 1)
+        base = max(w / widget_w, h / widget_h)
+        self.scale = base
+        self.max_scale = base * self.padding
+        self.zoom_center = (w / 2, h / 2)
+        self.manual_zoom = False
+        self.update_view(cache_background=True)
+
     def on_scroll(self, event):
         if not self.enableInteraction or self.image is None or event.inaxes != self.ax:
             return
@@ -722,7 +762,7 @@ class MovieCanvas(ImageCanvas):
     def _format_inset_measurement(prefix, value):
         return (
             f'<span style="font-size: 10px;">{prefix}:</span> '
-            f'<span style="font-size: 16px;">{float(value):.2f}</span>'
+            f'<span style="font-size: 16px;">{float(value):.1f}</span>'
         )
 
     @classmethod
@@ -1499,9 +1539,15 @@ class MovieCanvas(ImageCanvas):
 
         # Saturated camera pixels dominate long max projections. For display,
         # use the brightest non-saturated sample when a pixel hit the ceiling.
-        masked = np.where(movie_stack >= ceiling, dtype_info.min, movie_stack)
-        robust = np.max(masked, axis=0)
-        all_saturated = np.all(movie_stack >= ceiling, axis=0)
+        # Reduce one frame at a time so this fallback does not allocate a
+        # temporary array as large as the entire movie.
+        robust = np.full(projection.shape, dtype_info.min, dtype=movie_stack.dtype)
+        all_saturated = np.ones(projection.shape, dtype=bool)
+        for frame in movie_stack:
+            valid = frame < ceiling
+            np.maximum(robust, frame, out=robust, where=valid)
+            np.logical_not(valid, out=valid)
+            np.logical_and(all_saturated, valid, out=all_saturated)
         if np.any(all_saturated):
             robust[all_saturated] = ceiling
         return robust.astype(projection.dtype, copy=False)
@@ -1530,10 +1576,18 @@ class MovieCanvas(ImageCanvas):
                 self.sum_frame_cache[ch] = sum_frame
 
         elif movie.ndim == 3:
-            if movie.shape[0] <= 4:
-                sum_frame = movie[0]
+            # Use the same cache for single-channel movies. The projection is
+            # independent of the current frame, so slider/playback refreshes
+            # should not scan the full movie again.
+            cache_key = 0
+            if cache_key in self.sum_frame_cache:
+                sum_frame = self.sum_frame_cache[cache_key]
             else:
-                sum_frame = self._max_projection_frame(movie)
+                if movie.shape[0] <= 4:
+                    sum_frame = movie[0]
+                else:
+                    sum_frame = self._max_projection_frame(movie)
+                self.sum_frame_cache[cache_key] = sum_frame
         else:
             sum_frame = movie
 

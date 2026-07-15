@@ -38,7 +38,8 @@ setup(
         'roifile',
         'openpyxl',
         'packaging',
-        'onnxruntime>=1.16'
+        'onnxruntime==1.20.1; platform_system == "Windows"',
+        'onnxruntime>=1.16; platform_system != "Windows"',
     ],
     entry_points={
         'gui_scripts': [
@@ -53,6 +54,7 @@ setup(
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.10',
         'Programming Language :: Python :: 3.11',
+        'Programming Language :: Python :: 3.12',
 
         'Operating System :: OS Independent',
     ],

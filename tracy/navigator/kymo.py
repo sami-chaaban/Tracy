@@ -1473,7 +1473,7 @@ class NavigatorKymoMixin:
         else:
             movie_coord = (x, y)
 
-        pixel_val = ""
+        pixel_val = None
 
         real_x = int(movie_coord[0])
         real_y = int(movie_coord[1])
@@ -1486,7 +1486,8 @@ class NavigatorKymoMixin:
             pixel_val = image[real_y, real_x]
 
         # Build the display string (without intensity)
-        display_text = f"F: {int(frame_val)} X: {real_x_fortxt:.1f} Y: {real_y_fortxt:.1f} I: {pixel_val}"
+        intensity_text = "" if pixel_val is None else f"{float(pixel_val):.1f}"
+        display_text = f"F: {int(frame_val)} X: {real_x_fortxt:.1f} Y: {real_y_fortxt:.1f} I: {intensity_text}"
         #print("Setting label text to:", display_text)
         
         # Update the label.

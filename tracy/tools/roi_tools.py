@@ -4,6 +4,32 @@ import read_roi
 from roifile import ImagejRoi, ROI_TYPE
 
 
+def canonicalize_line_roi(roi):
+    """Return an ImageJ line ROI in Tracy's internal representation.
+
+    ``read_roi`` supplies coordinate arrays for ROIs read from an ImageJ
+    ``.roi`` file or ZIP, whereas ROIs drawn in Tracy also have a ``points``
+    list.  Keeping both forms in sync is required for saving the ROI again.
+    """
+    if not isinstance(roi, dict):
+        return None
+
+    try:
+        xs = [float(x) for x in roi.get("x", [])]
+        ys = [float(y) for y in roi.get("y", [])]
+    except (TypeError, ValueError):
+        return None
+
+    if len(xs) < 2 or len(xs) != len(ys):
+        return None
+
+    normalized = dict(roi)
+    normalized["x"] = xs
+    normalized["y"] = ys
+    normalized["points"] = list(zip(xs, ys))
+    return normalized
+
+
 def compute_roi_point(roi, kymo_xdata):
     roi_x = np.array(roi["x"], dtype=float)
     roi_y = np.array(roi["y"], dtype=float)

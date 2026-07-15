@@ -91,7 +91,7 @@ from ..canvas_tools import (
 )
 from tracy import __version__
 from ..tools.gaussian_tools import perform_gaussian_fit, filterX, find_minima, find_maxima
-from ..tools.roi_tools import is_point_near_roi, convert_roi_to_binary, parse_roi_blob, generate_multipoint_roi_bytes
+from ..tools.roi_tools import canonicalize_line_roi, is_point_near_roi, convert_roi_to_binary, parse_roi_blob, generate_multipoint_roi_bytes
 from ..tools.track_tools import calculate_velocities
 
 # from hmmlearn.hmm import GaussianHMM

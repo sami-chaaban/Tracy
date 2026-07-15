@@ -4,6 +4,7 @@ from .gaussian_tools import perform_gaussian_fit, filterX, find_minima, find_max
 from .roi_tools import (
     compute_roi_point,
     is_point_near_roi,
+    canonicalize_line_roi,
     convert_roi_to_binary,
     parse_roi_blob,
     generate_multipoint_roi_bytes,
@@ -16,6 +17,7 @@ __all__ = [
     "find_maxima",
     "compute_roi_point",
     "is_point_near_roi",
+    "canonicalize_line_roi",
     "convert_roi_to_binary",
     "parse_roi_blob",
     "generate_multipoint_roi_bytes",

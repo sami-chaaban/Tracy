@@ -697,7 +697,7 @@ class NavigatorMovieMixin:
             if image is not None and x is not None and y is not None and 0 <= x < image.shape[1] and 0 <= y < image.shape[0]:
                 pixel_val = image[y, x]
                 current_frame = self.frameSlider.value() + 1
-                text = f"F: {current_frame} X: {x} Y: {y} I: {pixel_val}"
+                text = f"F: {current_frame} X: {x} Y: {y} I: {float(pixel_val):.1f}"
                 self.pixelValueLabel.setText(text)
             else:
                 self.pixelValueLabel.setText("")

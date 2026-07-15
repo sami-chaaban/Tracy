@@ -31,6 +31,18 @@ def _read_movie_file_for_load(fname):
 
 
 class NavigatorIOMixin:
+    def _finish_movie_canvas_load(self, loaded_movie):
+        """Fit now and again after any movie-load splitter relayout settles."""
+        def fit_if_current():
+            if getattr(self, "movie", None) is not loaded_movie:
+                return
+            canvas = getattr(self, "movieCanvas", None)
+            if canvas is not None:
+                canvas.fit_to_full_image()
+
+        fit_if_current()
+        QTimer.singleShot(0, fit_if_current)
+
     def infer_axes_from_shape(shape):
         """
         Build an ImageJ-style axes string from a NumPy shape tuple:
@@ -481,6 +493,11 @@ class NavigatorIOMixin:
 
             self.movieCanvas.clear_sum_cache()
 
+            # The movie is now loaded and its first frame is on screen. End
+            # progress feedback before starting post-load checks, which may
+            # open modal prompts such as Set Scale or Clear custom columns.
+            self._clear_movie_load_status()
+
             self.update_scale_label()
 
             if self.pixel_size is None or self.frame_interval is None:
@@ -568,6 +585,12 @@ class NavigatorIOMixin:
 
             # Always untoggle any active “Color by …” before we potentially reload columns
             self.set_color_by(None)
+
+            # Clearing the previous movie's kymographs/trajectories can resize
+            # the splitters after display_image() measured the movie canvas.
+            # Refit at true load completion, then once more after Qt applies
+            # any queued layout changes so a second movie cannot appear tiny.
+            self._finish_movie_canvas_load(temp_movie)
 
             self.flash_message("Loaded movie")
             self._clear_undo_stack()
@@ -705,7 +728,6 @@ class NavigatorIOMixin:
         # 3) pick the right contrast-settings dict
         if self.sumBtn.isChecked():
             settings_store = self.channel_sum_contrast_settings
-            self.movieCanvas.clear_sum_cache()
             self.movieCanvas.display_sum_frame()
             settings_image = self.movieCanvas.image
         else:
@@ -1365,10 +1387,11 @@ class NavigatorIOMixin:
 
         self.update_table_visibility()
 
-    def load_roi(self):
-        files, _ = QFileDialog.getOpenFileNames(
-            self, "Open ROI File(s)", "", "ROI Files (*.roi *.zip)"
-        )
+    def load_roi(self, files=None):
+        if files is None:
+            files, _ = QFileDialog.getOpenFileNames(
+                self, "Open ROI File(s)", "", "ROI Files (*.roi *.zip)"
+            )
         if not files:
             return
 
@@ -1376,9 +1399,13 @@ class NavigatorIOMixin:
         rois = {}
         for file in files:
             if file.lower().endswith('.zip'):
-                rois.update(read_roi.read_roi_zip(file))
+                loaded_rois = read_roi.read_roi_zip(file)
             else:
-                rois.update(read_roi.read_roi_file(file))
+                loaded_rois = read_roi.read_roi_file(file)
+            for roi_name, roi in loaded_rois.items():
+                normalized_roi = canonicalize_line_roi(roi)
+                if normalized_roi is not None:
+                    rois[roi_name] = normalized_roi
 
         # 2) Replace internal ROI store & rebuild the ROI combo
         self.rois = rois
